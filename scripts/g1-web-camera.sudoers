@@ -1,0 +1,3 @@
+unitree ALL=(root) NOPASSWD: /usr/local/sbin/g1-web-first-person-service start
+unitree ALL=(root) NOPASSWD: /usr/local/sbin/g1-web-first-person-service stop
+unitree ALL=(root) NOPASSWD: /usr/local/sbin/g1-web-first-person-service is-active

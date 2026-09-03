@@ -1,0 +1,79 @@
+#!/bin/sh
+set -eu
+
+state_file=/run/g1-web-camera-services.state
+
+service_active() {
+  /bin/systemctl is-active --quiet "$1"
+}
+
+restore_saved_services() {
+  [ -f "$state_file" ] || return 0
+  master=0
+  teleimager=0
+  . "$state_file"
+
+  failed=0
+  if [ "$teleimager" = 1 ] && ! /bin/systemctl start teleimager.service; then
+    failed=1
+  fi
+  if [ "$master" = 1 ] && ! /bin/systemctl start master_service.service; then
+    failed=1
+  fi
+  if [ "$failed" = 0 ]; then
+    /bin/rm -f "$state_file"
+    return 0
+  fi
+  return 1
+}
+
+case "${1:-}" in
+  start)
+    restore_saved_services
+    ;;
+  stop)
+    if [ -f "$state_file" ]; then
+      master=0
+      teleimager=0
+      . "$state_file"
+    else
+      master=0
+      teleimager=0
+      service_active master_service.service && master=1 || true
+      service_active teleimager.service && teleimager=1 || true
+      umask 077
+      printf 'master=%s\nteleimager=%s\n' "$master" "$teleimager" >"$state_file"
+    fi
+
+    failed=0
+    if service_active teleimager.service &&
+       ! /bin/systemctl stop teleimager.service; then
+      failed=1
+    fi
+    if service_active master_service.service &&
+       ! /bin/systemctl stop master_service.service; then
+      failed=1
+    fi
+    if ! /sbin/start-stop-daemon --stop --oknodo \
+      --exec /unitree/module/video_hub_pc4/videohub_pc4 \
+      --retry=TERM/5; then
+      failed=1
+    fi
+
+    if [ "$failed" != 0 ]; then
+      restore_saved_services || true
+      exit 1
+    fi
+    ;;
+  is-active)
+    if service_active master_service.service ||
+       service_active teleimager.service; then
+      exit 0
+    fi
+    exit 3
+    ;;
+  *)
+    echo "usage: $0 {start|stop|is-active}" >&2
+    exit 2
+    ;;
+esac

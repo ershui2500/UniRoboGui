@@ -1,0 +1,9 @@
+[Unit]
+Description=Ensure the configured G1 Wi-Fi connection is healthy
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/g1-wifi-ensure
+TimeoutStartSec=120

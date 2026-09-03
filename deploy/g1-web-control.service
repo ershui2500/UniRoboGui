@@ -1,0 +1,25 @@
+[Unit]
+Description=Unitree G1 Web control and perception workstation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+Group=unitree
+WorkingDirectory=/home/unitree/UniRoboGui
+Environment=HOME=/home/unitree
+Environment=CMAKE_PREFIX_PATH=/opt/unitree_robotics
+Environment=LD_LIBRARY_PATH=/opt/unitree_robotics/lib:/usr/local/lib
+# CycloneDDS rejects an interface name that has not appeared yet during boot.
+# Wait for eth0 and its Unitree LAN IPv4 address instead of crashing once and
+# relying on Restart=always to recover a few seconds later.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do ip link show dev eth0 >/dev/null 2>&1 && ip -4 addr show dev eth0 | grep -q "inet " && exit 0; sleep 1; done; echo "eth0 did not become ready within 30s" >&2; exit 1'
+ExecStart=/home/unitree/UniRoboGui/build/g1_web_server --interface eth0 --bind 0.0.0.0 --port 8080 --publish-hz 10 --web-root /home/unitree/UniRoboGui/web --enable-navigation
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

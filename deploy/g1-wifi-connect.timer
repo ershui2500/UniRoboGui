@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically verify and repair the G1 Wi-Fi connection
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=true
+Unit=g1-wifi-connect.service
+
+[Install]
+WantedBy=timers.target

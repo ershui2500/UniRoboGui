@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -u
+
+readonly WIFI_INTERFACE="wlan0"
+readonly WIFI_PROFILE="TP-LINK_402_1"
+readonly WIFI_MODULE="8852bu"
+
+log_message() {
+  echo "$*"
+  /usr/bin/logger -t g1-wifi-connect -- "$*"
+}
+
+wifi_connected() {
+  /usr/bin/nmcli -t -f DEVICE,STATE,CONNECTION device status | \
+    /usr/bin/grep -Fqx "${WIFI_INTERFACE}:connected:${WIFI_PROFILE}" && \
+    /usr/sbin/ip -4 -o address show dev "${WIFI_INTERFACE}" scope global | \
+      /usr/bin/grep -q .
+}
+
+gateway_reachable() {
+  local gateway
+  gateway="$(/usr/bin/nmcli -g IP4.GATEWAY device show "${WIFI_INTERFACE}" | /usr/bin/head -n 1)"
+  test -n "${gateway}" && \
+    /usr/bin/ping -I "${WIFI_INTERFACE}" -c 1 -W 1 "${gateway}" >/dev/null 2>&1
+}
+
+wifi_healthy() {
+  wifi_connected && gateway_reachable
+}
+
+wait_for_wifi() {
+  local attempt
+  for attempt in $(/usr/bin/seq 1 10); do
+    if wifi_healthy; then
+      return 0
+    fi
+    /usr/bin/sleep 2
+  done
+  return 1
+}
+
+if wifi_healthy; then
+  log_message "Wi-Fi healthy on ${WIFI_INTERFACE}"
+  exit 0
+fi
+
+log_message "Wi-Fi unhealthy; reapplying ${WIFI_INTERFACE}"
+/usr/bin/nmcli device reapply "${WIFI_INTERFACE}" >/dev/null 2>&1 || true
+if wifi_healthy; then
+  log_message "Wi-Fi recovered after device reapply"
+  exit 0
+fi
+
+log_message "Wi-Fi still unhealthy; requesting NetworkManager reconnect"
+/usr/bin/nmcli --wait 15 connection up "${WIFI_PROFILE}" ifname "${WIFI_INTERFACE}" >/dev/null 2>&1 || true
+if wait_for_wifi; then
+  log_message "Wi-Fi recovered after NetworkManager reconnect"
+  exit 0
+fi
+
+if /usr/sbin/lsmod | /usr/bin/grep -q "^${WIFI_MODULE}[[:space:]]"; then
+  log_message "Wi-Fi driver remains unhealthy; reloading ${WIFI_MODULE}"
+  /usr/bin/nmcli radio wifi off >/dev/null 2>&1 || true
+  /usr/sbin/modprobe -r "${WIFI_MODULE}"
+  /usr/sbin/modprobe "${WIFI_MODULE}"
+  /usr/bin/nmcli radio wifi on >/dev/null 2>&1 || true
+fi
+
+/usr/bin/nmcli --wait 30 connection up "${WIFI_PROFILE}" ifname "${WIFI_INTERFACE}" >/dev/null 2>&1 || true
+if wait_for_wifi; then
+  log_message "Wi-Fi recovered after driver reload"
+  exit 0
+fi
+
+log_message "Wi-Fi repair failed; the systemd timer will retry"
+exit 1

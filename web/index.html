@@ -1,0 +1,1333 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>UniRoboGui · 综合工作台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+
+    <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
+    <aside class="sidebar" id="sidebar" aria-label="主功能导航">
+      <div class="sidebar-brand">
+        <div class="unirobo-mark" aria-hidden="true">
+          <span class="unirobo-mark-core">U</span>
+          <i></i>
+        </div>
+        <div class="sidebar-brand-copy">
+          <strong>UniRoboGui</strong>
+          <small>G1 · ROBOT WORKSTATION</small>
+        </div>
+        <button class="sidebar-close" id="sidebarClose" type="button" aria-label="关闭导航">×</button>
+      </div>
+      <nav class="workspace-nav">
+        <button class="workspace-nav-item active" type="button" data-target-workspace="console" aria-current="page">
+          <span class="nav-icon">WS</span><span class="nav-copy"><strong>综合工作台</strong></span>
+        </button>
+        <button class="workspace-nav-item" type="button" data-target-workspace="robot">
+          <span class="nav-icon">3D</span><span class="nav-copy"><strong>机器人状态</strong></span>
+        </button>
+        <button class="workspace-nav-item" type="button" data-target-workspace="joint-debug">
+          <span class="nav-icon">JD</span><span class="nav-copy"><strong>机器人调试台</strong></span>
+        </button>
+        <button class="workspace-nav-item" type="button" data-target-workspace="diagnostics">
+          <span class="nav-icon">DG</span><span class="nav-copy"><strong>诊断</strong></span>
+        </button>
+      </nav>
+      <div class="sidebar-note">
+        <span class="status-dot"></span>
+        <div><strong>安全互锁已启用</strong><small>页面锁不等同于访问认证</small></div>
+      </div>
+    </aside>
+
+    <header class="topbar">
+      <button class="mobile-menu" id="mobileMenu" type="button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">☰</button>
+      <div class="workspace-brand-cluster">
+        <div class="brand workspace-brand">
+          <div class="workspace-emblem" id="workspaceEmblem" data-workspace="console" aria-hidden="true">
+            <span id="workspaceGlyph">WS</span>
+          </div>
+          <div class="workspace-brand-copy">
+            <p class="eyebrow">UNIROBOGUI</p>
+            <h1 id="workspaceTitle">综合工作台</h1>
+          </div>
+        </div>
+        <div class="language-switcher" data-i18n-skip>
+          <span class="language-switcher-mark" aria-hidden="true">Aa</span>
+          <span class="language-switcher-label" id="languageSwitcherLabel">语言</span>
+          <div class="language-select-shell">
+            <button class="language-menu-button" id="languageMenuButton" type="button"
+                    aria-haspopup="listbox" aria-expanded="false" aria-controls="languageMenu">
+              <span id="languageMenuValue">中文</span>
+              <span class="language-menu-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="language-menu" id="languageMenu" role="listbox" aria-label="页面语言" hidden>
+              <button class="language-option" type="button" role="option" data-language="zh-CN" aria-selected="true">
+                <span>中文</span><small>ZH</small>
+              </button>
+              <button class="language-option" type="button" role="option" data-language="en" aria-selected="false">
+                <span>English</span><small>EN</small>
+              </button>
+            </div>
+            <select class="language-native-select" id="languageSelect" aria-hidden="true" tabindex="-1">
+              <option value="zh-CN">中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="top-status-strip">
+        <button class="top-details-button" id="runDetailsButton" type="button" aria-haspopup="dialog">运行详情</button>
+        <div class="top-status-item"><span>电量</span><strong id="topBattery">--</strong></div>
+        <div class="top-status-item"><span>FSM</span><strong id="topFsm">--</strong></div>
+        <div class="top-status-item"><span>控制</span><strong id="topControlLock">已锁定</strong></div>
+        <div class="connection-pill" id="connectionPill">
+          <span class="status-dot"></span>
+          <div>
+            <strong id="connectionLabel">正在连接</strong>
+            <small id="connectionDetail">等待遥测数据</small>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="dashboard">
+      <div class="workspace-heading" data-workspace="robot" hidden>
+        <div><p class="eyebrow">DIGITAL TWIN</p><h2>机器人状态</h2></div>
+        <p>汇总运行详情，并自动识别 mode_machine 加载本地 URDF；姿态同步29个机身关节。</p>
+      </div>
+      <section class="overview panel" data-workspace="robot" data-run-details hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">ROBOT</p>
+            <h2>机器人信息数据显示</h2>
+          </div>
+          <div class="last-update">
+            <span>最后更新</span>
+            <strong id="lastUpdate">--:--:--</strong>
+          </div>
+        </div>
+
+        <div class="overview-grid">
+          <article class="hero-status">
+            <div class="robot-orbit" aria-hidden="true">
+              <div class="orbit orbit-a"></div>
+              <div class="orbit orbit-b"></div>
+              <div class="robot-core">G1</div>
+            </div>
+            <div>
+              <p class="metric-label">DDS 连接状态</p>
+              <strong class="hero-value" id="ddsState">等待数据</strong>
+              <p class="muted" id="ddsDetail">只读模式 · eth0</p>
+            </div>
+          </article>
+
+          <article class="metric-card">
+            <span class="metric-icon cyan">M</span>
+            <div>
+              <p class="metric-label">运动模式</p>
+              <strong id="modeMachine">--</strong>
+              <small id="modePr">mode_pr --</small>
+            </div>
+          </article>
+          <article class="metric-card">
+            <span class="metric-icon violet">V</span>
+            <div>
+              <p class="metric-label">状态版本</p>
+              <strong id="robotVersion">--</strong>
+              <small id="robotTick">tick --</small>
+            </div>
+          </article>
+          <article class="metric-card">
+            <span class="metric-icon green">S</span>
+            <div>
+              <p class="metric-label">数据序号</p>
+              <strong id="sequence">--</strong>
+              <small>schema v1 · 10 Hz</small>
+            </div>
+          </article>
+        </div>
+
+        <div class="source-strip" id="sourceStrip" aria-label="DDS 数据源状态"></div>
+      </section>
+
+      <section class="data-grid" data-workspace="robot" data-run-details hidden>
+        <article class="panel battery-panel">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">POWER</p>
+              <h3>电池状态</h3>
+            </div>
+            <span class="tag">rt/lf/bmsstate</span>
+          </div>
+          <div class="battery-layout">
+            <div class="battery-ring" id="batteryRing">
+              <div>
+                <strong id="batterySoc">--</strong>
+                <span>SOC</span>
+              </div>
+            </div>
+            <dl class="kv-grid">
+              <div><dt>健康度</dt><dd id="batterySoh">--</dd></div>
+              <div><dt>循环次数</dt><dd id="batteryCycle">--</dd></div>
+              <div><dt>电流 raw</dt><dd id="batteryCurrent">--</dd></div>
+              <div><dt>最高温度 raw</dt><dd id="batteryTemp">--</dd></div>
+              <div><dt>电芯范围 raw</dt><dd id="batteryCells">--</dd></div>
+              <div><dt>BMS 版本</dt><dd id="batteryVersion">--</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel odom-panel">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">ODOM</p>
+              <h3>里程计与运动状态</h3>
+            </div>
+            <span class="tag">rt/odommodestate</span>
+          </div>
+          <div class="axis-group">
+            <p>位置 <span>m</span></p>
+            <div id="positionAxes" class="axis-values"></div>
+          </div>
+          <div class="axis-group">
+            <p>速度 <span>m/s</span></p>
+            <div id="velocityAxes" class="axis-values"></div>
+          </div>
+          <dl class="kv-grid compact">
+            <div><dt>机身高度</dt><dd id="bodyHeight">--</dd></div>
+            <div><dt>偏航速度</dt><dd id="yawSpeed">--</dd></div>
+            <div><dt>模式 raw</dt><dd id="odomMode">--</dd></div>
+            <div><dt>错误码</dt><dd id="odomError">--</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section class="joint-debug-workspace" data-workspace="joint-debug" hidden>
+        <aside class="panel joint-debug-status">
+          <div class="card-heading"><div><p class="eyebrow">INTERLOCK</p><h3>下发互锁</h3></div><span class="model-state pending" id="jointDebugPermission">禁止下发</span></div>
+          <dl class="inspector-grid">
+            <div><dt>当前模式</dt><dd id="jointDebugCurrentMode">--</dd></div>
+            <div><dt>机器人运控</dt><dd id="jointDebugFsmState">--</dd></div>
+            <div><dt>调试模式 / ai_sport</dt><dd id="jointDebugSportService">--</dd></div>
+            <div><dt>DDS 控制</dt><dd id="jointDebugDdsState">--</dd></div>
+            <div><dt>LowState</dt><dd id="jointDebugLowState">--</dd></div>
+            <div><dt>允许下发</dt><dd id="jointDebugAllowed">--</dd></div>
+          </dl>
+        </aside>
+        <div class="joint-debug-content">
+          <div class="joint-debug-viewer"><span id="jointDebugViewerSlot" hidden></span></div>
+          <section class="panel joint-debug-controls">
+            <div class="section-heading">
+              <div class="joint-debug-heading-stack">
+                <div class="joint-debug-heading-title"><p class="eyebrow">TARGET POSE</p><h3>关节目标</h3></div>
+                <div class="joint-debug-actions">
+                  <button type="button" class="secondary" id="jointDebugReset">恢复默认零位</button>
+                  <button type="button" class="secondary" id="jointDebugLoadCurrent">从当前机器人姿态加载</button>
+                  <button type="button" id="jointDebugApply" disabled>应用到机器人</button>
+                  <button type="button" class="danger-outline" id="jointDebugStop">停止 / 释放控制</button>
+                </div>
+              </div>
+              <div class="joint-debug-mode-row" aria-label="调试台模式与单位">
+                <fieldset class="joint-debug-switch joint-debug-mode-switch"><legend>控制模式</legend>
+                  <label><input type="radio" name="jointDebugMode" value="upper_body" checked><span><strong>上半身</strong><small>rt/arm_sdk</small></span></label>
+                  <label><input type="radio" name="jointDebugMode" value="full_body"><span><strong>全身</strong><small>rt/lowcmd</small></span></label>
+                </fieldset>
+                <fieldset class="joint-debug-switch joint-debug-unit-switch"><legend>角度单位</legend>
+                  <label><input type="radio" name="jointDebugUnit" value="rad" checked><span><strong>rad</strong><small>弧度</small></span></label>
+                  <label><input type="radio" name="jointDebugUnit" value="deg"><span><strong>°</strong><small>角度</small></span></label>
+                </fieldset>
+              </div>
+            </div>
+            <section class="joint-debug-teach" id="jointDebugTeach">
+              <div>
+                <label for="jointTeachName">示教动作名称</label>
+                <input id="jointTeachName" maxlength="128" placeholder="例如：挥手_01">
+              </div>
+              <div>
+                <label for="jointTeachFinishMode">录制结束</label>
+                <select id="jointTeachFinishMode">
+                  <option value="release">保存后恢复控制权</option>
+                  <option value="hold">保存后保持最后动作</option>
+                </select>
+              </div>
+              <div class="joint-debug-teach-actions">
+                <button type="button" id="jointTeachRecord">开始手掰录制</button>
+                <button type="button" class="secondary" id="jointTeachSave" disabled>停止并保存</button>
+              </div>
+              <div>
+                <label for="jointTeachSelect">本地动作</label>
+                <select id="jointTeachSelect"><option value="">暂无本地动作</option></select>
+              </div>
+              <div class="joint-debug-teach-actions">
+                <button type="button" class="secondary" id="jointTeachPlay" disabled>播放</button>
+                <button type="button" class="danger-outline" id="jointTeachDelete" disabled>删除</button>
+                <button type="button" class="secondary" id="jointTeachRelease" disabled>恢复控制权</button>
+              </div>
+              <div class="joint-debug-teach-binding">
+                <div>
+                  <label for="jointTeachRemoteBinding">遥控器触发绑定</label>
+                  <select id="jointTeachRemoteBinding" disabled><option value="">不绑定</option></select>
+                </div>
+                <button type="button" class="secondary" id="jointTeachBindRemote" disabled>保存绑定</button>
+                <small id="jointTeachRemoteHint">遥控器使用 F1 / F3 组合键；动作保持时可单击 START 或再次按该动作绑定键恢复控制权。</small>
+              </div>
+              <p id="jointTeachHint">开始录制后直接进入手掰状态，不再先回默认姿态；停止时可选择恢复控制权或保持最后动作。</p>
+            </section>
+            <p class="joint-debug-warning" id="jointDebugWarning">正在读取后端安全状态…</p>
+            <p class="joint-debug-action-feedback" id="jointDebugActionFeedback" hidden></p>
+            <div class="joint-debug-groups" id="jointDebugGroups"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="robot-visual-grid" data-workspace="robot" hidden>
+        <article class="panel robot-viewer-panel">
+          <div class="card-heading viewer-heading">
+            <div><p class="eyebrow">G1 POSE</p><h3>三维关节姿态</h3></div>
+            <div class="viewer-actions">
+              <span class="model-state pending" id="modelState">等待机型信息</span>
+              <button type="button" class="secondary compact-button" id="resetRobotView">复位视角</button>
+            </div>
+          </div>
+          <div class="robot-pose-workbench">
+            <div class="robot-model-pane">
+              <div class="robot-viewer" id="robotViewer">
+                <div class="viewer-loading" id="viewerLoading"><span class="viewer-spinner"></span><strong>等待 URDF 模型</strong><small>收到 mode_machine 后从本地资产自动加载官方模型</small></div>
+                <div class="viewer-overlay" id="viewerOverlay" hidden>遥测已中断 · 当前为最后收到的关节姿态</div>
+              </div>
+              <div class="viewer-footer"><span id="modelFile">URDF --</span><span>29关节 · 拖动旋转 · 滚轮缩放</span></div>
+            </div>
+          </div>
+        </article>
+        <section class="panel joints-panel" data-workspace="robot" hidden>
+          <div class="section-heading joint-heading">
+            <div>
+              <p class="eyebrow">JOINTS</p>
+              <h2>G1 关节状态</h2>
+            </div>
+            <div class="joint-controls">
+              <label>
+                <span class="sr-only">搜索关节</span>
+                <input id="jointSearch" type="search" placeholder="搜索名称或索引" />
+              </label>
+              <label>
+                <span class="sr-only">筛选关节状态</span>
+                <select id="jointFilter">
+                  <option value="all">全部状态</option>
+                  <option value="nonzero">state_raw 非零</option>
+                  <option value="zero">state_raw 为零</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>索引</th>
+                  <th>关节</th>
+                  <th>模式</th>
+                  <th>角度 rad</th>
+                  <th>速度 rad/s</th>
+                  <th>力矩 N·m</th>
+                  <th>温度 raw</th>
+                  <th>电压 V</th>
+                  <th>state_raw</th>
+                </tr>
+              </thead>
+              <tbody id="jointTableBody"></tbody>
+            </table>
+            <div class="empty-table" id="emptyJoints" hidden>没有符合条件的关节</div>
+          </div>
+          <details class="raw-details">
+            <summary>查看电机原始槽 29–34</summary>
+            <pre id="reservedSlots">等待数据…</pre>
+          </details>
+        </section>
+      </section>
+
+      <section class="panel voice-panel" id="voice-interaction" data-workspace="voice" hidden>
+        <div class="section-heading voice-heading">
+          <div>
+            <p class="eyebrow">VOICE</p>
+            <h2>语音交互</h2>
+            <p class="section-description">默认使用 chat_go「笨笨同学」；也可切换客户 OpenAI 兼容 API，客户模式会自动停用 chat_go。</p>
+          </div>
+          <div class="panel-heading-actions">
+            <button class="secondary compact-button panel-expand-button" id="expandVoicePanel" type="button" aria-haspopup="dialog">完整语音面板</button>
+          </div>
+        </div>
+
+        <div class="voice-console">
+          <div class="voice-tabs" role="tablist" aria-label="语音交互功能">
+            <button type="button" class="voice-tab active" id="voiceTabLlm" role="tab"
+                    aria-selected="true" aria-controls="voicePanelLlm" data-voice-tab="llm">
+              <span>AI</span><strong>大模型互动</strong><small>文本 / ASR 双输入</small>
+            </button>
+            <button type="button" class="voice-tab" id="voiceTabAsr" role="tab"
+                    aria-selected="false" aria-controls="voicePanelAsr" data-voice-tab="asr">
+              <span>ASR</span><strong>语音识别</strong><small>实时结果与历史</small>
+            </button>
+            <button type="button" class="voice-tab" id="voiceTabTts" role="tab"
+                    aria-selected="false" aria-controls="voicePanelTts" data-voice-tab="tts">
+              <span>TTS</span><strong>文本播报</strong><small>发音人与音量</small>
+            </button>
+          </div>
+
+          <div class="voice-tab-stage">
+            <article class="voice-card llm-card voice-tab-panel active" id="voicePanelLlm"
+                     role="tabpanel" aria-labelledby="voiceTabLlm" data-voice-panel="llm">
+              <div class="voice-card-heading">
+                <div>
+                  <span class="voice-icon llm-icon" aria-hidden="true">AI</span>
+                  <div>
+                    <p class="metric-label">LLM</p>
+                    <h3>大模型互动工作台</h3>
+                  </div>
+                </div>
+                <span class="tag" id="llmModeBadge">默认 · 笨笨同学</span>
+              </div>
+
+              <div class="llm-engine-panel">
+                <div class="llm-mode-row">
+                  <label>
+                    <span class="field-label">互动引擎</span>
+                    <select id="llmModeSelect">
+                      <option value="builtin">机器人内置 · chat_go 笨笨同学</option>
+                      <option value="customer">客户大模型 · API 接入</option>
+                    </select>
+                    <small>切换后立即生效；客户模式使用下方最后一次保存的 API 配置。</small>
+                  </label>
+                </div>
+
+                <div class="llm-builtin-hint" id="builtinLlmHint">
+                  <strong>笨笨同学支持语音、键盘和最近 ASR</strong>
+                  <span>文本通过内置 DDS 通道发送；当前固件只返回 ack，完整回答继续由机器人原生播报。</span>
+                </div>
+
+                <div class="llm-customer-config" id="customerLlmConfig" hidden>
+                  <section class="customer-voice-profile" aria-labelledby="customerVoiceProfileTitle">
+                    <div class="customer-voice-profile-heading">
+                      <div>
+                        <span class="field-label" id="customerVoiceProfileTitle">客户互动增强与 API</span>
+                        <small id="customerVoiceConfigSummary">API、角色、固定问答、唤醒短语与本地 TTS</small>
+                      </div>
+                      <div class="customer-voice-profile-actions">
+                        <button type="button" class="secondary" id="openCustomerConfigFile" disabled>打开配置文件</button>
+                        <button type="button" class="secondary" id="saveCustomerVoiceConfig" disabled>保存增强配置与API</button>
+                      </div>
+                    </div>
+                    <label>
+                      <span class="field-label">OpenAI 兼容 API / Base URL</span>
+                      <input id="customerLlmApiUrl" type="url" maxlength="1024"
+                             placeholder="例如 https://api.deepseek.com 或 https://example.com/v1/chat/completions" autocomplete="off" />
+                    </label>
+                    <label>
+                      <span class="field-label">模型名称</span>
+                      <input id="customerLlmModel" maxlength="256"
+                             placeholder="例如 customer-model" autocomplete="off" />
+                    </label>
+                    <label>
+                      <span class="field-label">API Key（与增强配置一起保存）</span>
+                      <input id="customerLlmApiKey" type="password" maxlength="4096"
+                             placeholder="无需鉴权的内网模型可留空" autocomplete="new-password" />
+                      <small>已有 Key 会显示为掩码圆点；保持圆点不修改会继续使用已保存 Key，输入新 Key 后点击“保存增强配置与API”会覆盖旧值。</small>
+                    </label>
+                    <label>
+                      <span class="field-label">大模型角色 / System Prompt</span>
+                      <textarea id="customerRolePrompt" maxlength="8192" rows="4"
+                                placeholder="例如：你是展厅里的 Unitree G1 接待机器人，回答简洁、友好，并优先介绍客户指定的产品信息。"></textarea>
+                    </label>
+                    <div class="customer-voice-profile-grid">
+                      <label>
+                        <span class="field-label">客户模式唤醒短语</span>
+                        <input id="customerWakeWord" maxlength="128" placeholder="例如 小优小优" autocomplete="off" />
+                      </label>
+                      <label>
+                        <span class="field-label">客户模式 TTS</span>
+                        <select id="customerTtsBackend">
+                          <option value="kokoro">Kokoro 本地中英双语（推荐）</option>
+                          <option value="unitree">Unitree 原生 TTS（分段兼容）</option>
+                        </select>
+                      </label>
+                    </div>
+                    <label class="customer-wake-option">
+                      <input type="checkbox" id="customerWakeEnabled" />
+                      <span>仅说唤醒短语会回复“我在”并打开约 15 秒连续对话窗口；窗口内下一句无需重复唤醒词，也支持“唤醒词 + 问题”同句直发，内容优先匹配固定问答，再交给客户大模型并播报回复</span>
+                    </label>
+                    <label>
+                      <span class="field-label">固定问答库</span>
+                      <textarea id="customerQaPairs" rows="6"
+                                placeholder="每行一条：问题 => 固定回答&#10;例如：你叫什么名字 => 我是本次活动的 G1 智能接待员。"></textarea>
+                      <small>优先精确匹配；较长问题也支持包含匹配。命中后直接返回固定回答，不再消耗大模型 API。</small>
+                    </label>
+                    <p class="llm-feedback" id="customerVoiceConfigFeedback">正在读取客户互动增强配置…</p>
+                  </section>
+
+                  <p class="llm-security-note">
+                    页面未启用访问认证；请只在可信网络中配置客户接口。API URL、模型、API Key 与客户互动增强统一保存到机器人 <code>config/customer_voice.json</code>，文件权限固定为仅 unitree 用户可读写；API Key 不写入遥测和日志，网页只显示掩码。
+                  </p>
+                </div>
+                <p class="llm-feedback" id="llmModeFeedback">正在读取当前互动引擎…</p>
+              </div>
+
+              <form id="llmChatForm" class="llm-chat-form">
+                <div class="llm-composer-heading">
+                  <div>
+                    <span class="field-label">消息输入方式</span>
+                    <p>键盘文字或最近一次 ASR。</p>
+                  </div>
+                  <div class="llm-source-switch" role="group" aria-label="大模型消息输入方式">
+                    <button type="button" class="active" id="llmSourceText" aria-pressed="true" data-llm-source="text">键盘文本</button>
+                    <button type="button" id="llmSourceAsr" aria-pressed="false" data-llm-source="asr">最近 ASR</button>
+                  </div>
+                </div>
+
+                <div class="llm-input-panel" id="llmTextInputPanel" data-llm-input-panel="text">
+                  <label class="sr-only" for="llmMessage">直接输入发送给当前互动引擎的消息</label>
+                  <textarea id="llmMessage" maxlength="4096" rows="4"
+                            placeholder="在这里直接输入问题。Enter 发送，Shift + Enter 换行。"></textarea>
+                  <div class="llm-input-footer">
+                    <span>键盘输入可随时编辑；切换输入方式不会清空草稿</span>
+                    <strong id="llmMessageCharCount">0 / 4096</strong>
+                  </div>
+                </div>
+
+                <div class="llm-input-panel llm-asr-source" id="llmAsrInputPanel"
+                     data-llm-input-panel="asr" hidden>
+                  <div class="llm-asr-source-heading">
+                    <span>即将发送的 ASR 内容</span>
+                    <button type="button" class="secondary" id="useLatestAsr">刷新最近结果</button>
+                  </div>
+                  <blockquote id="llmAsrPreview">尚未收到可发送的 ASR 识别结果</blockquote>
+                  <p id="llmAsrSourceMeta">打开 ASR 接收并对机器人说话后，可在这里直接发送识别文字。</p>
+                </div>
+
+                <div class="llm-chat-actions">
+                  <label class="llm-speak-option">
+                    <input type="checkbox" id="speakLlmResponse" checked />
+                    <span>客户模型回复后自动 TTS（内置模型原生播报）</span>
+                  </label>
+                  <button type="button" class="secondary" id="clearLlmMessage">清空文本</button>
+                  <button type="submit" id="sendLlmMessage" disabled>
+                    <span>发送给大模型</span><kbd>Enter</kbd>
+                  </button>
+                </div>
+                <p class="llm-feedback" id="llmChatFeedback">正在读取互动通道状态…</p>
+
+                <section class="llm-response-shell" aria-labelledby="llmResponseTitle">
+                  <div class="llm-response-heading">
+                    <div>
+                      <span class="field-label" id="llmResponseTitle">大模型回复</span>
+                      <small>内置模式显示 DDS 确认；客户模式显示完整文本回复</small>
+                    </div>
+                    <div>
+                      <button type="button" class="secondary" id="copyLlmResponse" disabled>复制</button>
+                      <button type="button" class="secondary" id="speakLlmResponseNow" disabled>立即播报</button>
+                    </div>
+                  </div>
+                  <div class="llm-response" id="llmResponse" aria-live="polite">
+                    <span>发送消息后，大模型回复会显示在这里</span>
+                  </div>
+                </section>
+              </form>
+            </article>
+
+            <article class="voice-card asr-card voice-tab-panel" id="voicePanelAsr" role="tabpanel"
+                     aria-labelledby="voiceTabAsr" data-voice-panel="asr" hidden>
+              <div class="voice-card-heading">
+                <div>
+                  <span class="voice-icon listening" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                  <div>
+                    <p class="metric-label">ASR</p>
+                    <h3>ASR 识别与输入</h3>
+                  </div>
+                </div>
+                <span class="tag">实时识别</span>
+              </div>
+
+              <div class="asr-toolbar">
+                <div class="asr-controls" role="group" aria-label="ASR 接收开关">
+                  <button type="button" id="enableAsr">打开 ASR 接收</button>
+                  <button type="button" class="secondary" id="disableAsr">关闭 ASR 接收</button>
+                </div>
+                <button type="button" class="secondary asr-send-to-llm" id="sendLatestAsrToLlm">
+                  转到大模型发送
+                </button>
+              </div>
+              <p class="asr-control-feedback" id="asrControlFeedback">正在读取 ASR 状态；无结果时请确认机器人已进入唤醒对话模式。</p>
+
+              <div class="asr-transcript">
+                <span class="quote-mark">“</span>
+                <p id="asrText">等待麦克风识别语音…</p>
+              </div>
+              <div class="asr-meta">
+                <span>语言 <strong id="asrLanguage">--</strong></span>
+                <span>置信度 <strong id="asrConfidence">--</strong></span>
+                <span>方位 raw <strong id="asrAngle">--</strong></span>
+                <span>说话人 raw <strong id="asrSpeaker">--</strong></span>
+              </div>
+              <div class="asr-history-block">
+                <div class="history-title">
+                  <span>最近识别</span>
+                  <small>仅保留当前浏览器会话</small>
+                </div>
+                <ol id="asrHistory" class="asr-history">
+                  <li class="empty-history">尚未收到 ASR 结果</li>
+                </ol>
+              </div>
+            </article>
+
+            <article class="voice-card tts-card voice-tab-panel" id="voicePanelTts" role="tabpanel"
+                     aria-labelledby="voiceTabTts" data-voice-panel="tts" hidden>
+              <div class="voice-card-heading">
+                <div>
+                  <span class="voice-icon speaker" aria-hidden="true">T</span>
+                  <div>
+                    <p class="metric-label">TTS</p>
+                    <h3>TTS 文本播报</h3>
+                  </div>
+                </div>
+                <div class="voice-card-tags">
+                  <span class="tag" id="playState">播放状态 --</span>
+                  <span class="tag" id="volumeStatus">音量 --</span>
+                </div>
+              </div>
+
+              <form id="ttsForm">
+                <label class="field-label" for="ttsText">播报内容</label>
+                <textarea id="ttsText" maxlength="240" rows="5"
+                          placeholder="输入需要机器人播报的文字"></textarea>
+                <div class="input-footer">
+                  <span>自动模式会按中文 / 英文分段连续播报</span>
+                  <strong id="ttsCharCount">0 / 240</strong>
+                </div>
+
+                <div class="tts-settings-grid">
+                  <label>
+                    <span class="field-label">TTS 引擎</span>
+                    <select id="ttsBackend">
+                      <option value="kokoro">Kokoro 本地低延迟（推荐）</option>
+                      <option value="unitree">Unitree 原生 TTS</option>
+                    </select>
+                    <small>Kokoro 支持中英文混合，并使用流式低延迟播放。</small>
+                  </label>
+                  <label>
+                    <span class="field-label">发音语言</span>
+                    <select id="ttsSpeaker">
+                      <option value="-1">自动识别并分段中 / 英文（推荐）</option>
+                      <option value="0">中文发音人 · speaker 0</option>
+                      <option value="1">英文发音人 · speaker 1</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="field-label" for="volumeSlider">扬声器音量</span>
+                    <div class="volume-control-row">
+                      <input id="volumeSlider" type="range" min="0" max="100" step="1" value="50" />
+                      <output id="volumeValue" for="volumeSlider">50%</output>
+                      <button type="button" class="secondary compact-action" id="applyVolume">应用音量</button>
+                    </div>
+                  </label>
+                </div>
+                <p class="volume-feedback" id="volumeFeedback">调整后点击“应用音量”</p>
+
+                <button id="ttsSubmit" type="submit" disabled>
+                  <span class="button-wave" aria-hidden="true"></span>
+                  <span id="ttsSubmitLabel">发送到机器人扬声器</span>
+                </button>
+                <p class="tts-feedback" id="ttsFeedback">等待语音服务初始化</p>
+              </form>
+            </article>
+          </div>
+        </div>
+
+        <details class="raw-details voice-raw">
+          <summary>查看语音服务原始状态</summary>
+          <pre id="voiceRaw">等待数据…</pre>
+        </details>
+      </section>
+
+
+      <div class="workspace-heading" data-workspace="diagnostics" hidden>
+        <div><p class="eyebrow">DIAGNOSTICS</p><h2>诊断与原始数据</h2></div>
+        <p>自动汇总 DDS、运动、电机、电池与主板状态；只解码官方已公开的故障位，未公开字段保留 raw。</p>
+      </div>
+
+      <section class="diagnostic-live-grid" data-workspace="diagnostics" hidden>
+        <article class="panel diagnostic-overview-card">
+          <div class="card-heading">
+            <div><p class="eyebrow">HEALTH</p><h3>当前可判定项</h3></div>
+            <span class="state-chip offline" id="diagnosticOverallBadge">等待数据</span>
+          </div>
+          <p class="diagnostic-summary" id="diagnosticOverallSummary">等待诊断数据</p>
+          <div class="diagnostic-issue-list" id="diagnosticIssueList"></div>
+        </article>
+
+        <article class="panel diagnostic-live-card">
+          <div class="card-heading">
+            <div><p class="eyebrow">DDS / ODOM</p><h3>DDS 与里程计</h3></div>
+            <span class="tag">SDK2</span>
+          </div>
+          <dl class="kv-grid compact">
+            <div><dt>DDS 状态</dt><dd id="diagnosticDdsState">--</dd></div>
+            <div><dt>数据源在线</dt><dd id="diagnosticSourceHealth">--</dd></div>
+            <div><dt>LowState 延迟</dt><dd id="diagnosticLowStateAge">--</dd></div>
+            <div><dt>里程计 error_code</dt><dd id="diagnosticOdomError">--</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel diagnostic-live-card diagnostic-motor-card">
+          <div class="card-heading">
+            <div><p class="eyebrow">MOTOR</p><h3>电机诊断</h3></div>
+            <span class="tag">motorstate</span>
+          </div>
+          <dl class="kv-grid compact">
+            <div><dt>机身故障电机</dt><dd id="diagnosticMotorFaultCount">--</dd></div>
+            <div><dt>壳体最高温度 raw</dt><dd id="diagnosticMotorShellTemp">--</dd></div>
+            <div><dt>绕组最高温度 raw</dt><dd id="diagnosticMotorWindingTemp">--</dd></div>
+            <div><dt>电机电压范围</dt><dd id="diagnosticMotorVoltage">--</dd></div>
+          </dl>
+          <div class="diagnostic-fault-list" id="diagnosticMotorFaultList"></div>
+          <p class="diagnostic-note" id="diagnosticReservedMotorHint" hidden></p>
+        </article>
+
+        <article class="panel diagnostic-live-card">
+          <div class="card-heading">
+            <div><p class="eyebrow">POWER</p><h3>电池诊断</h3></div>
+            <span class="tag">rt/lf/bmsstate</span>
+          </div>
+          <dl class="kv-grid compact">
+            <div><dt>SOC / SOH</dt><dd id="diagnosticBatteryHealth">--</dd></div>
+            <div><dt>电芯范围 raw</dt><dd id="diagnosticBatteryCellRange">--</dd></div>
+            <div><dt>电芯压差 raw</dt><dd id="diagnosticBatteryCellDelta">--</dd></div>
+            <div><dt>电流 raw</dt><dd id="diagnosticBatteryCurrent">--</dd></div>
+            <div><dt>最高温度 raw</dt><dd id="diagnosticBatteryTemp">--</dd></div>
+            <div><dt>BMS state_raw</dt><dd id="diagnosticBatteryState">--</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel diagnostic-live-card">
+          <div class="card-heading">
+            <div><p class="eyebrow">MAINBOARD</p><h3>主板诊断</h3></div>
+            <span class="tag">rt/lf/mainboardstate</span>
+          </div>
+          <dl class="kv-grid compact">
+            <div><dt>最高温度 raw</dt><dd id="diagnosticMainboardTemp">--</dd></div>
+            <div><dt>风扇状态 raw</dt><dd id="diagnosticMainboardFan">--</dd></div>
+            <div><dt>value_raw</dt><dd id="diagnosticMainboardValue">--</dd></div>
+            <div><dt>state_raw</dt><dd id="diagnosticMainboardState">--</dd></div>
+          </dl>
+          <p class="diagnostic-note">主板 state_raw / value_raw 的公开位定义不足，页面只原样显示，不擅自判定故障。</p>
+        </article>
+      </section>
+
+      <section class="diagnostic-grid diagnostic-raw-grid" data-workspace="diagnostics" hidden>
+        <details class="panel raw-details diagnostic-card">
+          <summary>
+            <span>
+              <small>BMS RAW DATA</small>
+              BMS 原始诊断
+            </span>
+            <span class="chevron">⌄</span>
+          </summary>
+          <pre id="bmsRaw">等待数据…</pre>
+        </details>
+        <details class="panel raw-details diagnostic-card">
+          <summary>
+            <span>
+              <small>MAINBOARD RAW DATA</small>
+              主板原始诊断
+            </span>
+            <span class="chevron">⌄</span>
+          </summary>
+          <pre id="mainboardRaw">等待数据…</pre>
+        </details>
+      </section>
+
+      <section class="workspace-contents">
+        <article class="panel control-panel" id="robot-control" data-workspace="control" hidden>
+          <div class="section-heading control-heading">
+            <div>
+              <p class="eyebrow">ROBOT CONTROL</p>
+              <h2>机器人控制</h2>
+              <p class="section-description">SDK2 高层控制 · 指令需二次确认 · 页面刷新不会重发。</p>
+            </div>
+            <div class="panel-heading-actions">
+              <span class="control-badge locked" id="controlBadge">控制已锁定</span>
+            </div>
+          </div>
+
+          <div class="control-warning">
+            <strong>危险：模式切换或上肢动作可能导致失衡、倒地或碰撞。</strong>
+            <span>执行前清空周围人员和障碍物并可靠支撑机器人；阻尼和零力矩不提供平衡控制。</span>
+          </div>
+
+          <div class="control-status-grid" hidden>
+            <div>
+              <span>当前 FSM</span>
+              <strong id="controlFsmId">--</strong>
+              <small id="controlFsmName">等待 rt/sportmodestate</small>
+            </div>
+            <div>
+              <span>切换状态</span>
+              <strong id="controlFsmMode">--</strong>
+              <small id="controlFsmModeHint">--</small>
+            </div>
+            <div>
+              <span>上肢任务</span>
+              <strong id="controlTaskId">--</strong>
+              <small id="controlTaskTime">--</small>
+            </div>
+            <div>
+              <span>最近指令</span>
+              <strong id="controlLastState">空闲</strong>
+              <small id="controlLastDetail">尚未提交控制指令</small>
+            </div>
+          </div>
+
+          <div class="control-unlock">
+            <div>
+              <span class="field-label">本页安全锁</span>
+              <div class="local-lock-actions">
+                <button type="button" id="unlockControl">解锁本页控制</button>
+                <button type="button" class="secondary" id="lockControl">立即锁定</button>
+              </div>
+            </div>
+            <p id="controlLockHint">页面安全锁只防误触，不是访问认证；每条指令仍需二次确认。</p>
+          </div>
+
+          <div class="control-tabs" role="tablist" aria-label="机器人控制功能">
+            <button type="button" class="control-tab active" id="controlTabMode" role="tab"
+                    aria-selected="true" aria-controls="controlPanelMode" data-control-tab="mode">
+              <span>FSM</span><strong>切换模式</strong><small>零力矩 · 阻尼 · 运控模式</small>
+            </button>
+            <button type="button" class="control-tab" id="controlTabMotion" role="tab"
+                    aria-selected="false" aria-controls="controlPanelMotion" data-control-tab="motion">
+              <span>MOVE</span><strong>机器人运动</strong><small>WASD · 横移 · 速度档</small>
+            </button>
+            <button type="button" class="control-tab" id="controlTabArm" role="tab"
+                    aria-selected="false" aria-controls="controlPanelArm" data-control-tab="arm">
+              <span>ARM</span><strong>上肢动作与示教</strong><small>预设动作 · App 示教动作</small>
+            </button>
+          </div>
+
+          <div class="control-tab-stage control-groups">
+            <section class="control-group mode-controls control-tab-panel active" id="controlPanelMode"
+                     role="tabpanel" aria-labelledby="controlTabMode" data-control-panel="mode">
+              <div class="control-group-heading">
+                <div>
+                  <p class="metric-label">FSM</p>
+                  <h3>切换模式</h3>
+                </div>
+                <span class="tag">RPC</span>
+              </div>
+              <div class="control-button-grid">
+                <button class="control-command critical" type="button"
+                        data-category="mode" data-command="zero_torque"
+                        data-label="零力矩模式" data-fsm-id="0" disabled>
+                  <strong>零力矩</strong><span>FSM 0 · 无平衡控制</span>
+                </button>
+                <button class="control-command critical" type="button"
+                        data-category="mode" data-command="damp"
+                        data-label="阻尼模式" data-fsm-id="1" disabled>
+                  <strong>阻尼模式</strong><span>FSM 1 · 保底模式</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="squat"
+                        data-label="位控下蹲" data-fsm-id="2" disabled hidden>
+                  <strong>位控下蹲</strong><span>FSM 2 · 无平衡控制</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="sit"
+                        data-label="位控落座" data-fsm-id="3" disabled hidden>
+                  <strong>位控落座</strong><span>FSM 3 · 无平衡控制</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="stand_up"
+                        data-label="锁定站立" data-fsm-id="4" disabled>
+                  <strong>锁定站立</strong><span>FSM 4 · 无平衡控制</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="start"
+                        data-label="常规运控" data-fsm-id="500" disabled>
+                  <strong>常规运控</strong><span>FSM 500</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="set_fsm_id"
+                        data-argument="501" data-label="常规运控 · 3DoF 腰"
+                        data-fsm-id="501" disabled>
+                  <strong>常规运控 · 3DoF 腰</strong><span>FSM 501</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="set_fsm_id"
+                        data-argument="702" data-label="躺起"
+                        data-fsm-id="702" disabled>
+                  <strong>躺起</strong><span>FSM 702</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="set_fsm_id"
+                        data-argument="706" data-label="平衡下蹲与蹲起"
+                        data-fsm-id="706" disabled>
+                  <strong>平衡下蹲 / 蹲起</strong><span>FSM 706</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="set_fsm_id"
+                        data-argument="801" data-label="走跑运控 801"
+                        data-fsm-id="801" disabled hidden>
+                  <strong>走跑运控</strong><span>FSM 801 · 旧版本</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="set_fsm_id"
+                        data-argument="802" data-label="走跑运控 802"
+                        data-fsm-id="802" disabled>
+                  <strong>走跑运控</strong><span>FSM 802 · 新版 29DoF</span>
+                </button>
+              </div>
+
+              <h4 class="control-subheading" hidden>移动状态操作</h4>
+              <div class="control-button-grid compact" hidden>
+                <button class="control-command" type="button"
+                        data-category="mode" data-command="balance_stand"
+                        data-label="平衡站立" disabled>
+                  <strong>平衡站立</strong><span>BalanceStand · 停止持续踏步</span>
+                </button>
+                <button class="control-command stop-command" type="button"
+                        data-category="mode" data-command="stop_move"
+                        data-label="停止移动指令" disabled>
+                  <strong>停止移动</strong><span>StopMove · 速度指令归零</span>
+                </button>
+              </div>
+
+            </section>
+
+            <section class="control-group motion-controls control-tab-panel" id="controlPanelMotion"
+                     role="tabpanel" aria-labelledby="controlTabMotion" data-control-panel="motion" hidden>
+              <div class="control-group-heading">
+                <div>
+                  <p class="metric-label">MOTION</p>
+                  <h3>机器人运动</h3>
+                </div>
+                <span class="tag">WASD / Q E</span>
+              </div>
+              <div class="motion-control-console">
+                <div class="motion-console-heading">
+                  <div>
+                    <p class="metric-label">DEAD-MAN</p>
+                    <h4>WASD 转向 · Q/E 横移</h4>
+                  </div>
+                  <span class="motion-badge locked" id="motionControlBadge">运动控制未启用</span>
+                </div>
+
+                <div class="motion-safety-note">
+                  W/S 前后、A/D 转向、Q/E 横移。按住移动、松开即停；窗口失焦、切页或通信异常会自动停止。中/高速仅适用于走跑 FSM 801 / 802。
+                </div>
+
+                <div class="motion-console-grid">
+                  <div class="motion-pad" aria-label="机器人移动与转向控制">
+                    <button type="button" class="motion-pad-button forward"
+                            data-motion-key="w" aria-label="向前移动" disabled>
+                      <kbd>W</kbd><span>向前</span>
+                    </button>
+                    <button type="button" class="motion-pad-button turn-left"
+                            data-motion-key="a" aria-label="向左转" disabled>
+                      <kbd>A</kbd><span>左转</span>
+                    </button>
+                    <button type="button" class="motion-pad-stop"
+                            id="motionStopButton" aria-label="立即停止运动">
+                      <strong>STOP</strong><span>立即停止</span>
+                    </button>
+                    <button type="button" class="motion-pad-button turn-right"
+                            data-motion-key="d" aria-label="向右转" disabled>
+                      <kbd>D</kbd><span>右转</span>
+                    </button>
+                    <button type="button" class="motion-pad-button backward"
+                            data-motion-key="s" aria-label="向后移动" disabled>
+                      <kbd>S</kbd><span>向后</span>
+                    </button>
+                    <button type="button" class="motion-pad-button strafe-left"
+                            data-motion-key="q" aria-label="向左平移" disabled>
+                      <kbd>Q</kbd><span>左平移</span>
+                    </button>
+                    <button type="button" class="motion-pad-button strafe-right"
+                            data-motion-key="e" aria-label="向右平移" disabled>
+                      <kbd>E</kbd><span>右平移</span>
+                    </button>
+                  </div>
+
+                  <div class="motion-settings">
+                    <div class="motion-speed-heading">
+                      <span>速度档位</span>
+                      <strong id="motionSpeedValue">低速 · 0.5 m/s</strong>
+                    </div>
+                    <div class="motion-speed-presets" role="group" aria-label="速度档位">
+                      <button type="button" class="motion-speed-button selected"
+                              data-speed-mode="0" data-forward-speed="0.5"
+                              data-lateral-speed="0.20" data-yaw-speed="0.50">
+                        <strong>低速</strong><span>前进 0.5 m/s · 横移 0.20 m/s · 转向 0.50 rad/s</span>
+                      </button>
+                      <button type="button" class="motion-speed-button"
+                              data-speed-mode="1" data-forward-speed="1.0"
+                              data-lateral-speed="0.35" data-yaw-speed="0.80">
+                        <strong>中速</strong><span>前进 1.0 m/s · 横移 0.35 m/s · 转向 0.80 rad/s</span>
+                      </button>
+                      <button type="button" class="motion-speed-button danger"
+                              data-speed-mode="3" data-forward-speed="3.0"
+                              data-lateral-speed="1.00" data-yaw-speed="1.50">
+                        <strong>高速</strong><span>前进 3.0 m/s · 横移 1.00 m/s · 转向 1.50 rad/s</span>
+                      </button>
+                    </div>
+                    <div class="motion-enable-actions">
+                      <button type="button" id="enableMotionControl">启用键盘运动</button>
+                      <button type="button" class="secondary" id="disableMotionControl">停用并停止</button>
+                    </div>
+                    <dl class="motion-live-state">
+                      <div><dt>指令状态</dt><dd id="motionCommandState">已停止</dd></div>
+                      <div><dt>当前方向</dt><dd id="motionDirection">--</dd></div>
+                      <div><dt>目标速度</dt><dd id="motionVelocity">前后 0.00 · 横移 0.00 · 转向 0.00</dd></div>
+                    </dl>
+                    <p id="motionFeedback">先解锁本页控制，再启用键盘运动。</p>
+                  </div>
+                </div>
+              </div>
+
+            </section>
+
+            <section class="control-group arm-controls control-tab-panel" id="controlPanelArm"
+                     role="tabpanel" aria-labelledby="controlTabArm" data-control-panel="arm" hidden>
+              <div class="control-group-heading">
+                <div>
+                  <p class="metric-label">ARM</p>
+                  <h3>上肢预设动作</h3>
+                </div>
+                <span class="tag">需安全空间</span>
+              </div>
+              <div class="arm-action-grid">
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="25" data-label="胸前挥手" disabled>胸前挥手</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="26" data-label="高举挥手" disabled>高举挥手</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="27" data-label="握手" disabled>握手</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="17" data-label="鼓掌" disabled>鼓掌</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="18" data-label="击掌" disabled>击掌</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="19" data-label="拥抱" disabled>拥抱</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="20" data-label="双手比心" disabled hidden>双手比心</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="21" data-label="右手比心" disabled hidden>右手比心</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="22" data-label="双手打 X" disabled>双手打 X</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="11" data-label="双手飞吻" disabled>双手飞吻</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="12" data-label="单手飞吻" disabled>单手飞吻</button>
+                <button class="control-command release-command" type="button" data-category="arm_action" data-command="execute" data-argument="99" data-label="恢复初始手臂位姿" disabled>恢复初始位姿</button>
+              </div>
+
+              <p class="control-limit-note">动作执行前请确认机器人已可靠支撑，周围无人和障碍物。</p>
+
+              <div class="control-subsection-divider" aria-hidden="true"></div>
+              <div class="control-group-heading control-subsection-heading">
+                <div>
+                  <p class="metric-label">TEACH</p>
+                  <h3>App 示教动作</h3>
+                </div>
+                <span class="tag">动态读取列表</span>
+              </div>
+              <div class="teach-action-panel">
+                <div>
+                  <label class="field-label" for="teachActionSelect">选择已录制动作</label>
+                  <select id="teachActionSelect" disabled>
+                    <option value="">等待固件动作列表</option>
+                  </select>
+                </div>
+                <button class="control-command teach-action-execute" id="executeTeachAction"
+                        type="button" data-category="arm_action"
+                        data-command="execute_custom"
+                        data-label="执行示教动作" disabled>
+                  执行所选动作
+                </button>
+              </div>
+              <p class="teach-action-hint" id="teachActionHint">动作名称来自固件 GetActionList，并区分大小写。</p>
+              <button class="control-command stop-custom" type="button"
+                      data-category="arm_action" data-command="stop_custom"
+                      data-label="停止示教动作" disabled>
+                停止示教并回到初始位置
+              </button>
+              <p class="control-limit-note">连续速度、调试模式、全身 LowCmd 和灵巧手原始位置/力矩接口保持关闭，避免持续运动误触。</p>
+            </section>
+          </div>
+
+          <details class="raw-details control-raw">
+            <summary>查看控制服务与固件动作列表原始状态</summary>
+            <pre id="controlRaw">等待数据…</pre>
+          </details>
+        </article>
+
+        <article class="perception-workspace" id="sensor-visualization" data-workspace="perception" hidden>
+          <div class="workspace-heading perception-heading">
+            <div><p class="eyebrow">PERCEPTION</p><h2>建图导航与摄像头</h2></div>
+            <div class="perception-heading-actions">
+              <p>Unitree SLAM 点云、位姿与任务状态实时显示；地图点击选择目标后仍需二次确认。</p>
+            </div>
+          </div>
+          <div class="perception-grid">
+            <section class="panel map-panel">
+              <div class="slam-workflow-head">
+                <div class="slam-title-line">
+                  <p class="eyebrow">SLAM / NAV</p>
+                  <h3>SLAM 建图与导航</h3>
+                </div>
+                <div class="slam-head-actions">
+                  <span class="perception-badge pending" id="slamStatusBadge">等待 SLAM</span>
+                  <button type="button" id="toggleMapWorkspace" class="map-expand-toggle" aria-pressed="false" aria-label="放大地图工作区" title="放大地图工作区">⛶ 放大地图区</button>
+                </div>
+              </div>
+
+              <div class="slam-map-context">
+                <label class="map-name-field">
+                  <span>地图保存 / 加载名称</span>
+                  <input id="slamMapName" value="test1.pcd" maxlength="10" pattern="test(?:[1-9]|10)\.pcd" title="仅允许 test1.pcd ~ test10.pcd" />
+                </label>
+                <div class="mapping-control-group slam-control-cluster" aria-label="地图任务操作">
+                  <span class="control-group-label">地图任务</span>
+                  <button type="button" class="primary-action" id="startMapping">开始建图</button>
+                  <button type="button" id="finishMapping">保存地图</button>
+                  <button type="button" id="loadMap">加载地图</button>
+                  <button type="button" id="downloadMap" title="优先下载定位时 rt/unitree/slam_relocation/global_map 发布的全局 PCD；不可用时回退 Web 缓存">下载地图</button>
+                  <button type="button" id="exitMap" class="danger-outline" title="退出当前地图并关闭 SLAM 定位；退出后导航会被锁定">退出地图</button>
+                </div>
+                <div class="map-localization-controls slam-control-cluster" aria-label="重定位操作">
+                  <span class="control-group-label">重定位</span>
+                  <span class="pose-summary" id="initialPoseSummary">X: -- · Y: -- · W: --</span>
+                  <button type="button" id="initialPoseMode" class="map-tool" data-pose-tool="initial" disabled title="在地图按住并拖动选择初始位姿和朝向；松开后自动进入地图加载与重定位确认">地图选初始位姿</button>
+                </div>
+              </div>
+
+              <div class="pose-storage-fields" hidden>
+                <input id="initialX" type="number" value="0" />
+                <input id="initialY" type="number" value="0" />
+                <input id="initialYaw" type="number" value="0" />
+                <input id="goalX" type="number" value="0" />
+                <input id="goalY" type="number" value="0" />
+                <input id="goalYaw" type="number" value="0" />
+              </div>
+
+              <div class="map-toolbar" aria-label="导航与本地导航任务工具栏">
+                <div class="map-navigation-controls slam-control-cluster" aria-label="导航操作">
+                  <span class="control-group-label">导航</span>
+                  <div class="navigation-mode-toggle" aria-label="导航模式">
+                    <button type="button" id="singleNavigationMode" class="active" aria-pressed="true">单点</button>
+                    <button type="button" id="multiNavigationMode" aria-pressed="false">多点</button>
+                  </div>
+                  <span class="pose-summary" id="goalPoseSummary">X: -- · Y: -- · W: --</span>
+                  <button type="button" id="goalPickMode" class="goal-tool map-tool" data-pose-tool="goal" title="像 RViz 一样：在地图按住并拖动选择目标朝向">地图选目标</button>
+                  <button type="button" id="clearWaypoints" hidden>清空多点</button>
+                  <button type="button" class="primary-navigation" id="sendNavigationGoal" disabled>开始导航</button>
+                  <button type="button" id="pauseNavigation">暂停</button>
+                  <button type="button" id="resumeNavigation">继续</button>
+                  <button type="button" id="cancelNavigation" class="danger-outline">取消</button>
+                </div>
+                <div class="navigation-task-controls slam-control-cluster" aria-label="本地导航任务">
+                  <span class="toolbar-label">本地任务</span>
+                  <input id="navigationTaskName" maxlength="40" placeholder="输入任务名，如：充电区" aria-label="导航任务名称" />
+                  <button type="button" id="saveNavigationTask" title="按当前名称保存；名称与选中任务不同会自动创建新任务">保存任务</button>
+                  <button type="button" id="renameNavigationTask" title="仅重命名当前选中的本地任务">重命名</button>
+                  <button type="button" id="runNavigationTask" class="primary-navigation" title="加载选中任务并进入导航安全确认，不需要重新在地图选点">导航已选</button>
+                  <button type="button" id="deleteNavigationTask" class="danger-outline" title="删除选中的本地导航任务">删除</button>
+                  <select id="navigationTaskList" aria-label="本地已保存导航任务" title="选择已保存任务即可把单点或多点目标恢复到地图，不需要重新选点"></select>
+                </div>
+              </div>
+
+              <div class="map-canvas" id="map-view" aria-label="Unitree SLAM 三维点云地图">
+                <div class="map-loading" id="mapLoading"><strong>正在连接点云</strong><span>等待 /api/perception/frame</span></div>
+                <div class="map-help" id="mapHelp">平移：左键按住拖动平移地图 · 滚轮缩放；方向：长按 ↶ / ↷ 调整地图朝向；右键无地图操作。G1 URDF + 蓝色箭头=机器人，绿色箭头=初始位姿，黄色箭头=导航目标。</div>
+                <div class="map-overlay-topbar">
+                  <div class="slam-layer-legend" aria-label="Unitree SLAM 实际显示内容">
+                    <button type="button" class="active" data-native-layer="global" title="显示或隐藏 SLAM 累积地图和蓝色体素障碍"><i class="legend-map"></i><span><strong>累积地图</strong><small>全局点云 + 体素障碍</small></span></button>
+                    <button type="button" class="active" data-native-layer="live" title="显示或隐藏 Mid-360 当前点云"><i class="legend-live"></i><span><strong>当前雷达</strong><small>实时点云 · 高度着色</small></span></button>
+                    <span class="wifi-stream-badge" id="wifiStreamBadge">Wi-Fi 紧凑流</span>
+                  </div>
+                  <div class="map-view-controls" aria-label="地图浏览与视图操作">
+                    <span class="map-view-title">视角</span>
+                    <button type="button" id="mapPanMode" class="map-view-action active" data-view-tool="pan" aria-pressed="true" title="平移：鼠标左键按住拖动地图；滚轮缩放"><span aria-hidden="true">✥</span><small>平移</small></button>
+                    <button type="button" id="mapRotateMode" class="map-view-action" data-view-tool="rotate" aria-pressed="false" title="旋转：鼠标左键按住拖动视角；滚轮缩放"><span aria-hidden="true">◇</span><small>旋转</small></button>
+                    <button type="button" id="mapHeadingLeft" class="map-view-action map-heading-action" aria-label="地图朝向左转" title="地图朝向左转；鼠标左键长按可连续调整"><span aria-hidden="true">↶</span><small>左转</small></button>
+                    <button type="button" id="mapHeadingRight" class="map-view-action map-heading-action" aria-label="地图朝向右转" title="地图朝向右转；鼠标左键长按可连续调整"><span aria-hidden="true">↷</span><small>右转</small></button>
+                    <span class="map-view-zoom" aria-label="缩放">
+                      <button type="button" id="mapZoomOut" class="map-view-icon" aria-label="缩小地图" title="缩小地图；也可向下滚动鼠标滚轮">−</button>
+                      <button type="button" id="mapZoomIn" class="map-view-icon" aria-label="放大地图" title="放大地图；也可向上滚动鼠标滚轮">＋</button>
+                    </span>
+                    <button type="button" id="mapFit" class="map-view-action" title="让当前点云自动适配视野"><span aria-hidden="true">⌗</span><small>全图</small></button>
+                    <button type="button" id="mapLocate" class="map-view-action" title="把视角中心移到机器人当前位置"><span aria-hidden="true">◎</span><small>机器人</small></button>
+                    <button type="button" id="mapTopView" class="map-view-action" aria-pressed="true" title="俯视地图"><span aria-hidden="true">▦</span><small>俯视</small></button>
+                    <button type="button" id="mapThreeView" class="map-view-action" aria-pressed="false" title="三维观察点云"><span aria-hidden="true">◇</span><small>三维</small></button>
+                  </div>
+                </div>
+                <div class="navigation-obstacle-alert" id="navigationObstacleAlert" role="alert" aria-live="assertive" hidden>
+                  <strong>当前导航已被障碍物挡住</strong>
+                  <span>请移除机器人前方障碍物，确认通道清空后导航才能继续。</span>
+                </div>
+                <div class="navigation-progress map-navigation-progress"><span id="navigationProgressBar"></span></div>
+              </div>
+
+              <div class="slam-status-grid">
+                <div><span>当前阶段</span><strong id="slamMode">--</strong></div>
+                <div><span>机器人位姿</span><strong id="slamPose">--</strong></div>
+                <div><span>实时 / 累积点</span><strong id="slamPointCount">--</strong></div>
+                <div><span>环境 / 任务</span><strong id="slamTaskState">--</strong></div>
+              </div>
+
+              <div class="slam-runtime-actions">
+                <button type="button" class="danger-outline" id="stopSlam">关闭 SLAM 任务</button>
+                <p class="perception-feedback" id="perceptionFeedback">等待 SLAM 状态；生产服务默认已启用真实导航，加载地图并完成重定位后即可选择目标。</p>
+              </div>
+              <details class="raw-details perception-raw">
+                <summary>查看 SLAM 接口与 DDS 原始状态</summary>
+                <pre id="perceptionRaw">等待数据…</pre>
+              </details>
+            </section>
+            <aside class="camera-column">
+              <section class="panel camera-panel" id="rgbCameraPanel">
+                <div class="card-heading camera-integrated-heading">
+                  <div><p class="eyebrow">RGB</p><h3>USB / D435i 彩色画面</h3></div>
+                  <div class="camera-inline-controls">
+                    <span class="perception-badge pending" id="cameraServiceBadge">RGB 未启动</span>
+                    <label class="camera-device-field"><span>手动覆盖</span><input id="rgbCameraSource" placeholder="留空自动检测" maxlength="13" aria-label="RGB 摄像头设备，留空自动检测" /></label>
+                    <button type="button" class="primary-action" id="startV4l2Camera">自动检测并启动</button>
+                    <button type="button" class="danger-outline" id="stopCamera">停止</button>
+                    <button type="button" class="icon-button camera-fullscreen" data-camera-fullscreen="rgbCameraViewport" aria-label="全屏">⛶</button>
+                  </div>
+                </div>
+                <div class="camera-viewport" id="rgbCameraViewport"><img id="rgbCameraImage" alt="机器人 RGB 摄像头画面" /><div class="camera-empty" id="rgbCameraEmpty"><div class="camera-reticle"></div><strong>等待 RGB 画面</strong><span>V4L2 · MJPEG/JPEG</span></div></div>
+                <div class="camera-status" id="rgbCameraStatus" hidden><span class="status-dot muted-dot"></span><strong>未配置</strong><small>等待自动检测</small></div>
+              </section>
+              <section class="panel camera-panel" id="depthCameraPanel">
+                <div class="card-heading camera-integrated-heading">
+                  <div><p class="eyebrow">DEPTH</p><h3>深度 / 红外画面</h3></div>
+                  <div class="camera-inline-controls">
+                    <span class="perception-badge pending" id="depthCameraBadge">深度未启动</span>
+                    <label class="camera-device-field"><span>手动覆盖</span><input id="depthCameraSource" placeholder="留空自动检测" maxlength="13" aria-label="深度摄像头设备，留空自动检测" /></label>
+                    <button type="button" class="primary-action" id="startRealSenseCamera">自动检测 RGB+深度</button>
+                    <button type="button" class="danger-outline" id="stopDepthCamera">停止</button>
+                    <button type="button" class="icon-button camera-fullscreen" data-camera-fullscreen="depthCameraViewport" aria-label="全屏">⛶</button>
+                  </div>
+                </div>
+                <div class="camera-viewport secondary-camera" id="depthCameraViewport"><img id="depthCameraImage" alt="机器人深度摄像头伪彩画面" /><div class="camera-empty" id="depthCameraEmpty"><div class="camera-reticle"></div><strong>等待深度画面</strong><span>0–5 m · TURBO COLORMAP</span></div></div>
+                <div class="camera-status" id="depthCameraStatus" hidden><span class="status-dot muted-dot"></span><strong>未配置</strong><small>等待自动检测</small></div>
+              </section>
+              <span id="robotViewerConsoleSlot" hidden></span>
+              <p class="perception-feedback camera-inline-feedback" id="cameraFeedback" hidden>启动时自动暂停 App 第一人称画面；停止后仅恢复由本 Web 暂停的服务。</p>
+            </aside>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <footer>
+      <span>G1 WEB CONTROL · SAFETY INTERLOCKED</span>
+      <span id="footerStatus">等待 WebSocket</span>
+    </footer>
+
+    <div class="stale-banner" id="staleBanner" hidden>
+      遥测连接已中断，当前显示最后一次收到的数据
+    </div>
+
+    <dialog class="workspace-drawer" id="runDetailsDrawer" aria-labelledby="runDetailsTitle">
+      <div class="workspace-drawer-shell">
+        <header class="workspace-drawer-header">
+          <div><p class="eyebrow">OVERVIEW</p><h2 id="runDetailsTitle">运行详情</h2></div>
+          <button class="secondary compact-button" type="button" data-close-drawer="runDetailsDrawer">返回工作台</button>
+        </header>
+        <div class="workspace-drawer-body" id="runDetailsDrawerBody"></div>
+      </div>
+    </dialog>
+
+    <dialog class="workspace-drawer" id="voiceWorkspaceDrawer" aria-label="完整语音面板">
+      <div class="workspace-drawer-shell">
+        <header class="workspace-drawer-header">
+          <div><p class="eyebrow">VOICE</p><strong>ASR、TTS 与服务原始状态</strong></div>
+          <button class="secondary compact-button" type="button" data-close-drawer="voiceWorkspaceDrawer">返回工作台</button>
+        </header>
+        <div class="workspace-drawer-body" id="voiceWorkspaceDrawerBody"></div>
+      </div>
+    </dialog>
+
+    <dialog id="customerConfigFileDialog" class="control-dialog customer-config-file-dialog">
+      <form method="dialog" id="customerConfigFileForm">
+        <p class="eyebrow">CUSTOMER CONFIG</p>
+        <h3>客户互动配置文件</h3>
+        <p class="dialog-warning">直接编辑机器人配置文件映射。API Key 默认显示为掩码；保持掩码不变会保留原 Key，填写新值会覆盖，留空会清除。</p>
+        <label class="customer-config-file-path">
+          <span class="field-label">文件路径</span>
+          <input id="customerConfigFilePath" readonly />
+        </label>
+        <label>
+          <span class="field-label">JSON 内容</span>
+          <textarea id="customerConfigFileEditor" rows="20" spellcheck="false"></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" class="secondary" id="closeCustomerConfigFile">关闭</button>
+          <button type="button" class="secondary" id="reloadCustomerConfigFile">重新加载</button>
+          <button type="button" id="saveCustomerConfigFile" disabled>保存文件</button>
+        </div>
+        <p class="control-dialog-feedback" id="customerConfigFileFeedback"></p>
+      </form>
+    </dialog>
+
+    <dialog id="controlConfirmDialog" class="control-dialog">
+      <form method="dialog" id="controlConfirmForm">
+        <p class="eyebrow">SAFETY</p>
+        <h3 id="controlConfirmTitle">确认控制指令</h3>
+        <p class="dialog-warning" id="controlConfirmWarning"></p>
+        <div class="dialog-confirmation-box">
+          <strong>点击确认后将立即向机器人发送一次指令</strong>
+          <span>请确认机器人已经可靠支撑，周围没有人员和障碍物。</span>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" class="secondary" id="cancelControlCommand">取消</button>
+          <button type="submit" class="danger-submit" id="submitControlCommand">确认并执行一次</button>
+        </div>
+        <p class="control-dialog-feedback" id="controlDialogFeedback"></p>
+      </form>
+    </dialog>
+
+    <dialog id="perceptionConfirmDialog" class="control-dialog">
+      <form method="dialog" id="perceptionConfirmForm">
+        <p class="eyebrow">SLAM SAFETY</p>
+        <h3 id="perceptionConfirmTitle">确认 SLAM 指令</h3>
+        <p class="dialog-warning" id="perceptionConfirmWarning"></p>
+        <div class="dialog-confirmation-box">
+          <strong id="perceptionConfirmSafetyTitle">导航目标会让机器人自主移动</strong>
+          <span id="perceptionConfirmSafetyDetail">确认雷达与定位正常，机器人可靠支撑，周围人员和障碍物已清空，且 App 没有同时使用导航。</span>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" class="secondary" id="cancelPerceptionCommand">取消</button>
+          <button type="submit" class="danger-submit" id="submitPerceptionCommand">确认并执行一次</button>
+        </div>
+        <p class="control-dialog-feedback" id="perceptionDialogFeedback"></p>
+      </form>
+    </dialog>
+
+    <dialog id="jointDebugConfirmDialog" class="control-dialog">
+      <form method="dialog" id="jointDebugConfirmForm">
+        <p class="eyebrow">MOTOR DEBUG SAFETY</p>
+        <h3 id="jointDebugConfirmTitle">确认关节调试指令</h3>
+        <p class="dialog-warning" id="jointDebugConfirmWarning"></p>
+        <div class="dialog-confirmation-box">
+          <strong>这是电机位置控制，机器人可能立即运动</strong>
+          <span>必须可靠悬挂，清空人员和障碍物，并手持遥控器随时使用 L2 + B 急停。</span>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" class="secondary" id="jointDebugCancel">取消</button>
+          <button type="submit" class="danger-submit" id="jointDebugConfirm">确认并执行</button>
+        </div>
+        <p class="control-dialog-feedback" id="jointDebugFeedback"></p>
+      </form>
+    </dialog>
+
+    <script src="/i18n.js"></script>
+    <script src="/app.js"></script>
+    <script type="module" src="/workspace.js"></script>
+    <script type="module" src="/robot-viewer.js"></script>
+    <script type="module" src="/joint-debug.js"></script>
+    <script type="module" src="/perception.js"></script>
+  </body>
+</html>
