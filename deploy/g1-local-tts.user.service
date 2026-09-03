@@ -1,0 +1,16 @@
+[Unit]
+Description=UniRoboGui local Kokoro TTS service (user)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/unitree/UniRoboGui
+Environment=HOME=/home/unitree
+ExecStart=/home/unitree/unitree_interface/tts_kokoro/bin/python /home/unitree/UniRoboGui/scripts/kokoro_tts_server.py --bind 127.0.0.1 --port 8765 --model-dir /home/unitree/unitree_interface/tts_models/kokoro-int8-multi-lang-v1_1 --sid 3 --speed 1.2 --threads 8
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+KillSignal=SIGINT
+
+[Install]
+WantedBy=default.target

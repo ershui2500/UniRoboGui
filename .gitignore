@@ -1,0 +1,42 @@
+# Developer-only agent instructions stay local and must never be published.
+/AGENTS.md
+
+# Robot snapshots and mounted/live workspaces stay local.
+**/.robot-backups/
+/.robot-sync/
+/.robot-workspace/
+/.unirobogui-managed
+
+# Local documentation mirrors are not part of the release.
+/G1产品使用/
+/G1开发帮助/
+/G1开发文档/
+/G1参考资料/
+/ROBOT_BACKUP_MANIFEST.md
+
+# Generated build, test and runtime state.
+**/build/
+**/Testing/
+**/CMakeFiles/
+**/logs/
+/config/customer_voice.json
+/config/customer_voice.json.tmp
+/config/joint_teach_actions.json
+/config/joint_teach_actions.json.tmp
+/g1_web_server.log
+/g1_web_server.pid
+**/__pycache__/
+*.py[cod]
+*.log
+*.pid
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.token
+
+# Editor and OS metadata.
+.DS_Store
+*.swp
+*~
