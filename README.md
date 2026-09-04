@@ -1,14 +1,14 @@
-# UniRoboGui
+# UniRoboGui — Unitree G1 Web GUI / SDK2 二次开发工作台
 
 **简体中文** | [English](README.en.md)
 
-> **面向 Unitree G1 EDU 的一站式二次开发与调试平台** —— 将分散在 Unitree SDK2 中的机器人状态、感知、控制、SLAM、关节、语音等能力统一接入、可视化和操作，让开发者不用先重复搭建调试工具，就能更快进入机器人功能验证与业务开发。
+> **面向 Unitree G1 EDU 人形机器人的开源 Web GUI、SDK2 Dashboard 与二次开发 / 调试平台** —— 将机器人遥测、控制、感知、SLAM、导航、关节、相机、语音和大模型能力统一到浏览器工作台中。
 
-Unitree SDK2 提供了丰富的底层能力，但在实际项目中，这些能力分布在不同的数据通道、服务接口、示例程序和传感器链路中。客户在开始真正的二次开发之前，往往需要先自行组合接口、编写测试程序、确认机器人状态、调通感知与控制链路，再为各个模块分别准备可视化和调试工具。
+**UniRoboGui** 直接运行在 **Unitree G1 PC2** 上，使用 **C++17 + Unitree SDK2 DDS** 连接机器人能力，并通过 Web 页面提供实时状态、控制、可视化和调试入口。它适合希望快速搭建 **Unitree G1 Web interface / robot dashboard**、验证 SDK2 接口，或继续开发上层机器人应用的开发者。
 
-**UniRoboGui 就是为解决这部分重复集成和调试工作而设计的。** 项目以 **C++17 Web 服务直接运行在机器人 PC2**，以 **Unitree SDK2 DDS** 作为核心通信链路，把原本分散的 SDK 能力整理成一套统一的 Web 开发工作台。开发者通过浏览器即可观察机器人、验证接口、调试功能和执行常用操作，并在这套已经打通的数据与控制基础上继续开发自己的机器人应用。
+Unitree SDK2 提供了丰富的底层能力，但真实项目通常还需要自行组合数据通道、服务接口、示例程序和传感器链路。UniRoboGui 将这些重复集成工作整理成可观察、可调试、可复用的工程化基础，让开发者更快从“把 SDK 调通”进入机器人功能验证和业务开发。
 
-它不是对 Unitree SDK2 的替代，而是建立在 SDK2 之上的 **可观察、可调试、可复用的工程化开发底座**：减少重复的接口拼接和调试工作，让“先把 SDK 调通”更快过渡到“基于机器人能力继续开发”。
+典型使用场景包括 **Unitree G1 Web GUI、Unitree SDK2 DDS telemetry / robot control、SLAM mapping & navigation、Livox Mid-360 point cloud、Intel RealSense D435i RGB / depth、29DoF URDF / joint debugging**，以及 **ASR / TTS / LLM / OpenAI-compatible API** 集成。
 
 ### 核心能力
 
@@ -357,7 +357,6 @@ Web 页面本身没有身份认证，因此不应暴露到不可信网络或公�
 UniRoboGui/
 ├── README.md                   # 中文 README
 ├── README.en.md                # English README
-├── AGENTS.md
 ├── LICENSE
 ├── VERSION
 ├── CMakeLists.txt
@@ -490,7 +489,6 @@ D435i 的“启动 RGB + 深度”会优先使用 librealsense2 与机器人现�
 
 - [依赖安装与离线部署](docs/deployment-dependencies.md)
 - [第三方静态资产声明](web/assets/THIRD_PARTY_NOTICES.md)
-- [项目开发与安全规则](AGENTS.md)
 
 ### 7.2 Unitree 官方资料
 

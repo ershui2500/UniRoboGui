@@ -1,14 +1,14 @@
-# UniRoboGui
+# UniRoboGui — Unitree G1 Web GUI & SDK2 Robot Development Dashboard
 
 [简体中文](README.md) | **English**
 
-> **An integrated development and debugging platform for Unitree G1 EDU** — it brings the robot state, perception, control, SLAM, joint, and voice capabilities scattered across Unitree SDK2 into one observable and operable workspace, so developers can spend less time rebuilding debugging tools and move faster into robot feature validation and application development.
+> **An open-source Web GUI, SDK2 dashboard, and development/debugging platform for the Unitree G1 EDU humanoid robot** — bringing robot telemetry, control, perception, SLAM, navigation, joints, cameras, voice, and LLM capabilities into one browser workspace.
 
-Unitree SDK2 provides a wide range of low-level robot capabilities, but in a real project those capabilities are spread across different data channels, service APIs, example programs, and sensor pipelines. Before application development can begin, customers often have to combine these interfaces themselves, write test programs, verify robot state, bring up perception and control paths, and prepare separate visualization or debugging tools for each subsystem.
+**UniRoboGui** runs directly on the **Unitree G1 PC2** and uses **C++17 + Unitree SDK2 DDS** to expose robot capabilities through a browser-based interface for real-time monitoring, control, visualization, and debugging. It is intended for developers looking for a **Unitree G1 Web interface / robot dashboard**, a faster way to validate SDK2 APIs, or a reusable foundation for higher-level robot applications.
 
-**UniRoboGui is designed to remove that repeated integration and debugging work.** It runs as a **C++17 Web service directly on the robot PC2** and uses **Unitree SDK2 DDS** as its core communication path, organizing the otherwise distributed SDK capabilities into one Web-based development workspace. From a browser, developers can observe the robot, verify interfaces, debug functions, execute common operations, and then continue building their own robot applications on top of an already connected data and control foundation.
+Unitree SDK2 provides rich low-level capabilities, but real projects still need to combine data channels, service APIs, examples, and sensor pipelines. UniRoboGui turns that repeated integration work into an observable, debuggable, and reusable engineering layer so developers can move faster from “getting the SDK working” to robot feature validation and application development.
 
-UniRoboGui does not replace Unitree SDK2. It provides an **observable, debuggable, and reusable engineering layer on top of SDK2**, reducing repetitive interface integration and shortening the path from “getting the SDK working” to “building with the robot”.
+Typical use cases include a **Unitree G1 Web GUI, Unitree SDK2 DDS telemetry / robot control, SLAM mapping & navigation, Livox Mid-360 point-cloud visualization, Intel RealSense D435i RGB / depth streaming, 29-DoF URDF / joint debugging**, and **ASR / TTS / LLM / OpenAI-compatible API** integration.
 
 ### Core capabilities
 
@@ -362,7 +362,6 @@ Robot firmware, SDK2, LiDAR services, device nodes, and network addresses can di
 UniRoboGui/
 ├── README.md                   # Chinese documentation
 ├── README.en.md                # English documentation
-├── AGENTS.md
 ├── LICENSE
 ├── VERSION
 ├── CMakeLists.txt
@@ -499,7 +498,6 @@ Verify the API Base URL, model identifier, and authentication against the custom
 - [Chinese README](README.md)
 - [Dependency installation and offline deployment](docs/deployment-dependencies.md)
 - [Third-party static asset notices](web/assets/THIRD_PARTY_NOTICES.md)
-- [Development and safety rules](AGENTS.md)
 
 ### 7.2 Unitree references
 
