@@ -277,7 +277,7 @@ prepare_remote_target "/home/unitree/librealsense" "librealsense2" true "realsen
 
 step "7/8 通过 SSH/rsync 传输项目和全部 GitHub/PyPI 资源" "7/8 Transfer the project and GitHub/PyPI resources via SSH/rsync"
 help_customer "传输过程中如果断线，请检查电脑与机器人网线/交换机连接；重新运行脚本会继续同步，不需要重新下载全部资源。" "If the transfer disconnects, check the Ethernet/switch connection between the computer and robot. Rerunning continues synchronization without redownloading all resources."
-ssh "$ROBOT" "mkdir -p /home/unitree/UniRoboGui /home/unitree/unitree_sdk2 /home/unitree/librealsense /home/unitree/unitree_interface/tts_models /home/unitree/unirobogui-wheelhouse"
+ssh "$ROBOT" "mkdir -p /home/unitree/UniRoboGui/tts_models /home/unitree/unitree_sdk2 /home/unitree/librealsense /home/unitree/unirobogui-wheelhouse"
 
 info "传输 UniRoboGui（不传 .git；保留机器人已有客户配置和 build 目录）..." "Transferring UniRoboGui (excluding .git while preserving robot customer configuration and build directory)..."
 project_delete_args=()
@@ -299,7 +299,7 @@ info "传输最新 librealsense2..." "Transferring the latest librealsense2..."
 rsync -az --delete --info=progress2 --exclude '/build-g1/'   "$REALSENSE_CACHE/" "$ROBOT:/home/unitree/librealsense/"
 
 info "传输 Kokoro 模型..." "Transferring the Kokoro model..."
-rsync -az --info=progress2 "$MODEL_ARCHIVE"   "$ROBOT:/home/unitree/unitree_interface/tts_models/${MODEL_NAME}.tar.bz2"
+rsync -az --info=progress2 "$MODEL_ARCHIVE"   "$ROBOT:/home/unitree/UniRoboGui/tts_models/${MODEL_NAME}.tar.bz2"
 
 info "传输 G1 AArch64/Python 3.8 wheelhouse..." "Transferring the G1 AArch64/Python 3.8 wheelhouse..."
 rsync -az --info=progress2 "$WHEELHOUSE/"   "$ROBOT:/home/unitree/unirobogui-wheelhouse/"

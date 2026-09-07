@@ -457,7 +457,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
         "--model-dir",
-        default="/home/unitree/unitree_interface/tts_models/kokoro-int8-multi-lang-v1_1",
+        default="/home/unitree/UniRoboGui/tts_models/kokoro-int8-multi-lang-v1_1",
     )
     parser.add_argument("--sid", type=int, default=48)
     parser.add_argument("--speed", type=float, default=1.0)
