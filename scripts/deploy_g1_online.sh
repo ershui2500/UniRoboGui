@@ -301,7 +301,7 @@ step "7/8 编译、测试并安装 UniRoboGui" "7/8 Build, test, and install Uni
 [[ -f "$PROJECT_DIR/scripts/install_g1.sh" ]] || die "缺少 scripts/install_g1.sh。" "Missing scripts/install_g1.sh."
 if $OFFLINE_MODE; then
   [[ -n "$WHEELHOUSE" && -d "$WHEELHOUSE" ]] || die "离线部署缺少 Kokoro wheelhouse：$WHEELHOUSE" "Offline deployment is missing the Kokoro wheelhouse: $WHEELHOUSE"
-  [[ -s /home/unitree/unitree_interface/tts_models/kokoro-int8-multi-lang-v1_1.tar.bz2 ]] ||
+  [[ -s /home/unitree/UniRoboGui/tts_models/kokoro-int8-multi-lang-v1_1.tar.bz2 ]] ||
     die "离线部署缺少 Kokoro 模型压缩包。" "Offline deployment is missing the Kokoro model archive."
   export KOKORO_WHEELHOUSE="$WHEELHOUSE"
   info "Kokoro 将只使用联网电脑传入的 wheelhouse：$WHEELHOUSE" "Kokoro will use only the wheelhouse transferred by the online computer: $WHEELHOUSE"

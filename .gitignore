@@ -23,6 +23,8 @@
 /config/customer_voice.json.tmp
 /config/joint_teach_actions.json
 /config/joint_teach_actions.json.tmp
+/tts_kokoro/
+/tts_models/
 /g1_web_server.log
 /g1_web_server.pid
 **/__pycache__/

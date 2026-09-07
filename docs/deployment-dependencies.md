@@ -168,9 +168,9 @@ rsync -az --exclude='/.git/' --exclude='/build/' \
   UniRoboGui/ unitree@192.168.123.164:/home/unitree/UniRoboGui/
 rsync -az unitree_sdk2/ unitree@192.168.123.164:/home/unitree/unitree_sdk2/
 rsync -az librealsense/ unitree@192.168.123.164:/home/unitree/librealsense/
-ssh unitree@192.168.123.164 'mkdir -p /home/unitree/unitree_interface/tts_models'
+ssh unitree@192.168.123.164 'mkdir -p /home/unitree/UniRoboGui/tts_models'
 scp kokoro-int8-multi-lang-v1_1.tar.bz2 \
-  unitree@192.168.123.164:/home/unitree/unitree_interface/tts_models/
+  unitree@192.168.123.164:/home/unitree/UniRoboGui/tts_models/
 ```
 
 回到 G1 PC2 后，按本文第 1～4 节执行；第 2、3 节跳过 clone 和 pull，从

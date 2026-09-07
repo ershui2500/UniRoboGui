@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${script_dir}/deploy_i18n.sh"
 
-ROOT="${UNITREE_INTERFACE_ROOT:-/home/unitree/unitree_interface}"
+ROOT="${UNIROBOGUI_ROOT:-/home/unitree/UniRoboGui}"
 PYTHON="${PYTHON:-python3}"
 VENV="${KOKORO_VENV:-${ROOT}/tts_kokoro}"
 MODEL_ROOT="${KOKORO_MODEL_ROOT:-${ROOT}/tts_models}"

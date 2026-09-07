@@ -127,7 +127,7 @@ Download on a computer that can access GitHub, then transfer over the 192.168.12
   - project -> /home/unitree/UniRoboGui
   - latest unitree_sdk2 source -> /home/unitree/unitree_sdk2
   - librealsense source (only if the robot lacks usable librealsense2) -> /home/unitree/librealsense
-  - kokoro-int8-multi-lang-v1_1.tar.bz2 -> /home/unitree/unitree_interface/tts_models/
+  - kokoro-int8-multi-lang-v1_1.tar.bz2 -> /home/unitree/UniRoboGui/tts_models/
 See docs/deployment-dependencies.md for copy-ready offline transfer commands.
 EOF
   else
@@ -137,7 +137,7 @@ EOF
   - 项目目录 -> /home/unitree/UniRoboGui
   - unitree_sdk2 最新源码 -> /home/unitree/unitree_sdk2
   - librealsense 源码（仅机器人缺少可用 librealsense2 时需要）-> /home/unitree/librealsense
-  - kokoro-int8-multi-lang-v1_1.tar.bz2 -> /home/unitree/unitree_interface/tts_models/
+  - kokoro-int8-multi-lang-v1_1.tar.bz2 -> /home/unitree/UniRoboGui/tts_models/
 docs/deployment-dependencies.md 给出了可直接复制的离线传包命令。
 EOF
   fi
@@ -494,7 +494,7 @@ if ! ${without_realsense}; then
 fi
 
 if ! ${without_kokoro}; then
-  UNITREE_INTERFACE_ROOT=/home/unitree/unitree_interface \
+  UNIROBOGUI_ROOT=/home/unitree/UniRoboGui \
     bash "${project_dir}/scripts/install_kokoro_tts.sh"
 else
   warn "已跳过 Kokoro 安装；Web 语音仍可回退使用 Unitree 原生 TTS。" "Kokoro installation skipped; Web voice can still fall back to Unitree native TTS."
