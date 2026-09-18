@@ -12,6 +12,12 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
 pkg_check_modules(ZMQ QUIET libzmq)
 find_package(unitree_sdk2 CONFIG REQUIRED)
+find_path(UNITREE_SDK2_R1_INCLUDE_DIR
+    unitree/robot/r1/audio/audio_client.hpp
+    HINTS /home/unitree/unitree_sdk2/include)
+if(NOT UNITREE_SDK2_R1_INCLUDE_DIR)
+    message(FATAL_ERROR "Current Unitree SDK2 R1 locomotion/audio headers are required")
+endif()
 find_package(CURL QUIET)
 find_package(OpenCV QUIET COMPONENTS core imgproc imgcodecs videoio)
 find_package(realsense2 QUIET)
@@ -26,13 +32,23 @@ endif()
 add_library(g1_web_core
     src/camera_service.cpp
     src/control_service.cpp
+    src/device_capability.cpp
+    src/g1_audio_capability.cpp
+    src/g1_device_capability.cpp
+    src/g1_joint_debug_policy.cpp
+    src/g1_locomotion_adapter.cpp
     src/g1_model_catalog.cpp
     src/http_server.cpp
     src/json_serializer.cpp
     src/joint_debug_control.cpp
     src/joint_names.cpp
     src/perception_service.cpp
+    src/r1_audio_capability.cpp
+    src/r1_device_capability.cpp
+    src/r1_joint_debug_policy.cpp
+    src/r1_locomotion_adapter.cpp
     src/ros_navigation_bridge.cpp
+    src/robot_registry.cpp
     src/snapshot_store.cpp
     src/static_assets.cpp
     src/unitree_data_source.cpp
@@ -42,6 +58,7 @@ add_library(g1_web_core
 target_include_directories(g1_web_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${UNITREE_SDK2_R1_INCLUDE_DIR}
     PRIVATE
         ${JSONCPP_INCLUDE_DIRS}
 )
@@ -111,4 +128,6 @@ if(BUILD_TESTING)
     add_test(NAME g1_web_customer_config_http_tests
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_customer_config_http.py
                      $<TARGET_FILE:g1_web_server> ${CMAKE_CURRENT_SOURCE_DIR}/web)
+    add_test(NAME unirobo_deploy_cli_tests
+             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deploy_cli.sh)
 endif()

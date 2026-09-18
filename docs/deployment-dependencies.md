@@ -1,239 +1,162 @@
-# G1 PC2 依赖安装与离线部署
+# UniRoboGui G1 / R1 通用部署与排障指南
 
-本文档用于安装项目必需的宇树 SDK2 和 librealsense2，以及处理 G1 PC2 无法直接
-访问 GitHub/PyPI 的情况。README 只保留最短项目部署流程。
+**简体中文** | [English](deployment-dependencies.en.md)
 
-正常客户部署优先使用自动脚本，不需要逐条执行本文命令：
+本文件同时覆盖 Unitree G1 与 R1。部署入口、公共构建流程和安全检查保持一致；网卡、SDK、service、相机、TTS 和附件差异集中在产品配置中，不维护两套重复教程。
 
-- 机器人可以访问 GitHub：在机器人运行 `bash scripts/deploy_g1_online.sh`；
-- 机器人不能访问 GitHub：在联网 Ubuntu/Linux 电脑运行 `bash scripts/deploy_g1_from_pc.sh`。
+## 1. 唯一推荐入口
 
-本文后续步骤保留为脚本实现依据、人工排障和特殊现场的手工兜底。
+~~~bash
+# 机器人可联网：安装或升级
+bash scripts/deploy.sh install --product g1
+bash scripts/deploy.sh install --product r1
 
-G1 头部标配 RealSense D435i，因此本项目的生产部署必须安装 librealsense2。
-SDK2 不固定历史提交，每次部署或升级前都更新到宇树官方仓库
-当前最新版。
+# 从联网电脑传输并部署
+bash scripts/deploy.sh from-pc --product r1
 
-官方资料：
+# 只读环境检查
+bash scripts/deploy.sh check --product g1
+bash scripts/deploy.sh check --product r1
 
-- [G1 获取 SDK](https://support.unitree.com/home/zh/G1_developer/get_sdk)
-- [G1 深度相机例程](https://support.unitree.com/home/zh/G1_developer/depth_camera_instruction)
-- [unitree_sdk2 官方仓库](https://github.com/unitreerobotics/unitree_sdk2)
-- [librealsense 官方仓库](https://github.com/realsenseai/librealsense)
+# 使用英文部署日志
+bash scripts/deploy.sh install --product g1 --lang en
+~~~
 
-## 部署边界
+`--product` 必填，只接受 Registry 当前支持的 `g1` 或 `r1`。`--host` 只用于 `from-pc`。旧 `deploy_g1_*` / `install_g1*` 中英文脚本仅保留一个兼容周期，打印弃用提示后转发到 `--product g1`；旧 `--robot USER@HOST` 会转换为 `--host`。
 
-- 目标系统：G1 PC2，Ubuntu 20.04 AArch64，`unitree` 用户；
-- SSH 登录后的 ROS 选择直接按回车；
-- 不 source Foxy/Noetic/ROS 2，不设置 RMW/CycloneDDS；
-- `eth0` 保留给 SDK2 DDS，`wlan0` 用于外网；
-- 不运行 SDK2 运动例程，不触发任何实机动作。
+## 2. 产品矩阵
 
-## 1. 安装编译工具
+| 项目 | G1 | R1 |
+| --- | --- | --- |
+| DDS 网卡 | `eth0` | `eth10` |
+| SDK / CMake 前缀 | `/opt/unitree_robotics`；用户安装可用 `/home/unitree/.local/unitree_robotics` | `/usr/local`，已有安装只校验，不自动覆盖 |
+| 动态库路径 | SDK `prefix/lib` + `/usr/local/lib`；需要时兼容已有 librealsense | `/usr/local/lib` |
+| Web service | `g1-web-control.service` | `r1-web-control.service` |
+| systemd user unit | `deploy/g1-web-control.user.service` | `deploy/r1-web-control.user.service` |
+| 相机 | D435i + librealsense + `g1-web-first-person-service` | R1 EDU 固定 RGB/Depth + `r1-web-camera-service` |
+| TTS 默认 | Kokoro + Unitree fallback | Unitree native TTS |
+| SDK 安装策略 | 缺失时可从官方 SDK2 源码安装 | 校验现有 R1 头文件、CMake 配置和 CycloneDDS 动态库；缺失即停止 |
+| Mid-360 / navigation | 保持现有 G1 配置与 service 默认值 | 默认不声明 Mid-360，不启用真实导航 |
+| 二进制 | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` |
 
-在 G1 PC2 的新 SSH 会话中执行：
+两种产品都使用同一代码库和同一个 `g1_web_server` 历史二进制名。产品身份由 `--robot`、`RobotRegistry`、Manifest 和 Capability 决定，不由二进制文件名决定。
 
-```bash
-test -z "${ROS_DISTRO:-}"
-test -z "${RMW_IMPLEMENTATION:-}"
-test -z "${CYCLONEDDS_URI:-}"
+## 3. 公共部署流程
 
-sudo apt-get update \
-  -o Dir::Etc::sourcelist="sources.list" \
-  -o Dir::Etc::sourceparts="-" \
-  -o APT::Get::List-Cleanup="0"
-sudo apt-get install -y --no-install-recommends \
-  build-essential cmake pkg-config git curl bzip2 rsync \
-  python3 python3-pip \
-  libboost-system-dev libboost-thread-dev libjsoncpp-dev \
-  libcurl4-openssl-dev libopencv-dev libzmq3-dev \
-  libusb-1.0-0-dev libssl-dev libudev-dev
-```
+部署脚本按同一流程执行：
 
-这些包与当前自动部署脚本保持一致。脚本会先检查安装状态：如果全部已存在，就不会执行
-`apt-get update/install`，因此机器人即使没有公网也可以继续使用已经传入的 GitHub/PyPI 资源。
-只有确实缺包时才需要 Ubuntu 软件源。
+1. 检查 Ubuntu 20.04 AArch64、`unitree` 用户、目标 DDS 网卡和 ROS/RMW/CycloneDDS 环境污染；
+2. 检查项目源码脏状态，发现未提交业务代码时停止而不是覆盖；
+3. 根据产品配置检查或准备 SDK、相机依赖和 TTS 资源；
+4. Release 构建并运行完整 CTest；
+5. 使用 `ldd` 检查无 `not found`，并确认 CycloneDDS 来自所选产品 SDK 前缀；
+6. 在替换正在运行的 Web service 前读取 Manifest 与 `/api/control/status`；
+7. 只有确认产品身份匹配、`motion.active=false`、`state=stopped` 且 `vx/vy/vyaw` 全零才允许停止或替换该 service；
+8. 如果发现另一产品 service 正在运行，直接停止部署，不自动关闭或切换；
+9. 安装精确的 system 或 user unit、产品相机 helper/sudoers；
+10. 启动后只做只读验收：8080 唯一监听、health、Manifest、DDS 必需 source、零运动状态、MainPID 参数、进程环境和 helper 状态。
 
-这些命令只使用 Ubuntu 主软件源，不加载机器人中已配置的 ROS 软件源。如果 APT
-失败，先检查 `wlan0`、DNS 和 Ubuntu 镜像，不要盲目执行 `apt --fix-broken install`。
+自动验收不会调用真实 `SetVelocity`、`StopMove`、`Start`、`StandUp`、`SetFsmId`、关节、头部、模式切换或导航命令。真实运动验收由现场操作员通过 Web 执行。
 
-## 2. 安装官方最新 SDK2
+## 4. G1 部署说明
 
-自动安装器有两种 SDK2 前缀：交互 sudo 可用时使用系统级 `/opt/unitree_robotics`；没有可交互 sudo、但系统包齐全且 `systemctl --user` 可用并且 `Linger=yes` 时，可使用持久用户级 `/home/unitree/.local/unitree_robotics`。正常客户优先让脚本自动选择，不需要手工指定。
+G1 保持现有基线：
 
-系统级首次安装：
+- `eth0` 用于 SDK2 DDS，`wlan0` 用于 Web/外网；
+- SDK 系统前缀为 `/opt/unitree_robotics`，必要时可使用持久用户前缀；
+- D435i 需要 librealsense；系统级安装会提供受控 `g1-web-first-person-service` helper；
+- Kokoro 是默认本地 TTS，Unitree TTS 仍作为 fallback；
+- `g1-web-control.service` 显式包含 `--robot g1`，并保持现有 `--enable-navigation` 默认值；
+- `from-pc` 会准备 SDK2、librealsense、Kokoro 模型与 AArch64/Python 3.8 wheelhouse。
 
-```bash
-git clone --depth 1 https://github.com/unitreerobotics/unitree_sdk2.git \
-  /home/unitree/unitree_sdk2
-cd /home/unitree/unitree_sdk2
-git rev-parse HEAD
+## 5. R1 部署说明
 
-cmake -S . -B build-g1 \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/opt/unitree_robotics
-cmake --build build-g1 --parallel 2
-sudo cmake --install build-g1
-sudo ldconfig
-```
+R1 使用以下边界：
 
-如果 `/home/unitree/unitree_sdk2` 已存在，不要重新 clone，而是先检查再更新：
+- DDS 网卡固定为 `eth10`；
+- SDK/CMake 前缀固定为 `/usr/local`；
+- 部署脚本只校验 R1 Audio/Loco 必需头文件、`unitree_sdk2` CMake 配置以及 `libddsc` / `libddscxx` 动态库，缺失时停止并提示，不自动覆盖 `/usr/local`；
+- 默认使用 Unitree 原生 TTS，不安装 Kokoro；
+- 系统级安装使用 `r1-web-camera-service`；用户级安装无 helper 时相关 Camera Capability 按运行时证据降级；
+- `r1-web-control.service` 显式包含 `--robot r1`，不带 `--device mid360`，也不带 `--enable-navigation`；
+- `from-pc` 默认连接 `unitree@192.168.123.164`；OpenSSH 会先尝试已有 key/agent，首次连接可在交互终端确认主机指纹，确有需要时再由 SSH 自己提示输入密码；脚本不保存或回显密码。现场地址不同或已有 SSH Host 别名时可通过 `--host` 显式覆盖。
 
-```bash
-cd /home/unitree/unitree_sdk2
-git remote get-url origin
-git status --short
-git pull --ff-only
-git rev-parse HEAD
+## 6. from-pc 传输边界
 
-cmake -S . -B build-g1 \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/opt/unitree_robotics
-cmake --build build-g1 --parallel 2
-sudo cmake --install build-g1
-sudo ldconfig
-```
+`from-pc` 使用 rsync 传输项目时：
 
-`git remote get-url origin` 应指向宇树官方 `unitreerobotics/unitree_sdk2`。
-`git status --short` 有输出时立即停止，先确认并保留现场修改，不得直接覆盖。
-`git rev-parse HEAD` 记录本次实际安装的最新提交，不在文档中写死易过期的版本号。
+- 不传 `.git`；
+- 不传 `AGENTS.md`、`*_AGENTS.md`、`.robot-workspace`、`.robot-backups`、`.robot-sync` 和本地 G1/R1 参考资料；
+- 保留机器人整个 `config/` 运行时配置目录和 `build/`；
+- 如果机器人项目 Git checkout 有未提交修改，停止部署；
+- 对脚本自己管理的非 Git 目录只在有管理标记时使用受控 `--delete`；
+- 不把 SSH、sudo、Wi-Fi、API 密钥或其他凭据写入项目、参数、日志或缓存。
 
-## 3. 安装 librealsense2
+## 7. 只读 check
 
-部分 G1 PC2 镜像已经带有 librealsense2，例如本项目兼容检查会识别
-`/opt/ros/noetic/lib/aarch64-linux-gnu/cmake/realsense2/realsense2Config.cmake`。这只表示复用其中的
-librealsense2 库，**不需要也不得 source Noetic**。自动部署检测到可用版本时会直接复用；只有缺失时才从源码安装：
+~~~bash
+bash scripts/deploy.sh check --product g1
+bash scripts/deploy.sh check --product r1
+~~~
 
-```bash
-git clone --depth 1 https://github.com/realsenseai/librealsense.git \
-  /home/unitree/librealsense
-cd /home/unitree/librealsense
+`check` 不安装软件包、不修改文件、不停止或启动 service。它检查系统、架构、目标网卡、所需包、SDK 状态、相机 helper 状态等。R1 `check` 直接使用 `/usr/local` 进行 SDK 校验。
 
-cmake -S . -B build-g1 \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/usr/local \
-  -DBUILD_EXAMPLES=OFF \
-  -DBUILD_GRAPHICAL_EXAMPLES=OFF \
-  -DBUILD_PYTHON_BINDINGS=OFF \
-  -DFORCE_RSUSB_BACKEND=ON
-cmake --build build-g1 --parallel 2
-sudo cmake --install build-g1
-sudo install -m 0644 config/99-realsense-libusb.rules \
-  /etc/udev/rules.d/99-realsense-libusb.rules
-sudo udevadm control --reload-rules
-sudo ldconfig
-```
+## 8. 部署后验收
 
-已有源码时先确认 `git status --short` 为空，再执行 `git pull --ff-only`，然后重复上面的
-CMake 构建和安装命令。`FORCE_RSUSB_BACKEND=ON` 不需要 ROS，也不依赖固定的
-`/dev/videoN` 编号。
+脚本会自动完成核心只读验收。人工复核可使用：
 
-检查两项依赖：
-
-```bash
-test -f /opt/unitree_robotics/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake || \
-  test -f /home/unitree/.local/unitree_robotics/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake
-pkg-config --modversion realsense2 2>/dev/null || \
-  test -f /opt/ros/noetic/lib/aarch64-linux-gnu/cmake/realsense2/realsense2Config.cmake
-```
-
-## 4. 安装 UniRoboGui
-
-```bash
-cd /home/unitree/UniRoboGui
-bash scripts/install_g1.sh --check-only
-bash scripts/install_g1.sh
-```
-
-安装器会编译 UniRoboGui、运行 CTest 和动态库检查，然后安装并启动服务。默认 `auto` 模式会优先使用可交互 sudo 的系统级安装；如果没有可交互 sudo，但系统包已齐全、用户 systemd 可用且 `Linger=yes`，会自动改用 `/home/unitree/.local/unitree_robotics` + `systemctl --user` 的持久用户级安装。也可以用 `--system-install` 或 `--user-install` 显式指定。
-
-它可以重复执行，不会覆盖 `config/customer_voice.json` 或 `config/joint_teach_actions.json`。替换正在运行的 Web 服务前必须确认运动状态为 stopped 且速度为 0。
-
-## 5. G1 PC2 无法访问 GitHub
-
-在能访问 GitHub 的 Ubuntu/Linux 电脑上准备项目、最新 SDK2、librealsense 和 Kokoro 模型：
-
-```bash
-git clone https://github.com/ershui2500/UniRoboGui.git
-git clone --depth 1 https://github.com/unitreerobotics/unitree_sdk2.git
-git clone --depth 1 https://github.com/realsenseai/librealsense.git
-curl -fL -o kokoro-int8-multi-lang-v1_1.tar.bz2 \
-  https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2
-```
-
-让该电脑接入机器人 `192.168.123.0/24` 有线网络，再传入 PC2：
-
-```bash
-rsync -az --exclude='/.git/' --exclude='/build/' \
-  UniRoboGui/ unitree@192.168.123.164:/home/unitree/UniRoboGui/
-rsync -az unitree_sdk2/ unitree@192.168.123.164:/home/unitree/unitree_sdk2/
-rsync -az librealsense/ unitree@192.168.123.164:/home/unitree/librealsense/
-ssh unitree@192.168.123.164 'mkdir -p /home/unitree/UniRoboGui/tts_models'
-scp kokoro-int8-multi-lang-v1_1.tar.bz2 \
-  unitree@192.168.123.164:/home/unitree/UniRoboGui/tts_models/
-```
-
-回到 G1 PC2 后，按本文第 1～4 节执行；第 2、3 节跳过 clone 和 pull，从
-`git rev-parse HEAD` 与 CMake 构建开始执行。
-离线传入的 SDK2 必须是联网电脑刚从宇树官方仓库取得的最新版。
-
-注意：这里的“无法访问 GitHub”不等于“完全不需要网络”。如果第 1 节列出的 Ubuntu 系统包有缺失，
-机器人仍需访问 Ubuntu 20.04 软件源。先运行下面的只读检查可以提前看到缺失项：
-
-```bash
-cd /home/unitree/UniRoboGui
-bash scripts/install_g1.sh --check-only
-```
-
-如果系统包已经齐全，自动安装会跳过 APT。若系统包有缺失但机器人完全不能访问 Ubuntu 软件源，
-应先按现场的软件分发方式安装对应的 arm64 Ubuntu 20.04 `.deb` 及其依赖；不要拿 x86_64 或其他 Ubuntu
-版本的包代替。
-
-如果 PC2 也不能访问 PyPI，在联网电脑准备适用于 G1 AArch64/Python 3.8 的 Kokoro wheelhouse：
-
-```bash
-mkdir -p wheelhouse-aarch64-py38
-python3 -m pip download --dest wheelhouse-aarch64-py38 \
-  --only-binary=:all: \
-  --platform manylinux2014_aarch64 \
-  --python-version 38 \
-  --implementation cp \
-  --abi cp38 \
-  'virtualenv==20.26.6' 'pip<25' 'setuptools<76' wheel \
-  'numpy<2' 'sherpa-onnx==1.13.4'
-rsync -az wheelhouse-aarch64-py38/ \
-  unitree@192.168.123.164:/home/unitree/unirobogui-wheelhouse/
-```
-
-机器人上使用：
-
-```bash
-KOKORO_WHEELHOUSE=/home/unitree/unirobogui-wheelhouse \
-  bash scripts/install_g1.sh
-```
-
-正常客户部署优先使用 `scripts/deploy_g1_from_pc.sh`，它已经自动完成上述模型和 wheelhouse 准备，
-手工命令只用于排障兜底。
-
-## 6. 验收与常见错误
-
-```bash
-systemctl is-active g1-web-control.service 2>/dev/null || \
-  systemctl --user is-active g1-web-control.service
-systemctl is-active g1-local-tts.service 2>/dev/null || \
-  systemctl --user is-active g1-local-tts.service
+~~~bash
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/health
-curl --noproxy '*' -fsS http://127.0.0.1:8765/health
-ss -ltnp 'sport = :8080 or sport = :8765'
-ldd /home/unitree/UniRoboGui/build/g1_web_server | \
-  grep -E 'ddsc|ddscxx|jsoncpp|curl|opencv|realsense|not found'
-```
+curl --noproxy '*' -fsS http://127.0.0.1:8080/api/robot/manifest
+curl --noproxy '*' -fsS http://127.0.0.1:8080/api/control/status
+ss -ltnp 'sport = :8080'
+ldd /home/unitree/UniRoboGui/build/g1_web_server | grep -E 'ddsc|ddscxx|realsense|not found'
+~~~
 
-- `undefined symbol: ddsi_sertype_v0`：重新 SSH 登录并在 ROS 选择中直接按回车，不要用
-  ROS 桥接绕过 SDK2 动态库冲突。
-- GitHub 超时：使用本文的离线传包流程，不要在 PC2 上无限重试。
-- APT 失败：检查 `wlan0`、DNS 和 Ubuntu 镜像；不要执行 `apt --fix-broken install`、
-  网络重置或安装 ROS 环境。
-- D435i 未出图：先检查 librealsense2 动态库与 USB 枚举。D435i RGB+Depth 会优先尝试与机器人原相机服务并发共享；共享成功时不会停止 `master_service`。只有并发访问被固件拒绝时才回退到特权 helper + V4L2 路径。`/dev/videoN` 会变化，V4L2 模式不要固定设备号。
+验收应确认：
 
-旧服务正在运行时，安装器只会在控制状态返回零速度后才切换服务。
+- Manifest `identity.product_id` 与部署产品一致；
+- `motion.active=false`、`state=stopped`、`vx/vy/vyaw` 为零；
+- health 中 DDS 已初始化，Manifest 声明的 `required_sources` 为 online；
+- 8080 只有目标 Web 进程监听；
+- MainPID 命令行包含正确 `--robot` 与 `--interface`；
+- Web 进程没有 `ROS_DISTRO`、`RMW_IMPLEMENTATION`、`CYCLONEDDS_URI`、`AMENT_PREFIX_PATH`、`COLCON_PREFIX_PATH`；
+- G1/R1 CycloneDDS 动态库解析到所选产品 SDK 前缀；
+- 相机 helper 的只读状态检查返回正常 active/inactive 语义。
+
+## 9. 常见故障
+
+### GitHub 不可达
+
+机器人不能访问 GitHub 时不要反复重试，也不要修改 DDS 网卡。改用联网电脑：
+
+~~~bash
+bash scripts/deploy.sh from-pc --product g1 --host unitree@<G1_IP>
+bash scripts/deploy.sh from-pc --product r1 --host unitree@<R1_IP>
+~~~
+
+### R1 SDK 校验失败
+
+如果缺少 `/usr/local` 下的 R1 头文件、`unitree_sdk2Config.cmake`、`libddsc` 或 `libddscxx`，部署会停止。不要让通用部署器自动重装 `/usr/local`；应先按机器人固件/ABI 要求恢复兼容 SDK。
+
+### `undefined symbol: ddsi_sertype_v0`
+
+通常表示混入了另一套 CycloneDDS/ROS 环境。重新建立干净 SSH 会话，选择 `none`，不要 source Foxy、Noetic、ROS 2 或自建 RMW 环境，然后重新执行 `check`。
+
+### 8080 被占用
+
+不要 `pkill` / `killall`。先确认精确 unit、MainPID、Manifest 产品身份和零运动状态，再处理对应 service：
+
+~~~bash
+ss -ltnp 'sport = :8080'
+systemctl --no-pager --full status g1-web-control.service
+systemctl --no-pager --full status r1-web-control.service
+~~~
+
+### 相机
+
+G1 先检查 librealsense、D435i USB 枚举和 `g1-web-first-person-service`。R1 检查固定 RTP/Depth source 与 `r1-web-camera-service`。浏览器不能覆盖受控 source、端口、pipeline、service 名或 helper 命令。
+
+## 10. 扩展新产品
+
+首版通用部署只登记 `g1` 与 `r1`。后续产品通过新增一个受控产品配置分支、对应 system/user service、helper/依赖声明和验收项接入；不要复制整套部署脚本，也不要引入 YAML、插件框架或新的部署依赖，除非现有 Bash `case` 模式已无法表达需求。

@@ -23,6 +23,12 @@ const workspaceGlyphs = {
   diagnostics: "DG",
 };
 
+function renderWorkspaceTitle() {
+  const title = window.UiI18n?.t(workspaceTitles[currentWorkspace]) || workspaceTitles[currentWorkspace];
+  workspaceTitle.textContent = title;
+  document.title = `${title} · UniRoboGui`;
+}
+
 let currentWorkspace = "console";
 let currentRegion = null;
 
@@ -187,9 +193,9 @@ function showWorkspace(requested, updateHash = true) {
   robotViewerDock.place(workspace);
   panels.forEach((panel) => {
     if (!panel.dataset.workspace) return;
-    panel.hidden = workspace === "console"
+    panel.hidden = panel.dataset.capabilityState === "unsupported" || (workspace === "console"
       ? !consoleRegions.has(panel.dataset.workspace)
-      : panel.dataset.workspace !== workspace;
+      : panel.dataset.workspace !== workspace);
   });
 
   currentWorkspace = workspace;
@@ -200,10 +206,9 @@ function showWorkspace(requested, updateHash = true) {
   document.documentElement.classList.toggle("console-workspace-active", workspace === "console");
   document.documentElement.classList.toggle("joint-debug-workspace-active", workspace === "joint-debug");
   setButtonState(workspace, region);
-  workspaceTitle.textContent = workspaceTitles[workspace];
+  renderWorkspaceTitle();
   workspaceEmblem.dataset.workspace = workspace;
   workspaceGlyph.textContent = workspaceGlyphs[workspace];
-  document.title = `${workspaceTitles[workspace]} · UniRoboGui`;
 
   const nextHash = region || workspace;
   if (updateHash && location.hash !== `#${nextHash}`) {
@@ -241,5 +246,6 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && document.body.classList.contains("sidebar-open")) closeSidebar();
 });
 window.addEventListener("hashchange", () => showWorkspace(location.hash.slice(1), false));
+window.addEventListener("ui-language-change", renderWorkspaceTitle);
 
 showWorkspace(location.hash.slice(1) || "console", false);

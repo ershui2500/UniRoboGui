@@ -163,7 +163,14 @@ const depthCameraBadge = document.getElementById("depthCameraBadge");
 const cameraFeedback = document.getElementById("cameraFeedback");
 const rgbCameraSource = document.getElementById("rgbCameraSource");
 const depthCameraSource = document.getElementById("depthCameraSource");
+const startV4l2Camera = document.getElementById("startV4l2Camera");
 const startRealSenseCamera = document.getElementById("startRealSenseCamera");
+const stopRgbCamera = document.getElementById("stopCamera");
+const stopDepthCamera = document.getElementById("stopDepthCamera");
+
+function cameraText(zh, en) {
+  return window.UiI18n?.language === "en" ? en : zh;
+}
 
 let renderer;
 let scene;
@@ -224,7 +231,7 @@ const MODE_LABELS = {
 };
 
 const COMMAND_META = {
-  start_mapping: ["开始建图", "将先自动开启 lidar_driver 和 unitree_slam，再调用官方 API 1801；失败时会回滚本次开启的服务。"],
+  start_mapping: ["开始建图", "将先按当前机器人策略检查并准备 SLAM 依赖，再调用官方 API 1801；失败时只回滚本次由 Web 启动的依赖。"],
   finish_mapping: ["结束并保存地图", "将调用官方 API 1802，并覆盖同名 PCD 文件。"],
   load_map: ["加载地图", "Unitree 官方只提供 API 1804 加载地图并初始化位姿；本次先用当前可用位姿作为初始猜测，没有有效位姿时使用 X:0 / Y:0 / W:0。加载成功后才开放手动重定位。"],
   initialize_pose: ["执行重定位", "当前地图已加载；将使用刚才在地图中选择的 X / Y / W 再次调用官方 API 1804 完成重定位。"],
@@ -234,11 +241,33 @@ const COMMAND_META = {
   resume_navigation: ["恢复导航", "机器人可能立即继续运动，请重新检查周围环境。"],
   cancel_navigation: ["取消导航", "官方没有独立取消接口：若正在行走，将先调用 API 1201 立即暂停，再清除当前单点目标或多点执行队列；已加载地图和定位保持可用。"],
   exit_map: ["退出地图", "将调用官方 API 1901 关闭 SLAM 定位并清空当前已加载地图状态；退出后导航会被锁定，必须重新加载地图并定位后才能再次导航。"],
-  stop_slam: ["关闭 SLAM", "将调用官方 API 1901 并关闭 unitree_slam；lidar_driver 保持待命，页面会回退显示 Mid-360 实时点云。此操作不会调用 StopMove。"],
+  stop_slam: ["关闭 SLAM", "将调用官方 API 1901，并只停止本次由 Web 管理且启动的 SLAM 依赖；外部依赖保持不变。此操作不会调用 StopMove。"],
   start_v4l2: ["自动检测并启动摄像头", "将临时释放占用 D435i 的摄像头服务，再按 V4L2 像素格式自动识别当前 RGB 与 Z16 深度设备；不依赖固定 /dev/videoN。手填设备仅作为覆盖。"],
   start_realsense: ["启动 D435i RGB + 深度", "优先通过 librealsense2 与机器人现有相机服务并发共享，不中断 master_service；仅设备无法并发访问时才使用兼容的暂停/自动识别兜底链路。"],
   stop_camera: ["停止 Web 摄像头", "释放 Web 自己的取流资源；共享 teleimager 模式不会停止机器人现有第一人称服务。"],
 };
+
+function cameraCommandMeta(command) {
+  if (command === "stop_rgb") {
+    return [
+      cameraText("停止 RGB", "Stop RGB"),
+      cameraText(
+        "只停止 RGB 画面；深度摄像头会继续保持当前运行状态。",
+        "Stop only the RGB stream; the depth camera will keep its current running state.",
+      ),
+    ];
+  }
+  if (command === "stop_depth") {
+    return [
+      cameraText("停止深度", "Stop Depth"),
+      cameraText(
+        "只停止深度画面；RGB 摄像头会继续保持当前运行状态。",
+        "Stop only the depth stream; the RGB camera will keep its current running state.",
+      ),
+    ];
+  }
+  return COMMAND_META[command] || [command, ""];
+}
 
 function workspaceVisible() {
   return workspace && !workspace.hidden && document.visibilityState === "visible";
@@ -1286,17 +1315,35 @@ function selectGoalFromPointer(event) {
 
 function updateMapHelp() {
   if (!mapHelp) return;
+  const english = window.UiI18n?.language === "en";
+  const manifestName = window.robotManifest?.identity?.display_name;
+  const robotLabel = typeof manifestName === "string" && manifestName.trim()
+    ? manifestName.trim()
+    : english ? "Robot" : "机器人";
   if (poseTool === "initial") {
-    mapHelp.textContent = "重定位：左键按住地图确定位置 → 拖动选择朝向 → 松开保存；完成或取消后恢复默认平移。";
+    mapHelp.textContent = english
+      ? "Relocalization: hold left mouse on the map to set position → drag to choose heading → release to save. Default pan mode is restored after completion or cancel."
+      : "重定位：左键按住地图确定位置 → 拖动选择朝向 → 松开保存；完成或取消后恢复默认平移。";
     return;
   }
   if (poseTool === "goal") {
-    mapHelp.textContent = `${navigationMode === "multi" ? "多点导航" : "导航目标"}：左键按住落点 → 拖动选择朝向 → 松开保存；完成或取消后恢复默认平移。`;
+    const taskLabel = navigationMode === "multi"
+      ? (english ? "Multi-point navigation" : "多点导航")
+      : (english ? "Navigation goal" : "导航目标");
+    mapHelp.textContent = english
+      ? `${taskLabel}: hold left mouse to place the point → drag to choose heading → release to save. Default pan mode is restored after completion or cancel.`
+      : `${taskLabel}：左键按住落点 → 拖动选择朝向 → 松开保存；完成或取消后恢复默认平移。`;
+    return;
+  }
+  if (english) {
+    mapHelp.textContent = viewTool === "rotate"
+      ? `Rotate: hold the left mouse button and drag to rotate the view · wheel to zoom; heading: hold ↶ / ↷ to rotate the map orientation; right click has no map action. ${robotLabel} URDF + blue arrow = robot, green arrow = initial pose, yellow arrow = navigation goal.`
+      : `Pan: hold the left mouse button and drag · wheel to zoom; heading: hold ↶ / ↷ to rotate the map orientation; right click has no map action. ${robotLabel} URDF + blue arrow = robot, green arrow = initial pose, yellow arrow = navigation goal.`;
     return;
   }
   mapHelp.textContent = viewTool === "rotate"
-    ? "旋转：左键按住拖动旋转视角 · 滚轮缩放；方向：长按 ↶ / ↷ 调整地图朝向；右键无地图操作。G1 URDF + 蓝色箭头=机器人，绿色箭头=初始位姿，黄色箭头=导航目标。"
-    : "平移：左键按住拖动平移地图 · 滚轮缩放；方向：长按 ↶ / ↷ 调整地图朝向；右键无地图操作。G1 URDF + 蓝色箭头=机器人，绿色箭头=初始位姿，黄色箭头=导航目标。";
+    ? `旋转：左键按住拖动旋转视角 · 滚轮缩放；方向：长按 ↶ / ↷ 调整地图朝向；右键无地图操作。${robotLabel} URDF + 蓝色箭头=机器人，绿色箭头=初始位姿，黄色箭头=导航目标。`
+    : `平移：左键按住拖动平移地图 · 滚轮缩放；方向：长按 ↶ / ↷ 调整地图朝向；右键无地图操作。${robotLabel} URDF + 蓝色箭头=机器人，绿色箭头=初始位姿，黄色箭头=导航目标。`;
 }
 
 function setViewTool(tool) {
@@ -1639,6 +1686,7 @@ function updateCameraStatus(stream, state) {
   elements.badge.textContent = state.online ? `${label} 已启动` : state.error ? `${label} 启动失败` : `${label} 未启动`;
   elements.badge.className = `perception-badge ${state.online ? "online" : state.error ? "error" : "warning"}`;
   elements.status.className = `camera-status ${state.online ? "online" : state.error ? "error" : ""}`.trim();
+  elements.status.hidden = false;
   elements.status.querySelector("strong").textContent = state.online ? "画面在线" : state.configured ? "连接失败" : "未配置";
   const size = Number(state.jpeg_bytes) > 0
     ? ` · ${(Number(state.jpeg_bytes) / 1024).toFixed(1)} KiB/帧`
@@ -1656,7 +1704,65 @@ function updateCameraStatus(stream, state) {
 
 function updateCameraServiceStatus(status) {
   latestCameraStatus = status;
+  cameraFeedback.hidden = false;
   const captureError = status.rgb?.error || status.depth?.error;
+  const fixedPolicy = status.fixed_policy === true;
+  [rgbCameraSource, depthCameraSource].forEach((input) => {
+    input.disabled = fixedPolicy;
+    const field = input.closest(".camera-device-field");
+    if (field) field.hidden = fixedPolicy;
+    if (fixedPolicy) input.value = "";
+  });
+
+  if (fixedPolicy) {
+    const versionNote = status.service_version_status === "external_check_required"
+      ? cameraText(
+          "软件版本无法通过稳定只读接口确认，需在 APP/运维侧外部核验。",
+          "Software versions cannot be confirmed through a stable read-only interface; verify them externally in the app/operations tooling.",
+        )
+      : "";
+    const externalError = status.external_services?.error || "";
+    if (captureError || externalError) {
+      const effectiveError = externalError || captureError;
+      const hint = effectiveError === "camera_backend_unavailable"
+        ? cameraText(
+            "当前 OpenCV 未提供 GStreamer，已安全拒绝启动。",
+            "This OpenCV build has no GStreamer support, so camera start is safely refused.",
+          )
+        : effectiveError.startsWith("depth_receiver_helper_unavailable")
+          ? cameraText(
+              "深度自动启动 helper 未安装或 sudoers 未授权；请先安装 r1-web-camera-service 固定 helper。",
+              "The automatic depth helper is not installed or not authorized by sudoers; install the fixed r1-web-camera-service helper first.",
+            )
+          : effectiveError === "video_hub_service_not_found" ||
+              effectiveError === "stereo_patch_pc1_service_not_found"
+            ? cameraText(
+                `RobotState 未找到所需相机服务；检测到：${(status.external_services?.related_services || []).join(", ") || "--"}`,
+                `RobotState did not expose the required camera service; detected: ${(status.external_services?.related_services || []).join(", ") || "--"}`,
+              )
+            : effectiveError;
+      cameraFeedback.textContent = `${hint}${versionNote ? ` ${versionNote}` : ""}`;
+      cameraFeedback.className = "perception-feedback error";
+      cameraFeedback.hidden = false;
+    } else {
+      cameraFeedback.textContent = "";
+      cameraFeedback.className = "perception-feedback";
+      cameraFeedback.hidden = true;
+    }
+    startV4l2Camera.textContent = cameraText("启动 RGB", "Start RGB");
+    startRealSenseCamera.textContent = cameraText("启动深度", "Start Depth");
+    const disabled = !status.mock && status.backend === "unavailable";
+    startV4l2Camera.disabled = disabled;
+    startRealSenseCamera.disabled = disabled;
+    startV4l2Camera.title = cameraText("启动 R1 固定 RGB 接收", "Start fixed R1 RGB reception");
+    startRealSenseCamera.title = cameraText("启动 R1 固定深度接收", "Start fixed R1 depth reception");
+    stopRgbCamera.disabled = !(status.rgb?.configured || status.rgb?.online);
+    stopDepthCamera.disabled = !(status.depth?.configured || status.depth?.online);
+    stopRgbCamera.title = cameraText("仅停止 RGB 画面", "Stop only the RGB stream");
+    stopDepthCamera.title = cameraText("仅停止深度画面", "Stop only the depth stream");
+    return;
+  }
+
   if (status.first_person_service?.error) {
     cameraFeedback.textContent = `摄像头占用服务切换失败：${status.first_person_service.error}`;
     cameraFeedback.className = "perception-feedback error";
@@ -1671,8 +1777,13 @@ function updateCameraServiceStatus(status) {
     cameraFeedback.textContent = "启动时会先临时释放当前摄像头占用服务，再扫描 /dev/video* 的像素格式自动识别 RGB 与 Z16 深度流；设备框仅用于手动覆盖。";
     cameraFeedback.className = "perception-feedback";
   }
+  startV4l2Camera.textContent = cameraText("自动检测并启动", "Auto-detect & Start");
+  startRealSenseCamera.textContent = cameraText("自动检测 RGB+深度", "Auto-detect RGB + Depth");
+  startV4l2Camera.disabled = false;
   startRealSenseCamera.disabled = !status.mock && status.backend === "unavailable";
   startRealSenseCamera.title = "自动检测当前 D435i RGB 与深度设备";
+  stopRgbCamera.disabled = !status.running;
+  stopDepthCamera.disabled = !status.running;
 }
 
 async function pollCameraStatus() {
@@ -1715,7 +1826,8 @@ async function loadCameraFrame(stream) {
 
 function pollCameraFrames() {
   Promise.all([loadCameraFrame("rgb"), loadCameraFrame("depth")]).finally(() => {
-    setTimeout(pollCameraFrames, 420);
+    const intervalMs = latestCameraStatus?.fixed_policy === true ? 120 : 420;
+    setTimeout(pollCameraFrames, intervalMs);
   });
 }
 
@@ -1850,8 +1962,13 @@ function stageCommand(command, uiAction = "") {
 }
 
 function stageCameraCommand(command) {
-  const request = { command: command === "stop_camera" ? "stop" : command };
-  if (command === "start_v4l2") {
+  const fixedPolicy = latestCameraStatus?.fixed_policy === true;
+  const streamStop = command === "stop_rgb" || command === "stop_depth";
+  const backendCommand = command === "stop_camera" || (streamStop && !fixedPolicy)
+    ? "stop"
+    : command;
+  const request = { command: backendCommand };
+  if (command === "start_v4l2" && !fixedPolicy) {
     request.rgb_source = rgbCameraSource.value.trim();
     request.depth_source = depthCameraSource.value.trim();
     const valid = (value) => value === "" || /^\/dev\/video\d{1,3}$/.test(value);
@@ -1861,12 +1978,62 @@ function stageCameraCommand(command) {
       return;
     }
   }
-  pendingRequest = { endpoint: "/api/camera/command", feedback: "camera", ...request };
-  const [title, warning] = COMMAND_META[command];
-  confirmTitle.textContent = title;
-  confirmWarning.textContent = warning;
-  confirmSafetyTitle.textContent = "Web 取流会临时独占当前 D435i";
-  confirmSafetyDetail.textContent = "启动时会暂停占用 D435i 的 master_service / teleimager.service，再自动识别当前 RGB 与 Z16 深度设备；停止后仅恢复本页实际暂停的服务。";
+  pendingRequest = {
+    endpoint: "/api/camera/command",
+    feedback: "camera",
+    ...(fixedPolicy && streamStop ? { ui_action: command } : {}),
+    ...request,
+  };
+  const stopping = command === "stop_camera" || streamStop;
+  const [title, warning] =
+    streamStop && !fixedPolicy ? COMMAND_META.stop_camera : cameraCommandMeta(command);
+  const fixedRgbPort = latestCameraStatus?.rgb?.port || "--";
+  confirmTitle.textContent = fixedPolicy && !stopping
+    ? command === "start_realsense"
+      ? cameraText("启动 R1 深度", "Start R1 Depth")
+      : cameraText("启动 R1 RGB", "Start R1 RGB")
+    : title;
+  confirmWarning.textContent = fixedPolicy && !stopping
+    ? command === "start_realsense"
+      ? cameraText(
+          "将启动 R1 深度接收；若 RGB 已开启会继续保留。该操作不会改变机器人模式或运动状态。",
+          "Start R1 depth reception while keeping an active RGB stream. This does not change robot mode or motion state.",
+        )
+      : cameraText(
+          `将启动固定右目 UDP ${fixedRgbPort} RGB 接收；若深度已开启会继续保留。该操作不会改变机器人模式或运动状态。`,
+          `Start fixed right-eye UDP ${fixedRgbPort} RGB reception; an active depth stream will be kept. This does not change robot mode or motion state.`,
+        )
+    : warning;
+  confirmSafetyTitle.textContent = fixedPolicy
+    ? stopping
+      ? cameraText("仅停止所选画面", "Stop selected stream only")
+      : cameraText("R1 相机固定数据源", "Fixed R1 camera source")
+    : "Web 取流会临时独占当前 D435i";
+  const fixedDepthSource =
+    latestCameraStatus?.depth?.fixed_source ||
+    latestCameraStatus?.depth?.source ||
+    "--";
+  confirmSafetyDetail.textContent = fixedPolicy
+    ? command === "stop_rgb"
+      ? cameraText(
+          "只关闭 Web 的 RGB 接收；已开启的深度画面会继续运行。",
+          "Only the Web RGB receiver is stopped; an active depth stream keeps running.",
+        )
+      : command === "stop_depth"
+        ? cameraText(
+            "只关闭 Web 的深度接收；已开启的 RGB 画面会继续运行。",
+            "Only the Web depth receiver is stopped; an active RGB stream keeps running.",
+          )
+        : command === "start_realsense"
+          ? cameraText(
+              `深度固定读取 ${fixedDepthSource} 544×448@10Hz raw16，并按 Unitree 文档的 1%/99% 分位归一化 + JET 伪彩显示；读不到完整帧时不会复用旧帧。`,
+              `Depth reads fixed ${fixedDepthSource} 544×448@10Hz raw16 and follows Unitree's documented 1%/99% percentile normalization plus JET pseudocolor. Incomplete reads never reuse stale frames.`,
+            )
+          : cameraText(
+              `RGB 固定监听右目 RTP/H264 UDP ${fixedRgbPort}，可与左目深度同时在线。`,
+              `RGB listens on fixed right-eye RTP/H264 UDP ${fixedRgbPort} and can remain online with left-eye depth.`,
+            )
+    : "启动时会暂停占用 D435i 的 master_service / teleimager.service，再自动识别当前 RGB 与 Z16 深度设备；停止后仅恢复本页实际暂停的服务。";
   dialogFeedback.textContent = "";
   submitCommand.disabled = false;
   confirmDialog.showModal();
@@ -1967,7 +2134,7 @@ async function executePending() {
     }
     const autoStarted = [result.lidar_started && "雷达", result.slam_started && "SLAM"].filter(Boolean);
     const serviceNote = autoStarted.length ? `；已自动启动${autoStarted.join("和")}` : "；依赖服务已在线";
-    const message = `${COMMAND_META[metaKey][0]}已由服务接受（请求 ${result.request_id}${feedbackTarget === "perception" ? serviceNote : ""}）${mapLoadNote}`;
+    const message = `${cameraCommandMeta(metaKey)[0]}已由服务接受（请求 ${result.request_id}${feedbackTarget === "perception" ? serviceNote : ""}）${mapLoadNote}`;
     if (feedbackTarget === "camera") {
       cameraFeedback.textContent = message;
       cameraFeedback.className = "perception-feedback success";
@@ -2086,8 +2253,8 @@ cancelNavigationButton.addEventListener("click", () => stageCommand("cancel_navi
 document.getElementById("stopSlam").addEventListener("click", () => stageCommand("stop_slam"));
 document.getElementById("startV4l2Camera").addEventListener("click", () => stageCameraCommand("start_v4l2"));
 startRealSenseCamera.addEventListener("click", () => stageCameraCommand("start_realsense"));
-document.getElementById("stopCamera").addEventListener("click", () => stageCameraCommand("stop_camera"));
-document.getElementById("stopDepthCamera").addEventListener("click", () => stageCameraCommand("stop_camera"));
+stopRgbCamera.addEventListener("click", () => stageCameraCommand("stop_rgb"));
+stopDepthCamera.addEventListener("click", () => stageCameraCommand("stop_depth"));
 document.getElementById("cancelPerceptionCommand").addEventListener("click", () => {
   pendingRequest = null;
   confirmDialog.close();
@@ -2133,6 +2300,8 @@ document.querySelectorAll("[data-native-layer]").forEach((button) => {
   });
 });
 window.addEventListener("g1:telemetry", (event) => syncMapRobotTelemetry(event.detail));
+window.addEventListener("ui-language-change", updateMapHelp);
+window.addEventListener("unirobo:manifest", updateMapHelp);
 window.addEventListener("g1:workspace-change", (event) => {
   if (event.detail?.workspace === "console") {
     requestAnimationFrame(() => {
@@ -2144,6 +2313,7 @@ window.addEventListener("g1:workspace-change", (event) => {
   }
 });
 initializeCameraViewports();
+updateMapHelp();
 renderNavigationTaskList();
 if (initializeMap()) {
   setTopView();

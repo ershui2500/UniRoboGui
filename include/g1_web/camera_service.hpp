@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "g1_web/device_capability.hpp"
 
 namespace g1_web {
 
@@ -12,6 +15,8 @@ struct CameraOptions {
   bool realsense{false};
   bool auto_detect{false};
   bool teleimager_rgb{false};
+  bool rgb_enabled{true};
+  bool depth_enabled{true};
   std::string rgb_source;
   std::string depth_source;
   unsigned int width{640};
@@ -44,9 +49,24 @@ struct CameraResult {
   std::string error;
 };
 
+bool CameraFrameFresh(bool online, std::int64_t age_ms);
+bool CameraTransportBackendAvailable(CameraTransport transport,
+                                     bool opencv_available,
+                                     bool gstreamer_available);
+std::string BuildFixedRtpH264UdpPipeline(const CameraStreamSpec& spec);
+bool ValidateDecodedCameraFrame(const CameraStreamSpec& spec,
+                                int width, int height,
+                                std::string& error);
+bool ValidateRaw16DepthFrame(const CameraStreamSpec& spec,
+                             unsigned int actual_width,
+                             unsigned int actual_height,
+                             std::size_t bytes_read,
+                             std::string& error);
+
 class CameraService {
  public:
-  explicit CameraService(CameraOptions options);
+  CameraService(CameraOptions options,
+                const IDeviceCapabilityPolicy& device_policy);
   ~CameraService();
 
   bool Start(std::string& error);
@@ -54,6 +74,7 @@ class CameraService {
   CameraResult Submit(const CameraRequest& request);
   CameraFrame GetFrame(const std::string& stream) const;
   std::string SerializeStatus() const;
+  std::vector<DeviceCapabilityRuntime> DeviceCapabilities() const;
 
  private:
   class Impl;

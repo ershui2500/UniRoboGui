@@ -249,7 +249,7 @@ std::size_t CurlWriteCallback(char* data, std::size_t size,
 }
 
 struct LocalTtsStreamContext {
-  unitree::robot::g1::AudioClient* audio_client{nullptr};
+  IAudioCapability* audio_capability{nullptr};
   std::string app_name{"unirobo_kokoro"};
   std::string stream_id;
   std::string pending_pcm;
@@ -261,7 +261,7 @@ struct LocalTtsStreamContext {
 };
 
 bool FlushLocalTtsPcm(LocalTtsStreamContext& context, bool force) {
-  if (!context.audio_client || context.api_result != 0) return false;
+  if (!context.audio_capability || context.api_result != 0) return false;
   if (!context.playback_started) {
     if (!force && context.pending_pcm.size() < kLocalTtsPrebufferBytes) {
       return true;
@@ -281,7 +281,7 @@ bool FlushLocalTtsPcm(LocalTtsStreamContext& context, bool force) {
     std::vector<std::uint8_t> chunk(
         context.pending_pcm.begin(),
         context.pending_pcm.begin() + static_cast<std::ptrdiff_t>(chunk_size));
-    context.api_result = context.audio_client->PlayStream(
+    context.api_result = context.audio_capability->PlayStream(
         context.app_name, context.stream_id, std::move(chunk));
     if (context.api_result != 0) {
       context.error =
@@ -299,7 +299,7 @@ std::size_t CurlPcmWriteCallback(char* data, std::size_t size,
                                  std::size_t count, void* user_data) {
   const std::size_t bytes = size * count;
   auto* context = static_cast<LocalTtsStreamContext*>(user_data);
-  if (!context || !context->audio_client || bytes == 0 ||
+  if (!context || !context->audio_capability || bytes == 0 ||
       context->total_pcm_bytes + bytes > kMaximumLocalTtsPcmBytes) {
     if (context && context->error.empty()) {
       context->error = "local_tts_pcm_too_large";
@@ -315,8 +315,10 @@ std::size_t CurlPcmWriteCallback(char* data, std::size_t size,
 
 }  // namespace
 
-VoiceService::VoiceService(SnapshotStore& store, bool mock)
-    : store_(store), mock_(mock) {}
+VoiceService::VoiceService(
+    SnapshotStore& store, std::unique_ptr<IAudioCapability> audio_capability,
+    bool mock)
+    : store_(store), mock_(mock), audio_capability_(std::move(audio_capability)) {}
 
 VoiceService::~VoiceService() { Stop(); }
 
@@ -328,6 +330,26 @@ bool VoiceService::Start(std::string& error) {
 
   std::string config_error;
   LoadCustomerVoiceConfig(config_error);
+
+  audio_capability_available_.store(false);
+  audio_capability_error_.clear();
+  if (audio_capability_) {
+    std::string audio_error;
+    try {
+      audio_capability_available_.store(audio_capability_->Start(audio_error) &&
+                                        audio_capability_->Available());
+    } catch (const std::exception& exception) {
+      audio_error = exception.what();
+    } catch (...) {
+      audio_error = "unknown_audio_capability_init_error";
+    }
+    if (!audio_capability_available_.load()) {
+      audio_capability_error_ =
+          audio_error.empty() ? "audio_capability_unavailable" : audio_error;
+    }
+  } else {
+    audio_capability_error_ = "audio_capability_unavailable";
+  }
 
   VoiceData voice;
   if (mock_) {
@@ -348,7 +370,16 @@ bool VoiceService::Start(std::string& error) {
     llm_mode_ = "builtin";
     voice.vui_service_found = true;
     voice.vui_service_status_raw = 0;
-    voice.volume_pct = 82;
+    if (audio_capability_available_.load() && audio_capability_ &&
+        audio_capability_->Features().volume) {
+      std::uint8_t volume = 0;
+      voice.volume_api_result = audio_capability_->GetVolume(volume);
+      if (voice.volume_api_result == 0) voice.volume_pct = volume;
+    } else {
+      voice.volume_api_result = -1;
+      voice.volume_pct = -1;
+      voice.initialization_error = audio_capability_error_;
+    }
     error.clear();
   } else {
     voice = InitializeRealVoice(error);
@@ -394,13 +425,12 @@ bool VoiceService::Start(std::string& error) {
 VoiceData VoiceService::InitializeRealVoice(std::string& error) {
   VoiceData voice;
   try {
-    audio_client_ =
-        std::make_unique<unitree::robot::g1::AudioClient>();
-    audio_client_->SetTimeout(10.0F);
-    audio_client_->Init();
-
     std::string asr_error;
-    voice.asr_subscribed = StartAsrSubscription(asr_error);
+    if (audio_capability_ && audio_capability_->Features().asr) {
+      voice.asr_subscribed = StartAsrSubscription(asr_error);
+    } else {
+      asr_error = "audio_asr_unavailable";
+    }
     voice.asr_control_api_result = voice.asr_subscribed ? 0 : -1;
     voice.asr_control_error = asr_error;
 
@@ -460,10 +490,13 @@ VoiceData VoiceService::InitializeRealVoice(std::string& error) {
     voice.llm.customer_api_available = false;
 #endif
 
-    std::uint8_t volume = 0;
-    voice.volume_api_result = audio_client_->GetVolume(volume);
-    if (voice.volume_api_result == 0) {
-      voice.volume_pct = volume;
+    if (audio_capability_available_.load() && audio_capability_ &&
+        audio_capability_->Features().volume) {
+      std::uint8_t volume = 0;
+      voice.volume_api_result = audio_capability_->GetVolume(volume);
+      if (voice.volume_api_result == 0) voice.volume_pct = volume;
+    } else {
+      voice.volume_api_result = -1;
     }
 
     voice.initialized = true;
@@ -472,13 +505,17 @@ VoiceData VoiceService::InitializeRealVoice(std::string& error) {
               std::to_string(voice.chat_go_api_result) +
               ", status=" + std::to_string(voice.chat_go_status_raw);
       voice.initialization_error = error;
-    } else if (voice.volume_api_result != 0) {
-      error = "Audio service verification failed: GetVolume ret=" +
-              std::to_string(voice.volume_api_result);
-      voice.initialization_error = error;
     } else {
       error.clear();
-      voice.initialization_error.clear();
+      if (!audio_capability_available_.load()) {
+        voice.initialization_error = audio_capability_error_;
+      } else if (voice.volume_api_result != 0) {
+        voice.initialization_error =
+            "Audio service verification failed: GetVolume ret=" +
+            std::to_string(voice.volume_api_result);
+      } else {
+        voice.initialization_error.clear();
+      }
     }
   } catch (const std::exception& exception) {
     error = exception.what();
@@ -510,7 +547,8 @@ void VoiceService::Stop() {
   if (worker_.joinable()) {
     worker_.join();
   }
-  audio_client_.reset();
+  if (audio_capability_) audio_capability_->Stop();
+  audio_capability_available_.store(false);
   robot_state_client_.reset();
   {
     std::lock_guard<std::mutex> lock(llm_mutex_);
@@ -557,6 +595,17 @@ TtsEnqueueResult VoiceService::EnqueueTts(const std::string& text,
     return result;
   }
   result.backend = resolved_backend;
+
+  const auto audio_features =
+      audio_capability_ ? audio_capability_->Features() : AudioCapabilityFeatures{};
+  const bool output_supported =
+      resolved_backend == "unitree" ? audio_features.tts
+                                     : (audio_features.play_stream ||
+                                        audio_features.tts);
+  if (!audio_capability_available_.load() || !output_supported) {
+    result.error = "audio_capability_unavailable";
+    return result;
+  }
 
   if (store_.GetSnapshot().voice.play_state_raw == 1) {
     result.error = "audio_busy";
@@ -712,7 +761,14 @@ void VoiceService::WorkerLoop() {
         play_event_baseline = play_event_sequence_;
       }
 
-      tts.api_result = audio_client_->TtsMaker(segment.text, segment.speaker_id);
+      if (!audio_capability_available_.load() || !audio_capability_ ||
+          !audio_capability_->Features().tts) {
+        tts.api_result = -1;
+        tts.backend_error = "audio_capability_unavailable";
+        break;
+      }
+      tts.api_result =
+          audio_capability_->TtsMaker(segment.text, segment.speaker_id);
       if (tts.api_result != 0) break;
 
       std::unique_lock<std::mutex> play_lock(play_state_mutex_);
@@ -773,6 +829,12 @@ VoiceActionResult VoiceService::SetAsrEnabled(bool enabled) {
     return result;
   }
 
+  if (!audio_capability_ || !audio_capability_->Features().asr) {
+    result.api_result = -1;
+    result.error = "audio_asr_unavailable";
+    return result;
+  }
+
   std::string error;
   if (!StartAsrSubscription(error)) {
     store_.UpdateAsrSubscription(false, -1, error);
@@ -803,24 +865,21 @@ VoiceActionResult VoiceService::SetVolume(std::int32_t volume_pct) {
     return result;
   }
 
-  if (mock_) {
-    result.api_result = 0;
-  } else {
-    try {
-      std::lock_guard<std::mutex> lock(voice_mutex_);
-      if (!audio_client_) {
-        result.error = "voice_not_ready";
-        return result;
-      }
-      result.api_result =
-          audio_client_->SetVolume(static_cast<std::uint8_t>(volume_pct));
-    } catch (const std::exception& exception) {
-      result.api_result = -1;
-      result.error = exception.what();
-    } catch (...) {
-      result.api_result = -1;
-      result.error = "unknown_volume_exception";
+  try {
+    std::lock_guard<std::mutex> lock(voice_mutex_);
+    if (!audio_capability_available_.load() || !audio_capability_ ||
+        !audio_capability_->Features().volume) {
+      result.error = "audio_capability_unavailable";
+      return result;
     }
+    result.api_result =
+        audio_capability_->SetVolume(static_cast<std::uint8_t>(volume_pct));
+  } catch (const std::exception& exception) {
+    result.api_result = -1;
+    result.error = exception.what();
+  } catch (...) {
+    result.api_result = -1;
+    result.error = "unknown_volume_exception";
   }
   store_.UpdateVolume(result.api_result, volume_pct);
   if (result.api_result != 0) {
@@ -850,6 +909,7 @@ CustomerVoiceConfigResult VoiceService::GetCustomerVoiceConfig() {
   }
   result.accepted = true;
   result.config.api_url = customer_api_url_;
+  result.config.proxy_url = customer_proxy_url_;
   result.config.api_key = customer_api_key_.empty() ? "" : kSavedApiKeyMask;
   result.config.model = customer_model_;
   result.config.api_key_configured = !customer_api_key_.empty();
@@ -896,6 +956,7 @@ CustomerVoiceConfigResult VoiceService::SetCustomerVoiceConfig(
   }
 
   const std::string trimmed_api_url = Trim(config.api_url);
+  const std::string trimmed_proxy_url = Trim(config.proxy_url);
   const std::string trimmed_model = Trim(config.model);
   std::string normalized_api_url;
   if (config.update_api_config) {
@@ -912,6 +973,12 @@ CustomerVoiceConfigResult VoiceService::SetCustomerVoiceConfig(
     }
     if (config.api_key.size() > 4096) {
       result.error = "customer_api_key_too_long";
+      return result;
+    }
+    if (!trimmed_proxy_url.empty() &&
+        (trimmed_proxy_url.size() > 1024 ||
+         !IsValidApiUrl(trimmed_proxy_url))) {
+      result.error = "invalid_customer_proxy_url";
       return result;
     }
   }
@@ -962,6 +1029,7 @@ CustomerVoiceConfigResult VoiceService::SetCustomerVoiceConfig(
   }
 
   const std::string previous_api_url = customer_api_url_;
+  const std::string previous_proxy_url = customer_proxy_url_;
   const std::string previous_api_key = customer_api_key_;
   const std::string previous_model = customer_model_;
   const std::string previous_role = customer_role_prompt_;
@@ -972,6 +1040,7 @@ CustomerVoiceConfigResult VoiceService::SetCustomerVoiceConfig(
 
   if (config.update_api_config) {
     customer_api_url_ = normalized_api_url;
+    customer_proxy_url_ = trimmed_proxy_url;
     customer_api_key_ = std::move(next_api_key);
     customer_model_ = trimmed_model;
   }
@@ -984,6 +1053,7 @@ CustomerVoiceConfigResult VoiceService::SetCustomerVoiceConfig(
   std::string save_error;
   if (!SaveCustomerVoiceConfig(save_error)) {
     customer_api_url_ = previous_api_url;
+    customer_proxy_url_ = previous_proxy_url;
     customer_api_key_ = previous_api_key;
     customer_model_ = previous_model;
     customer_role_prompt_ = previous_role;
@@ -1018,6 +1088,7 @@ CustomerVoiceConfigResult VoiceService::SetCustomerVoiceConfig(
 
   result.accepted = true;
   result.config.api_url = customer_api_url_;
+  result.config.proxy_url = customer_proxy_url_;
   result.config.api_key = customer_api_key_.empty() ? "" : kSavedApiKeyMask;
   result.config.model = customer_model_;
   result.config.api_key_configured = !customer_api_key_.empty();
@@ -1060,6 +1131,8 @@ bool VoiceService::LoadCustomerVoiceConfig(std::string& error) {
   }
 
   const std::string persisted_api_url = Trim(root.get("api_url", "").asString());
+  const std::string persisted_proxy_url =
+      Trim(root.get("proxy_url", "").asString());
   const std::string persisted_model = Trim(root.get("model", "").asString());
   const std::string persisted_api_key = root.get("api_key", "").asString();
   if (!persisted_api_url.empty() || !persisted_model.empty()) {
@@ -1071,6 +1144,15 @@ bool VoiceService::LoadCustomerVoiceConfig(std::string& error) {
       customer_api_url_ = normalized_url;
       customer_model_ = persisted_model;
       customer_api_key_ = persisted_api_key;
+    }
+  }
+  customer_proxy_url_.clear();
+  if (!persisted_proxy_url.empty()) {
+    if (persisted_proxy_url.size() > 1024 ||
+        !IsValidApiUrl(persisted_proxy_url)) {
+      error = "customer_api_config_invalid";
+    } else {
+      customer_proxy_url_ = persisted_proxy_url;
     }
   }
 
@@ -1146,6 +1228,7 @@ bool VoiceService::SaveCustomerVoiceConfig(std::string& error) const {
     }
     Json::Value root(Json::objectValue);
     root["api_url"] = customer_api_url_;
+    root["proxy_url"] = customer_proxy_url_;
     root["api_key"] = customer_api_key_;
     root["model"] = customer_model_;
     root["role_prompt"] = customer_role_prompt_;
@@ -1549,6 +1632,9 @@ LlmChatResult VoiceService::ChatWithCustomerLlm(
           headers = curl_slist_append(headers, authorization.c_str());
         }
         curl_easy_setopt(curl, CURLOPT_URL, customer_api_url_.c_str());
+        if (!customer_proxy_url_.empty()) {
+          curl_easy_setopt(curl, CURLOPT_PROXY, customer_proxy_url_.c_str());
+        }
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_body.c_str());
@@ -1768,8 +1854,9 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
     error = "local_tts_transport_init_failed";
     return false;
   }
-  if (!audio_client_) {
-    error = "local_tts_audio_client_unavailable";
+  if (!audio_capability_available_.load() || !audio_capability_ ||
+      !audio_capability_->Features().play_stream) {
+    error = "audio_capability_unavailable";
     return false;
   }
 
@@ -1780,7 +1867,7 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
   const std::string request_body = Json::writeString(writer, request);
 
   LocalTtsStreamContext stream_context;
-  stream_context.audio_client = audio_client_.get();
+  stream_context.audio_capability = audio_capability_.get();
   stream_context.stream_id = std::to_string(SteadyTimeNs());
 
   std::uint64_t play_event_baseline = 0;
@@ -1821,7 +1908,7 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
 
   if (curl_result != CURLE_OK) {
     if (stream_context.playback_started) {
-      audio_client_->PlayStop(stream_context.stream_id);
+      audio_capability_->PlayStop(stream_context.stream_id);
     }
     error = !stream_context.error.empty()
                 ? stream_context.error
@@ -1848,7 +1935,7 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
     stream_context.total_pcm_bytes += padding_bytes;
   }
   if (!FlushLocalTtsPcm(stream_context, true)) {
-    audio_client_->PlayStop(stream_context.stream_id);
+    audio_capability_->PlayStop(stream_context.stream_id);
     error = stream_context.error.empty() ? "local_tts_play_stream_failed"
                                          : stream_context.error;
     return false;
@@ -1868,7 +1955,7 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
   }
   if (!saw_playing) {
     play_lock.unlock();
-    audio_client_->PlayStop(stream_context.stream_id);
+    audio_capability_->PlayStop(stream_context.stream_id);
     error = "local_tts_play_state_missing";
     return false;
   }
@@ -1890,7 +1977,7 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
           });
   if (!running_.load() || !finished) {
     play_lock.unlock();
-    audio_client_->PlayStop(stream_context.stream_id);
+    audio_capability_->PlayStop(stream_context.stream_id);
     error = "local_tts_playback_timeout";
     return false;
   }

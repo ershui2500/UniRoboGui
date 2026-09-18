@@ -5,6 +5,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <fcntl.h>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -17,6 +18,7 @@
 #include <json/json.h>
 
 #include "g1_web/json_serializer.hpp"
+#include "g1_web/robot_registry.hpp"
 #include "g1_web/static_assets.hpp"
 
 namespace g1_web {
@@ -27,6 +29,12 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace websocket = beast::websocket;
 using tcp = net::ip::tcp;
+
+bool SetCloseOnExec(tcp::socket& socket) {
+  const int flags = ::fcntl(socket.native_handle(), F_GETFD);
+  return flags >= 0 &&
+         ::fcntl(socket.native_handle(), F_SETFD, flags | FD_CLOEXEC) == 0;
+}
 
 bool ReadFile(const std::filesystem::path& path, std::string& body) {
   std::ifstream input(path, std::ios::binary);
@@ -50,10 +58,12 @@ class WebSocketSession
     : public std::enable_shared_from_this<WebSocketSession> {
  public:
   WebSocketSession(tcp::socket socket, SnapshotStore& store,
+                   const RobotProfile& robot_profile,
                    std::chrono::milliseconds interval)
       : ws_(std::move(socket)),
         timer_(ws_.get_executor()),
         store_(store),
+        robot_profile_(robot_profile),
         interval_(interval) {}
 
   void Run(http::request<http::string_body> request) {
@@ -101,7 +111,7 @@ class WebSocketSession
   }
 
   void WriteSnapshot() {
-    outgoing_ = SerializeSnapshot(store_.GetSnapshot());
+    outgoing_ = SerializeSnapshot(robot_profile_, store_.GetSnapshot());
     auto self = shared_from_this();
     ws_.async_write(net::buffer(outgoing_),
                     [self](beast::error_code error, std::size_t) {
@@ -127,6 +137,7 @@ class WebSocketSession
   net::steady_timer timer_;
   beast::flat_buffer read_buffer_;
   SnapshotStore& store_;
+  const RobotProfile& robot_profile_;
   std::chrono::milliseconds interval_;
   std::string outgoing_;
 };
@@ -138,16 +149,20 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
               ControlService& control_service,
               PerceptionService& perception_service,
               CameraService& camera_service,
+              const RobotProfile& robot_profile,
               std::filesystem::path web_root,
-              std::chrono::milliseconds publish_interval)
+              std::chrono::milliseconds publish_interval,
+              std::function<void(const std::string&)> robot_switch_request)
       : socket_(std::move(socket)),
         store_(store),
         voice_service_(voice_service),
         control_service_(control_service),
         perception_service_(perception_service),
         camera_service_(camera_service),
+        robot_profile_(robot_profile),
         web_root_(std::move(web_root)),
-        publish_interval_(publish_interval) {}
+        publish_interval_(publish_interval),
+        robot_switch_request_(std::move(robot_switch_request)) {}
 
   void Run() {
     beast::error_code ignored;
@@ -172,7 +187,7 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     const std::string target(request_.target());
     if (websocket::is_upgrade(request_) && target == "/ws/telemetry") {
       std::make_shared<WebSocketSession>(
-          std::move(socket_), store_, publish_interval_)
+          std::move(socket_), store_, robot_profile_, publish_interval_)
           ->Run(std::move(request_));
       return;
     }
@@ -282,6 +297,11 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
       HandleCameraRequest();
       return;
     }
+    if (target == "/api/robot/switch" &&
+        request_.method() == http::verb::post) {
+      HandleRobotSwitchRequest();
+      return;
+    }
     if (request_.method() != http::verb::get) {
       Send(http::status::method_not_allowed, "application/json; charset=utf-8",
            "{\"error\":\"method_not_allowed\"}");
@@ -295,14 +315,40 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
       return;
     }
 
+    if (target == "/api/robot/products") {
+      Json::Value response(Json::objectValue);
+      response["active_product_id"] = robot_profile_.identity.product_id;
+      Json::Value products(Json::arrayValue);
+      for (const auto* profile : RobotRegistry::All()) {
+        Json::Value product(Json::objectValue);
+        product["product_id"] = profile->identity.product_id;
+        product["display_name"] = profile->identity.display_name;
+        product["variant"] = profile->identity.variant;
+        products.append(product);
+      }
+      response["products"] = products;
+      Send(http::status::ok, "application/json; charset=utf-8",
+           JsonResponse(response));
+      return;
+    }
     if (target == "/api/health") {
       Send(http::status::ok, "application/json; charset=utf-8",
-           SerializeHealth(store_.GetSnapshot()));
+           SerializeHealth(robot_profile_, store_.GetSnapshot()));
       return;
     }
     if (target == "/api/snapshot") {
       Send(http::status::ok, "application/json; charset=utf-8",
-           SerializeSnapshot(store_.GetSnapshot()));
+           SerializeSnapshot(robot_profile_, store_.GetSnapshot()));
+      return;
+    }
+    if (target == "/api/robot/manifest") {
+      RobotProfile effective_profile = robot_profile_;
+      ApplyEffectiveDeviceCapabilities(
+          effective_profile, perception_service_.DeviceCapabilities());
+      ApplyEffectiveDeviceCapabilities(
+          effective_profile, camera_service_.DeviceCapabilities());
+      Send(http::status::ok, "application/json; charset=utf-8",
+           SerializeRobotManifest(effective_profile, store_.GetSnapshot()));
       return;
     }
     if (target == "/api/voice/status") {
@@ -379,6 +425,50 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
          immutable_asset ? "public, max-age=31536000, immutable" : "no-cache");
   }
 
+  void HandleRobotSwitchRequest() {
+    if (request_.body().size() > 256) {
+      Send(http::status::payload_too_large,
+           "application/json; charset=utf-8",
+           R"({"accepted":false,"error":"request_too_large"})");
+      return;
+    }
+
+    Json::CharReaderBuilder builder;
+    Json::Value root;
+    std::string parse_errors;
+    std::istringstream stream(request_.body());
+    if (!Json::parseFromStream(builder, stream, &root, &parse_errors) ||
+        !root.isObject() || !root["product_id"].isString()) {
+      Send(http::status::bad_request, "application/json; charset=utf-8",
+           R"({"accepted":false,"error":"invalid_json"})");
+      return;
+    }
+
+    const std::string product_id = root["product_id"].asString();
+    if (RobotRegistry::Find(product_id) == nullptr) {
+      Send(http::status::bad_request, "application/json; charset=utf-8",
+           R"({"accepted":false,"error":"unknown_robot_product"})");
+      return;
+    }
+
+    Json::Value response(Json::objectValue);
+    response["accepted"] = true;
+    response["product_id"] = product_id;
+    response["restarting"] = product_id != robot_profile_.identity.product_id;
+    if (response["restarting"].asBool()) {
+      if (!robot_switch_request_) {
+        response["accepted"] = false;
+        response["error"] = "robot_switch_unavailable";
+        Send(http::status::conflict, "application/json; charset=utf-8",
+             JsonResponse(response));
+        return;
+      }
+      robot_switch_request_(product_id);
+    }
+    Send(http::status::ok, "application/json; charset=utf-8",
+         JsonResponse(response));
+  }
+
   void HandleTtsRequest() {
     if (request_.body().size() > 4096) {
       Send(http::status::payload_too_large,
@@ -424,7 +514,8 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
                result.error == "duplicate_tts_request") {
       Send(http::status::conflict,
            "application/json; charset=utf-8", JsonResponse(response));
-    } else if (result.error == "voice_not_ready") {
+    } else if (result.error == "voice_not_ready" ||
+               result.error == "audio_capability_unavailable") {
       Send(http::status::service_unavailable,
            "application/json; charset=utf-8", JsonResponse(response));
     } else {
@@ -452,7 +543,8 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     response["api_result"] = result.api_result;
     response["error"] = result.error;
     Send(result.accepted ? http::status::ok
-                         : result.error == "voice_not_ready"
+                         : (result.error == "voice_not_ready" ||
+                            result.error == "audio_asr_unavailable")
                                ? http::status::service_unavailable
                                : http::status::bad_request,
          "application/json; charset=utf-8", JsonResponse(response));
@@ -477,7 +569,8 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     response["api_result"] = result.api_result;
     response["error"] = result.error;
     Send(result.accepted ? http::status::ok
-                         : result.error == "voice_not_ready"
+                         : (result.error == "voice_not_ready" ||
+                            result.error == "audio_capability_unavailable")
                                ? http::status::service_unavailable
                                : http::status::bad_request,
          "application/json; charset=utf-8", JsonResponse(response));
@@ -489,6 +582,7 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     response["accepted"] = result.accepted;
     response["error"] = result.error;
     response["api_url"] = result.config.api_url;
+    response["proxy_url"] = result.config.proxy_url;
     response["api_key"] = result.config.api_key;
     response["api_key_configured"] = result.config.api_key_configured;
     response["model"] = result.config.model;
@@ -534,6 +628,7 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
         !root["wake_word"].isString() || !root["wake_enabled"].isBool() ||
         !root["tts_backend"].isString() || !root["qa_entries"].isArray() ||
         (root.isMember("api_url") && !root["api_url"].isString()) ||
+        (root.isMember("proxy_url") && !root["proxy_url"].isString()) ||
         (root.isMember("api_key") && !root["api_key"].isString()) ||
         (root.isMember("model") && !root["model"].isString()) ||
         (root.isMember("preserve_api_key") &&
@@ -546,10 +641,12 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     const auto current = voice_service_.GetCustomerVoiceConfig();
     CustomerVoiceConfig config = current.config;
     config.update_api_config = root.isMember("api_url") ||
+                               root.isMember("proxy_url") ||
                                root.isMember("api_key") ||
                                root.isMember("model") ||
                                root.isMember("preserve_api_key");
     config.api_url = root.get("api_url", config.api_url).asString();
+    config.proxy_url = root.get("proxy_url", config.proxy_url).asString();
     config.model = root.get("model", config.model).asString();
     if (root.isMember("api_key")) {
       config.api_key = root["api_key"].asString();
@@ -727,6 +824,7 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     } else if (result.error == "control_busy" ||
                result.error == "sport_state_stale" ||
                result.error == "robot_not_static" ||
+               result.error == "mode_transition_not_allowed" ||
                result.error == "motion_active" ||
                result.error == "arm_action_fsm_not_allowed" ||
                result.error == "arm_action_robot_not_static" ||
@@ -1060,6 +1158,15 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
            R"({"accepted":false,"error":"invalid_json"})");
       return;
     }
+    for (const auto& member : root.getMemberNames()) {
+      if (member != "request_key" && member != "command" &&
+          member != "confirmed" && member != "rgb_source" &&
+          member != "depth_source") {
+        Send(http::status::bad_request, "application/json; charset=utf-8",
+             R"({"accepted":false,"error":"camera_override_forbidden"})");
+        return;
+      }
+    }
     CameraRequest camera_request;
     camera_request.request_key = root["request_key"].asString();
     camera_request.command = root["command"].asString();
@@ -1076,7 +1183,8 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     if (result.accepted) {
       Send(http::status::accepted, "application/json; charset=utf-8", body);
     } else if (result.error == "opencv_not_available" ||
-               result.error == "librealsense2_not_available") {
+               result.error == "librealsense2_not_available" ||
+               result.error == "camera_backend_unavailable") {
       Send(http::status::service_unavailable,
            "application/json; charset=utf-8", body);
     } else {
@@ -1129,8 +1237,10 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
   ControlService& control_service_;
   PerceptionService& perception_service_;
   CameraService& camera_service_;
+  const RobotProfile& robot_profile_;
   std::filesystem::path web_root_;
   std::chrono::milliseconds publish_interval_;
+  std::function<void(const std::string&)> robot_switch_request_;
 };
 
 class Listener : public std::enable_shared_from_this<Listener> {
@@ -1140,8 +1250,10 @@ class Listener : public std::enable_shared_from_this<Listener> {
            ControlService& control_service,
            PerceptionService& perception_service,
            CameraService& camera_service,
+           const RobotProfile& robot_profile,
            std::filesystem::path web_root,
-           std::chrono::milliseconds publish_interval)
+           std::chrono::milliseconds publish_interval,
+           std::function<void(const std::string&)> robot_switch_request)
       : io_context_(io_context),
         acceptor_(net::make_strand(io_context)),
         store_(store),
@@ -1149,8 +1261,10 @@ class Listener : public std::enable_shared_from_this<Listener> {
         control_service_(control_service),
         perception_service_(perception_service),
         camera_service_(camera_service),
+        robot_profile_(robot_profile),
         web_root_(std::move(web_root)),
-        publish_interval_(publish_interval) {
+        publish_interval_(publish_interval),
+        robot_switch_request_(std::move(robot_switch_request)) {
     beast::error_code error;
     acceptor_.open(endpoint.protocol(), error);
     if (error) {
@@ -1172,6 +1286,12 @@ class Listener : public std::enable_shared_from_this<Listener> {
 
   void Run() { Accept(); }
 
+  void Stop() {
+    beast::error_code ignored;
+    acceptor_.cancel(ignored);
+    acceptor_.close(ignored);
+  }
+
  private:
   void Accept() {
     auto self = shared_from_this();
@@ -1179,13 +1299,17 @@ class Listener : public std::enable_shared_from_this<Listener> {
         net::make_strand(io_context_),
         [self](beast::error_code error, tcp::socket socket) {
           if (!error) {
-            std::make_shared<HttpSession>(
-                std::move(socket), self->store_, self->voice_service_,
-                self->control_service_,
-                self->perception_service_, self->camera_service_,
-                self->web_root_,
-                self->publish_interval_)
-                ->Run();
+            if (!SetCloseOnExec(socket)) {
+              beast::error_code ignored;
+              socket.close(ignored);
+            } else {
+              std::make_shared<HttpSession>(
+                  std::move(socket), self->store_, self->voice_service_,
+                  self->control_service_, self->perception_service_,
+                  self->camera_service_, self->robot_profile_, self->web_root_,
+                  self->publish_interval_, self->robot_switch_request_)
+                  ->Run();
+            }
           }
           if (self->acceptor_.is_open()) {
             self->Accept();
@@ -1200,8 +1324,10 @@ class Listener : public std::enable_shared_from_this<Listener> {
   ControlService& control_service_;
   PerceptionService& perception_service_;
   CameraService& camera_service_;
+  const RobotProfile& robot_profile_;
   std::filesystem::path web_root_;
   std::chrono::milliseconds publish_interval_;
+  std::function<void(const std::string&)> robot_switch_request_;
 };
 
 }  // namespace
@@ -1212,17 +1338,21 @@ class HttpServer::Impl {
        ControlService& control_service,
        PerceptionService& perception_service,
        CameraService& camera_service,
+       const RobotProfile& robot_profile,
        std::string bind_address, std::uint16_t port,
-       std::string web_root, unsigned int publish_hz)
+       std::string web_root, unsigned int publish_hz,
+       std::function<void(const std::string&)> robot_switch_request)
       : store_(store),
         voice_service_(voice_service),
         control_service_(control_service),
         perception_service_(perception_service),
         camera_service_(camera_service),
+        robot_profile_(robot_profile),
         bind_address_(std::move(bind_address)),
         port_(port),
         web_root_(std::move(web_root)),
-        publish_hz_(publish_hz) {}
+        publish_hz_(publish_hz),
+        robot_switch_request_(std::move(robot_switch_request)) {}
 
   bool Start(std::string& error) {
     if (!threads_.empty()) {
@@ -1241,7 +1371,7 @@ class HttpServer::Impl {
       listener_ = std::make_shared<Listener>(
           io_context_, tcp::endpoint{address, port_}, store_, voice_service_,
           control_service_, perception_service_, camera_service_,
-          web_root_, interval);
+          robot_profile_, web_root_, interval, robot_switch_request_);
       listener_->Run();
       constexpr std::size_t kHttpWorkerCount = 4;
       threads_.reserve(kHttpWorkerCount);
@@ -1263,6 +1393,7 @@ class HttpServer::Impl {
   }
 
   void Stop() {
+    if (listener_) listener_->Stop();
     io_context_.stop();
     for (auto& thread : threads_) {
       if (thread.joinable()) thread.join();
@@ -1277,10 +1408,12 @@ class HttpServer::Impl {
   ControlService& control_service_;
   PerceptionService& perception_service_;
   CameraService& camera_service_;
+  const RobotProfile& robot_profile_;
   std::string bind_address_;
   std::uint16_t port_;
   std::string web_root_;
   unsigned int publish_hz_;
+  std::function<void(const std::string&)> robot_switch_request_;
   net::io_context io_context_{4};
   std::shared_ptr<Listener> listener_;
   std::vector<std::thread> threads_;
@@ -1290,14 +1423,16 @@ HttpServer::HttpServer(SnapshotStore& store, VoiceService& voice_service,
                        ControlService& control_service,
                        PerceptionService& perception_service,
                        CameraService& camera_service,
+                       const RobotProfile& robot_profile,
                        std::string bind_address,
                        std::uint16_t port, std::string web_root,
-                       unsigned int publish_hz)
+                       unsigned int publish_hz,
+                       std::function<void(const std::string&)> robot_switch_request)
     : impl_(std::make_unique<Impl>(
           store, voice_service, control_service, perception_service,
-          camera_service, std::move(bind_address), port,
-          std::move(web_root),
-          publish_hz)) {}
+          camera_service, robot_profile, std::move(bind_address), port,
+          std::move(web_root), publish_hz,
+          std::move(robot_switch_request))) {}
 
 HttpServer::~HttpServer() { Stop(); }
 

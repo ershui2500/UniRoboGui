@@ -2,21 +2,6 @@ import * as THREE from "/assets/vendor/three/three.module.js";
 import { OrbitControls } from "/assets/vendor/three/examples/jsm/controls/OrbitControls.js";
 import URDFLoader from "/assets/vendor/urdf-loader/URDFLoader.js";
 
-const MODEL_ROOT = "/assets/unitree/g1_description";
-const MODEL_BY_MACHINE = new Map([
-  [2, "g1_29dof.urdf"],
-  [3, "g1_29dof_lock_waist.urdf"],
-  [5, "g1_29dof_rev_1_0.urdf"],
-  [6, "g1_29dof_lock_waist_rev_1_0.urdf"],
-  [11, "g1_29dof_mode_11.urdf"],
-  [12, "g1_29dof_mode_12.urdf"],
-  [13, "g1_29dof_mode_13.urdf"],
-  [14, "g1_29dof_mode_14.urdf"],
-  [15, "g1_29dof_mode_15.urdf"],
-  [16, "g1_29dof_mode_16.urdf"],
-  [18, "g1_29dof_mode_18.urdf"],
-]);
-const ALLOWED_MODEL_FILES = new Set(MODEL_BY_MACHINE.values());
 const ROS_TO_THREE = new THREE.Quaternion().setFromEuler(
   new THREE.Euler(-Math.PI / 2, 0, 0, "XYZ"),
 );
@@ -56,6 +41,29 @@ function setLoading(title, detail) {
   loading.hidden = false;
   loading.querySelector("strong").textContent = title;
   loading.querySelector("small").textContent = detail;
+}
+
+function manifestRobotName() {
+  const name = window.robotManifest?.identity?.display_name;
+  if (typeof name === "string" && name.trim()) return name.trim();
+  return window.UiI18n?.language === "en" ? "Robot" : "机器人";
+}
+
+function viewerText(zh, en) {
+  return window.UiI18n?.language === "en" ? en : zh;
+}
+
+function manifestJointDescriptor(name) {
+  return window.robotManifest?.joints?.find((joint) => joint?.name === name) || null;
+}
+
+function manifestUrdfJointName(name) {
+  const urdfName = manifestJointDescriptor(name)?.urdf_joint_name;
+  return typeof urdfName === "string" && urdfName ? urdfName : null;
+}
+
+function semanticJointName(urdfName) {
+  return window.robotManifest?.joints?.find((joint) => joint?.urdf_joint_name === urdfName)?.name || null;
 }
 
 function initializeScene() {
@@ -185,27 +193,59 @@ function fitView() {
   renderScene();
 }
 
-function validateJoints(candidate, joints = latestData?.joints) {
-  const telemetryNames = joints?.map((joint) => `${joint.name}_joint`) || [];
-  const missing = telemetryNames.filter((name) => !candidate.joints[name]);
-  if (telemetryNames.length !== 29 || missing.length) {
-    throw new Error(`URDF 关节映射不完整：${missing.join(", ") || `${telemetryNames.length}/29`}`);
+function validateJoints(candidate) {
+  const expectedJoints = window.robotManifest?.joints;
+  if (!Array.isArray(expectedJoints) || !expectedJoints.length) {
+    throw new Error(viewerText("Robot Manifest 缺少关节 Schema", "Robot Manifest is missing the joint schema"));
+  }
+  const expectedNames = expectedJoints.map((joint) => joint?.urdf_joint_name);
+  if (expectedNames.some((name) => typeof name !== "string" || !name)) {
+    throw new Error(viewerText("Robot Manifest 关节元数据无效", "Robot Manifest joint metadata is invalid"));
+  }
+  const missing = expectedNames.filter((name) => !candidate.joints[name]);
+  if (missing.length) {
+    throw new Error(viewerText(
+      `URDF 关节映射不完整：${missing.join(", ")}`,
+      `Incomplete URDF joint mapping: ${missing.join(", ")}`,
+    ));
   }
 }
 
 function resolveModel(robotInfo) {
+  const manifestModel = window.robotManifest?.model;
+  if (!manifestModel) return null;
+
   const machineId = Number(robotInfo?.mode_machine_raw);
-  const expectedFile = MODEL_BY_MACHINE.get(machineId);
-  const reportedFile = robotInfo?.urdf_file;
-  if (!expectedFile || robotInfo?.model_supported === false) return null;
-  if (reportedFile !== undefined && reportedFile !== null && reportedFile !== expectedFile) {
-    throw new Error(`机型元数据不一致：${reportedFile}`);
+  if (!Number.isFinite(machineId)) return null;
+
+  const manifestMachineId = Number(window.robotManifest?.diagnostics?.mode_machine_raw);
+  const manifestMatchesTelemetry = Number.isFinite(manifestMachineId) && manifestMachineId === machineId;
+  if (manifestMatchesTelemetry && manifestModel.supported === false) return null;
+  if (!manifestMatchesTelemetry && robotInfo?.model_supported === false) return null;
+
+  const file = manifestMatchesTelemetry ? manifestModel.urdf_file : robotInfo?.urdf_file;
+  const assetRoot = manifestModel.asset_root;
+  const packageName = manifestModel.package;
+  if (
+    typeof file !== "string" || !file || file.includes("/") || file.includes("..") ||
+    typeof assetRoot !== "string" || !assetRoot.startsWith("/assets/") || assetRoot.includes("..") ||
+    typeof packageName !== "string" || !packageName || packageName.includes("/") || packageName.includes("..")
+  ) {
+    throw new Error(viewerText(
+      `拒绝无效模型元数据：${file || "--"}`,
+      `Rejected invalid model metadata: ${file || "--"}`,
+    ));
   }
-  const file = reportedFile || expectedFile;
-  if (!ALLOWED_MODEL_FILES.has(file) || file.includes("/") || file.includes("..")) {
-    throw new Error(`拒绝非本地模型文件：${file}`);
-  }
-  return { machineId, file, name: robotInfo?.model_name || `G1 mode ${machineId}` };
+
+  const name = manifestMatchesTelemetry ? manifestModel.model_name : robotInfo?.model_name;
+  return { machineId, file, assetRoot, packageName, name: name || `${manifestRobotName()} mode ${machineId}` };
+}
+
+function createUrdfLoader(manager, selection) {
+  const loader = new URDFLoader(manager);
+  loader.packages = { [selection.packageName]: selection.assetRoot };
+  loader.fetchOptions = { cache: "reload" };
+  return loader;
 }
 
 function loadRobotUrdfInstance(robotInfo, joints, onLoad, onError) {
@@ -220,10 +260,9 @@ function loadRobotUrdfInstance(robotInfo, joints, onLoad, onError) {
 
   const manager = new THREE.LoadingManager();
   manager.onError = (url) => onError?.(new Error(`模型资源加载失败：${url.split("/").pop() || url}`));
-  const loader = new URDFLoader(manager);
-  loader.packages = { g1_description: MODEL_ROOT };
+  const loader = createUrdfLoader(manager, selection);
   loader.load(
-    `${MODEL_ROOT}/${selection.file}`,
+    `${selection.assetRoot}/${selection.file}`,
     (candidate) => {
       try {
         validateJoints(candidate, joints);
@@ -243,7 +282,8 @@ function loadRobotUrdfInstance(robotInfo, joints, onLoad, onError) {
 function applyRobotJointValues(targetRobot, joints) {
   if (!targetRobot || !joints) return;
   joints.forEach((joint) => {
-    const urdfJoint = targetRobot.joints?.[`${joint.name}_joint`];
+    const urdfName = manifestUrdfJointName(joint.name);
+    const urdfJoint = urdfName ? targetRobot.joints?.[urdfName] : null;
     const value = Number(joint.q_rad);
     if (urdfJoint && Number.isFinite(value)) urdfJoint.setJointValue(value);
   });
@@ -277,7 +317,13 @@ function loadModel(robotInfo) {
   const generation = ++loadGeneration;
   disposeRobot();
   setModelStatus("正在加载", "pending");
-  setLoading("正在加载官方 G1 模型", file);
+  const displayName = manifestRobotName();
+  setLoading(
+    window.UiI18n?.language === "en"
+      ? `Loading official ${displayName} model`
+      : `正在加载官方 ${displayName} 模型`,
+    file,
+  );
   modelFile.textContent = `${selection.name} · 本地 URDF ${file}`;
 
   const manager = new THREE.LoadingManager();
@@ -286,10 +332,9 @@ function loadModel(robotInfo) {
     setModelStatus("资源加载失败", "error");
     setLoading("模型资源加载失败", url.split("/").pop() || url);
   };
-  const loader = new URDFLoader(manager);
-  loader.packages = { g1_description: MODEL_ROOT };
+  const loader = createUrdfLoader(manager, selection);
   loader.load(
-    `${MODEL_ROOT}/${file}`,
+    `${selection.assetRoot}/${file}`,
     (candidate) => {
       if (generation !== loadGeneration) return;
       if (!sceneReady || !scene) return;
@@ -350,7 +395,8 @@ function applyJointValues() {
     applyRobotJointValues(robot, latestData.joints);
   } else {
     latestData.joints.forEach((joint) => {
-      const urdfJoint = robot.joints[`${joint.name}_joint`];
+      const urdfName = manifestUrdfJointName(joint.name);
+      const urdfJoint = urdfName ? robot.joints[urdfName] : null;
       const value = debugJointValues.get(joint.name);
       if (urdfJoint && Number.isFinite(value)) urdfJoint.setJointValue(value);
     });
@@ -381,9 +427,9 @@ function selectFromPointer(event) {
   raycaster.setFromCamera(pointer, camera);
   const hit = raycaster.intersectObject(robot, true).find((entry) => entry.object.isMesh);
   const urdfJoint = hit && jointFromObject(hit.object);
-  if (!urdfJoint?.urdfName?.endsWith("_joint")) return;
-  const name = urdfJoint.urdfName.slice(0, -6);
-  if (!latestData?.joints?.some((joint) => joint.name === name)) return;
+  if (!urdfJoint?.urdfName) return;
+  const name = semanticJointName(urdfJoint.urdfName);
+  if (!name || !latestData?.joints?.some((joint) => joint.name === name)) return;
   selectJoint(name, true);
 }
 
@@ -405,7 +451,8 @@ function clearHighlight() {
 
 function highlightJoint(name) {
   clearHighlight();
-  const joint = robot?.joints?.[`${name}_joint`];
+  const urdfName = manifestUrdfJointName(name);
+  const joint = urdfName ? robot?.joints?.[urdfName] : null;
   if (!joint) return;
   joint.traverse((object) => {
     if (!object.isMesh) return;
@@ -443,9 +490,24 @@ tableBody.addEventListener("click", (event) => {
 window.addEventListener("g1:telemetry", (event) => {
   latestData = event.detail;
   const machineId = Number(latestData?.robot?.mode_machine_raw);
-  if (Number.isFinite(machineId)) loadModel(latestData.robot);
+  if (window.robotManifest && Number.isFinite(machineId)) loadModel(latestData.robot);
   applyJointValues();
   if (!selectedJointName && latestData?.joints?.length) selectJoint(latestData.joints[0].name);
+});
+window.addEventListener("unirobo:manifest", (event) => {
+  if (!event.detail) {
+    currentModel = null;
+    disposeRobot();
+    setModelStatus(viewerText("Manifest 不可用", "Manifest unavailable"), "error");
+    setLoading(
+      viewerText("无法选择机器人模型", "Unable to select robot model"),
+      viewerText("Robot Manifest 获取失败，关节列表仍可使用", "Robot Manifest failed to load; the joint list remains available"),
+    );
+    return;
+  }
+  const machineId = Number(latestData?.robot?.mode_machine_raw);
+  if (Number.isFinite(machineId)) loadModel(latestData.robot);
+  applyJointValues();
 });
 window.addEventListener("g1:connection", (event) => {
   overlay.hidden = event.detail?.online !== false;
@@ -469,7 +531,8 @@ function setDebugJointValues(values) {
 function getRobotJointMetadata() {
   if (!robot || !latestData?.joints) return [];
   return latestData.joints.map((joint) => {
-    const urdfJoint = robot.joints[`${joint.name}_joint`];
+    const urdfName = manifestUrdfJointName(joint.name);
+    const urdfJoint = urdfName ? robot.joints[urdfName] : null;
     return {
       index: joint.index,
       name: joint.name,
@@ -481,14 +544,13 @@ function getRobotJointMetadata() {
   });
 }
 
-if (initializeScene() && latestData) {
+if (initializeScene() && latestData && window.robotManifest) {
   const machineId = Number(latestData?.robot?.mode_machine_raw);
   if (Number.isFinite(machineId)) loadModel(latestData.robot);
 }
 if (window.g1ConnectionOnline === false) overlay.hidden = false;
 
 export {
-  MODEL_BY_MACHINE,
   resolveModel,
   loadRobotUrdfInstance,
   applyRobotJointValues,

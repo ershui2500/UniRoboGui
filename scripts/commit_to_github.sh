@@ -20,8 +20,8 @@ if [[ -z "$project_root" ]]; then
 fi
 cd "$project_root"
 
-if git ls-files --error-unmatch AGENTS.md >/dev/null 2>&1; then
-  echo "错误：AGENTS.md 仅用于开发规则，禁止被 Git 跟踪或发布。" >&2
+if git ls-files | grep -Eq '^(AGENTS|[^/]+_AGENTS)\.md$'; then
+  echo "错误：AGENTS.md 和 *_AGENTS.md 仅用于开发规则，禁止被 Git 跟踪或发布。" >&2
   exit 1
 fi
 

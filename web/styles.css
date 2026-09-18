@@ -59,15 +59,23 @@
 .joint-debug-action-feedback { margin: 0 0 12px; padding: 9px 11px; color: #8fffc1; border: 1px solid rgba(100, 255, 171, .25); border-radius: 8px; background: rgba(100, 255, 171, .06); }
 .joint-debug-action-feedback.error { color: #ff9aa3; border-color: rgba(255, 107, 118, .3); background: rgba(255, 107, 118, .06); }
 .joint-debug-groups { min-height: 0; flex: 1 1 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); align-items: stretch; gap: clamp(8px, .65vw, 12px); }
+.joint-debug-groups[data-mode="upper_body"] { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "waist head" "left-arm right-arm"; }
+.joint-debug-groups[data-mode="upper_body"] .joint-debug-group[data-group="waist"] { grid-area: waist; }
+.joint-debug-groups[data-mode="upper_body"] .joint-debug-group[data-group="head"] { grid-area: head; }
+.joint-debug-groups[data-mode="upper_body"] .joint-debug-group[data-group="left_arm"] { grid-area: left-arm; }
+.joint-debug-groups[data-mode="upper_body"] .joint-debug-group[data-group="right_arm"] { grid-area: right-arm; }
+.joint-debug-groups[data-mode="upper_body"][data-has-head="false"] .joint-debug-group[data-group="waist"] { grid-column: 1 / -1; }
+.joint-debug-groups[data-mode="full_body"] { grid-template-columns: repeat(6, minmax(0, 1fr)); grid-template-areas: "left-leg left-leg head head right-leg right-leg" "left-leg left-leg waist waist right-leg right-leg" "left-arm left-arm left-arm right-arm right-arm right-arm"; }
+.joint-debug-groups[data-mode="full_body"] .joint-debug-group[data-group="left_leg"] { grid-area: left-leg; }
+.joint-debug-groups[data-mode="full_body"] .joint-debug-group[data-group="right_leg"] { grid-area: right-leg; }
+.joint-debug-groups[data-mode="full_body"] .joint-debug-group[data-group="head"] { grid-area: head; }
+.joint-debug-groups[data-mode="full_body"] .joint-debug-group[data-group="waist"] { grid-area: waist; }
+.joint-debug-groups[data-mode="full_body"] .joint-debug-group[data-group="left_arm"] { grid-area: left-arm; }
+.joint-debug-groups[data-mode="full_body"] .joint-debug-group[data-group="right_arm"] { grid-area: right-arm; }
+.joint-debug-groups[data-mode="full_body"][data-has-head="false"] { grid-template-areas: "left-leg left-leg waist waist right-leg right-leg" "left-leg left-leg waist waist right-leg right-leg" "left-arm left-arm left-arm right-arm right-arm right-arm"; }
 @media (min-width: 1281px) {
-  .joint-debug-groups[data-mode="upper_body"] { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto minmax(0, 1fr); }
-  .joint-debug-groups[data-mode="full_body"] { grid-template-columns: repeat(6, minmax(0, 1fr)); grid-template-rows: minmax(0, .9fr) minmax(0, 1.1fr); }
-  .joint-debug-groups[data-mode="full_body"] .joint-debug-group { grid-column: span 2; }
-  .joint-debug-groups[data-mode="full_body"] .joint-debug-group:nth-child(n + 4) { grid-column: span 3; }
   .joint-debug-groups .joint-debug-group { height: 100%; display: flex; flex-direction: column; }
   .joint-debug-groups .joint-debug-row { flex: 1 1 0; }
-  .joint-debug-groups[data-mode="upper_body"] .joint-debug-group:first-child { height: auto; grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 12px; }
-  .joint-debug-groups[data-mode="upper_body"] .joint-debug-group:first-child h3 { grid-column: 1 / -1; }
 }
 .joint-debug-group { min-width: 0; padding: clamp(7px, .55vw, 10px); border: 1px solid var(--line); border-radius: 9px; background: rgba(4, 9, 15, .42); }
 .joint-debug-group h3 { margin: 0 0 5px; color: var(--cyan); font-size: clamp(13px, .72vw, 16px); }
@@ -101,6 +109,10 @@
 @media (max-width: 820px) {
   .joint-debug-status .inspector-grid { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
   .joint-debug-groups { grid-template-columns: minmax(0, 1fr); }
+  .joint-debug-groups[data-mode="upper_body"] { grid-template-columns: minmax(0, 1fr); grid-template-areas: none; }
+  .joint-debug-groups[data-mode="upper_body"] .joint-debug-group { grid-area: auto; }
+  .joint-debug-groups[data-mode="full_body"] { grid-template-columns: minmax(0, 1fr); grid-template-areas: none; }
+  .joint-debug-groups[data-mode="full_body"] .joint-debug-group { grid-area: auto; }
   .joint-debug-row { grid-template-columns: minmax(90px, .8fr) minmax(80px, 1fr) 58px 22px; min-height: 34px; }
   .joint-debug-teach { grid-template-columns: minmax(0, 1fr); }
   .joint-debug-teach-binding { grid-column: auto; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
@@ -499,6 +511,25 @@ h3 {
   grid-template-columns: repeat(5, 1fr);
   gap: 8px;
   margin-top: 12px;
+}
+
+.capability-heading { margin-top: 16px; }
+.capability-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.capability-item span:first-child {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.35;
+}
+.capability-notice {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 200, 97, .24);
+  border-radius: 10px;
+  color: var(--yellow);
+  background: rgba(255, 200, 97, .06);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .source-item {
@@ -1934,6 +1965,10 @@ details[open] .chevron { transform: rotate(180deg); }
   font-size: 8px;
 }
 
+html[lang="en"] .control-command.active-fsm::after {
+  content: "Current Mode";
+}
+
 .interface-catalog {
   margin-top: 18px;
   border: 1px solid var(--line);
@@ -2649,6 +2684,10 @@ body {
 .language-menu-button:focus-visible {
   border-color: rgba(84, 221, 255, .55);
   box-shadow: 0 0 0 3px rgba(84, 221, 255, .08);
+}
+.language-menu-button:disabled {
+  cursor: wait;
+  opacity: .68;
 }
 .language-menu-chevron {
   color: var(--cyan);
@@ -7541,25 +7580,23 @@ body.joint-debug-workspace-active footer { display: none; }
   overflow: hidden;
 }
 
+/* Capability notices are prepended dynamically and must not shift the
+ * flexible map row. On the fixed-height desktop console, let the point-cloud
+ * viewport consume the remaining card space just like the G1 layout. */
 @media (min-width: 1200px) {
   .dashboard.console-active .map-panel {
-    grid-template-rows: auto auto auto minmax(120px, 1fr) auto auto !important;
-    overflow-x: hidden;
-    overflow-y: auto;
-    scrollbar-gutter: stable;
-    overscroll-behavior: contain;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
-  .dashboard.console-active .map-panel .map-toolbar {
-    min-height: 54px;
+  .dashboard.console-active .map-panel > :not(.map-canvas) {
+    flex: 0 0 auto;
   }
-  .dashboard.console-active .map-canvas {
-    min-height: 120px !important;
-  }
-  .dashboard.console-active .perception-grid.map-expanded > .map-panel {
-    grid-template-rows: auto auto auto minmax(260px, 1fr) auto auto !important;
-  }
+  .dashboard.console-active .map-canvas,
   .dashboard.console-active .perception-grid.map-expanded .map-canvas {
-    min-height: 260px !important;
+    min-height: 0 !important;
+    height: auto !important;
+    flex: 1 1 0 !important;
   }
 }
 

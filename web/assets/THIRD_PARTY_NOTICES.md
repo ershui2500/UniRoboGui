@@ -6,6 +6,9 @@ control panel.
 - Unitree `unitree_ros`, commit
   `f3772ce54c56ef2d34c6aee8100bc768896c7d19`: G1 URDF and STL model assets,
   BSD-3-Clause. See `unitree/LICENSE.unitree_ros.txt`.
+- Unitree `unitree_ros`, commit
+  `7d6075f7f58588b189b940130e3edab3c839b2df`: R1 URDF and STL model assets,
+  BSD-3-Clause. See `unitree/LICENSE.unitree_ros.txt`.
 - Three.js `0.164.1`: JavaScript 3D renderer and selected addons, MIT. See
   `vendor/three/LICENSE.txt`.
 - `urdf-loader` `0.13.1`, package commit

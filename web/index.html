@@ -20,7 +20,7 @@
         </div>
         <div class="sidebar-brand-copy">
           <strong>UniRoboGui</strong>
-          <small>G1 · ROBOT WORKSTATION</small>
+          <small id="robotWorkstationLabel" data-i18n-skip>机器人 · ROBOT WORKSTATION</small>
         </div>
         <button class="sidebar-close" id="sidebarClose" type="button" aria-label="关闭导航">×</button>
       </div>
@@ -31,7 +31,7 @@
         <button class="workspace-nav-item" type="button" data-target-workspace="robot">
           <span class="nav-icon">3D</span><span class="nav-copy"><strong>机器人状态</strong></span>
         </button>
-        <button class="workspace-nav-item" type="button" data-target-workspace="joint-debug">
+        <button class="workspace-nav-item" type="button" data-target-workspace="joint-debug" data-capability="joint_debug" data-capability-entry data-capability-view-when-unavailable>
           <span class="nav-icon">JD</span><span class="nav-copy"><strong>机器人调试台</strong></span>
         </button>
         <button class="workspace-nav-item" type="button" data-target-workspace="diagnostics">
@@ -79,6 +79,18 @@
             </select>
           </div>
         </div>
+        <div class="language-switcher robot-switcher" id="robotSwitcher" data-i18n-skip>
+          <span class="language-switcher-mark" aria-hidden="true">RB</span>
+          <span class="language-switcher-label" id="robotSwitcherLabel">机器人</span>
+          <div class="language-select-shell">
+            <button class="language-menu-button" id="robotMenuButton" type="button"
+                    aria-haspopup="listbox" aria-expanded="false" aria-controls="robotMenu" disabled>
+              <span id="robotMenuValue">--</span>
+              <span class="language-menu-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="language-menu" id="robotMenu" role="listbox" aria-label="机器人产品" hidden></div>
+          </div>
+        </div>
       </div>
       <div class="top-status-strip">
         <button class="top-details-button" id="runDetailsButton" type="button" aria-haspopup="dialog">运行详情</button>
@@ -98,7 +110,7 @@
     <main class="dashboard">
       <div class="workspace-heading" data-workspace="robot" hidden>
         <div><p class="eyebrow">DIGITAL TWIN</p><h2>机器人状态</h2></div>
-        <p>汇总运行详情，并自动识别 mode_machine 加载本地 URDF；姿态同步29个机身关节。</p>
+        <p id="robotOverviewSummary" data-i18n-skip>正在读取 Robot Manifest…</p>
       </div>
       <section class="overview panel" data-workspace="robot" data-run-details hidden>
         <div class="section-heading">
@@ -117,7 +129,7 @@
             <div class="robot-orbit" aria-hidden="true">
               <div class="orbit orbit-a"></div>
               <div class="orbit orbit-b"></div>
-              <div class="robot-core">G1</div>
+              <div class="robot-core" id="robotCoreLabel" data-i18n-skip>--</div>
             </div>
             <div>
               <p class="metric-label">DDS 连接状态</p>
@@ -153,10 +165,15 @@
         </div>
 
         <div class="source-strip" id="sourceStrip" aria-label="DDS 数据源状态"></div>
+        <div class="card-heading capability-heading">
+          <div><p class="metric-label">ROBOT MANIFEST</p><strong>机器人能力</strong></div>
+          <span class="model-state pending" id="robotManifestState">正在读取</span>
+        </div>
+        <div class="source-strip capability-strip" id="robotCapabilityStrip" aria-label="机器人能力状态"></div>
       </section>
 
       <section class="data-grid" data-workspace="robot" data-run-details hidden>
-        <article class="panel battery-panel">
+        <article class="panel battery-panel" data-telemetry-source="bms">
           <div class="card-heading">
             <div>
               <p class="eyebrow">POWER</p>
@@ -182,7 +199,7 @@
           </div>
         </article>
 
-        <article class="panel odom-panel">
+        <article class="panel odom-panel" data-telemetry-source="odometry">
           <div class="card-heading">
             <div>
               <p class="eyebrow">ODOM</p>
@@ -207,7 +224,7 @@
         </article>
       </section>
 
-      <section class="joint-debug-workspace" data-workspace="joint-debug" hidden>
+      <section class="joint-debug-workspace" data-workspace="joint-debug" data-capability="joint_debug" data-capability-view-when-unavailable hidden>
         <aside class="panel joint-debug-status">
           <div class="card-heading"><div><p class="eyebrow">INTERLOCK</p><h3>下发互锁</h3></div><span class="model-state pending" id="jointDebugPermission">禁止下发</span></div>
           <dl class="inspector-grid">
@@ -234,8 +251,8 @@
               </div>
               <div class="joint-debug-mode-row" aria-label="调试台模式与单位">
                 <fieldset class="joint-debug-switch joint-debug-mode-switch"><legend>控制模式</legend>
-                  <label><input type="radio" name="jointDebugMode" value="upper_body" checked><span><strong>上半身</strong><small>rt/arm_sdk</small></span></label>
-                  <label><input type="radio" name="jointDebugMode" value="full_body"><span><strong>全身</strong><small>rt/lowcmd</small></span></label>
+                  <label><input type="radio" name="jointDebugMode" value="upper_body" checked><span><strong>上半身</strong><small>--</small></span></label>
+                  <label><input type="radio" name="jointDebugMode" value="full_body"><span><strong>全身</strong><small>--</small></span></label>
                 </fieldset>
                 <fieldset class="joint-debug-switch joint-debug-unit-switch"><legend>角度单位</legend>
                   <label><input type="radio" name="jointDebugUnit" value="rad" checked><span><strong>rad</strong><small>弧度</small></span></label>
@@ -243,7 +260,7 @@
                 </fieldset>
               </div>
             </div>
-            <section class="joint-debug-teach" id="jointDebugTeach">
+            <section class="joint-debug-teach" id="jointDebugTeach" data-capability="joint_teach">
               <div>
                 <label for="jointTeachName">示教动作名称</label>
                 <input id="jointTeachName" maxlength="128" placeholder="例如：挥手_01">
@@ -268,7 +285,7 @@
                 <button type="button" class="danger-outline" id="jointTeachDelete" disabled>删除</button>
                 <button type="button" class="secondary" id="jointTeachRelease" disabled>恢复控制权</button>
               </div>
-              <div class="joint-debug-teach-binding">
+              <div class="joint-debug-teach-binding" id="jointTeachRemoteControls">
                 <div>
                   <label for="jointTeachRemoteBinding">遥控器触发绑定</label>
                   <select id="jointTeachRemoteBinding" disabled><option value="">不绑定</option></select>
@@ -288,7 +305,7 @@
       <section class="robot-visual-grid" data-workspace="robot" hidden>
         <article class="panel robot-viewer-panel">
           <div class="card-heading viewer-heading">
-            <div><p class="eyebrow">G1 POSE</p><h3>三维关节姿态</h3></div>
+            <div><p class="eyebrow" id="robotPoseEyebrow" data-i18n-skip>ROBOT POSE</p><h3 id="robotPoseTitle" data-i18n-skip>三维关节姿态</h3></div>
             <div class="viewer-actions">
               <span class="model-state pending" id="modelState">等待机型信息</span>
               <button type="button" class="secondary compact-button" id="resetRobotView">复位视角</button>
@@ -300,7 +317,7 @@
                 <div class="viewer-loading" id="viewerLoading"><span class="viewer-spinner"></span><strong>等待 URDF 模型</strong><small>收到 mode_machine 后从本地资产自动加载官方模型</small></div>
                 <div class="viewer-overlay" id="viewerOverlay" hidden>遥测已中断 · 当前为最后收到的关节姿态</div>
               </div>
-              <div class="viewer-footer"><span id="modelFile">URDF --</span><span>29关节 · 拖动旋转 · 滚轮缩放</span></div>
+              <div class="viewer-footer"><span id="modelFile">URDF --</span><span id="robotJointCountLabel" data-i18n-skip>关节 · 拖动旋转 · 滚轮缩放</span></div>
             </div>
           </div>
         </article>
@@ -308,7 +325,7 @@
           <div class="section-heading joint-heading">
             <div>
               <p class="eyebrow">JOINTS</p>
-              <h2>G1 关节状态</h2>
+              <h2 id="robotJointStatusTitle" data-i18n-skip>机器人关节状态</h2>
             </div>
             <div class="joint-controls">
               <label>
@@ -351,7 +368,7 @@
         </section>
       </section>
 
-      <section class="panel voice-panel" id="voice-interaction" data-workspace="voice" hidden>
+      <section class="panel voice-panel" id="voice-interaction" data-workspace="voice" data-capability="audio" hidden>
         <div class="section-heading voice-heading">
           <div>
             <p class="eyebrow">VOICE</p>
@@ -426,6 +443,11 @@
                       <span class="field-label">OpenAI 兼容 API / Base URL</span>
                       <input id="customerLlmApiUrl" type="url" maxlength="1024"
                              placeholder="例如 https://api.deepseek.com 或 https://example.com/v1/chat/completions" autocomplete="off" />
+                    </label>
+                    <label>
+                      <span class="field-label">客户 API 代理（可选）</span>
+                      <input id="customerLlmProxyUrl" type="url" maxlength="1024"
+                             placeholder="例如 http://192.168.123.222:7890" autocomplete="off" />
                     </label>
                     <label>
                       <span class="field-label">模型名称</span>
@@ -807,12 +829,13 @@
               <span>FSM</span><strong>切换模式</strong><small>零力矩 · 阻尼 · 运控模式</small>
             </button>
             <button type="button" class="control-tab" id="controlTabMotion" role="tab"
-                    aria-selected="false" aria-controls="controlPanelMotion" data-control-tab="motion">
+                    aria-selected="false" aria-controls="controlPanelMotion" data-control-tab="motion"
+                    data-capability="locomotion" data-capability-entry>
               <span>MOVE</span><strong>机器人运动</strong><small>WASD · 横移 · 速度档</small>
             </button>
             <button type="button" class="control-tab" id="controlTabArm" role="tab"
                     aria-selected="false" aria-controls="controlPanelArm" data-control-tab="arm">
-              <span>ARM</span><strong>上肢动作与示教</strong><small>预设动作 · App 示教动作</small>
+              <span>ARM</span><strong>上肢动作与示教</strong><small>预设动作 · 固件示教动作</small>
             </button>
           </div>
 
@@ -855,7 +878,7 @@
                 <button class="control-command warning" type="button"
                         data-category="mode" data-command="start"
                         data-label="常规运控" data-fsm-id="500" disabled>
-                  <strong>常规运控</strong><span>FSM 500</span>
+                  <strong>进入主运控</strong><span>FSM 500</span>
                 </button>
                 <button class="control-command warning" type="button"
                         data-category="mode" data-command="set_fsm_id"
@@ -868,6 +891,16 @@
                         data-argument="702" data-label="躺起"
                         data-fsm-id="702" disabled>
                   <strong>躺起</strong><span>FSM 702</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="lie_to_stand"
+                        data-label="躺起" data-fsm-id="701" disabled hidden>
+                  <strong>躺起</strong><span>FSM 701 · Lie → Stand</span>
+                </button>
+                <button class="control-command warning" type="button"
+                        data-category="mode" data-command="stand_to_lie"
+                        data-label="躺下" data-fsm-id="702" disabled hidden>
+                  <strong>躺下</strong><span>FSM 702 · Stand → Lie</span>
                 </button>
                 <button class="control-command warning" type="button"
                         data-category="mode" data-command="set_fsm_id"
@@ -885,7 +918,7 @@
                         data-category="mode" data-command="set_fsm_id"
                         data-argument="802" data-label="走跑运控 802"
                         data-fsm-id="802" disabled>
-                  <strong>走跑运控</strong><span>FSM 802 · 新版 29DoF</span>
+                  <strong>走跑运控</strong><span id="fsm802DofLabel" data-i18n-skip>FSM 802 · 当前 DoF</span>
                 </button>
               </div>
 
@@ -906,7 +939,8 @@
             </section>
 
             <section class="control-group motion-controls control-tab-panel" id="controlPanelMotion"
-                     role="tabpanel" aria-labelledby="controlTabMotion" data-control-panel="motion" hidden>
+                     role="tabpanel" aria-labelledby="controlTabMotion" data-control-panel="motion"
+                     data-capability="locomotion" hidden>
               <div class="control-group-heading">
                 <div>
                   <p class="metric-label">MOTION</p>
@@ -923,8 +957,8 @@
                   <span class="motion-badge locked" id="motionControlBadge">运动控制未启用</span>
                 </div>
 
-                <div class="motion-safety-note">
-                  W/S 前后、A/D 转向、Q/E 横移。按住移动、松开即停；窗口失焦、切页或通信异常会自动停止。中/高速仅适用于走跑 FSM 801 / 802。
+                <div class="motion-safety-note" id="motionSafetyNote">
+                  W/S 前后、A/D 转向、Q/E 横移。按住移动、松开即停；窗口失焦、切页或通信异常会自动停止。可用档位和 FSM 限制由当前产品决定。
                 </div>
 
                 <div class="motion-console-grid">
@@ -1006,28 +1040,41 @@
                 </div>
                 <span class="tag">需安全空间</span>
               </div>
-              <div class="arm-action-grid">
-                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="25" data-label="胸前挥手" disabled>胸前挥手</button>
-                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="26" data-label="高举挥手" disabled>高举挥手</button>
-                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="27" data-label="握手" disabled>握手</button>
+              <div class="arm-action-grid" id="armPresetActionGrid">
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="11" data-label="双手飞吻" disabled>双手飞吻</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="12" data-label="左手飞吻" disabled>左手飞吻</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="13" data-label="右手飞吻" disabled hidden>右手飞吻</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="15" data-label="双手平举" disabled>双手平举</button>
                 <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="17" data-label="鼓掌" disabled>鼓掌</button>
                 <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="18" data-label="击掌" disabled>击掌</button>
                 <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="19" data-label="拥抱" disabled>拥抱</button>
                 <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="20" data-label="双手比心" disabled hidden>双手比心</button>
                 <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="21" data-label="右手比心" disabled hidden>右手比心</button>
                 <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="22" data-label="双手打 X" disabled>双手打 X</button>
-                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="11" data-label="双手飞吻" disabled>双手飞吻</button>
-                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="12" data-label="单手飞吻" disabled>单手飞吻</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="23" data-label="右手平举" disabled>右手平举</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="24" data-label="动感光波" disabled>动感光波</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="25" data-label="胸前挥手" disabled>胸前挥手</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="26" data-label="高举挥手" disabled>高举挥手</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="27" data-label="握手" disabled>握手</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="28" data-label="左拳胜利" disabled hidden>左拳胜利</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="29" data-label="右拳胜利" disabled hidden>右拳胜利</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="30" data-label="双拳胜利" disabled hidden>双拳胜利</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="31" data-label="右臂前伸" disabled hidden>右臂前伸</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="33" data-label="右手抚胸" disabled hidden>右手抚胸</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="34" data-label="双手平举偏右" disabled hidden>双手平举偏右</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="35" data-label="强调" disabled hidden>强调</button>
+                <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="36" data-label="向前推" disabled hidden>向前推</button>
                 <button class="control-command release-command" type="button" data-category="arm_action" data-command="execute" data-argument="99" data-label="恢复初始手臂位姿" disabled>恢复初始位姿</button>
               </div>
 
-              <p class="control-limit-note">动作执行前请确认机器人已可靠支撑，周围无人和障碍物。</p>
+              <p class="control-limit-note" id="armActionHint">动作执行前请确认机器人已可靠支撑，周围无人和障碍物。</p>
 
+              <div id="firmwareTeachSection">
               <div class="control-subsection-divider" aria-hidden="true"></div>
               <div class="control-group-heading control-subsection-heading">
                 <div>
                   <p class="metric-label">TEACH</p>
-                  <h3>App 示教动作</h3>
+                  <h3>固件示教动作</h3>
                 </div>
                 <span class="tag">动态读取列表</span>
               </div>
@@ -1052,6 +1099,8 @@
                 停止示教并回到初始位置
               </button>
               <p class="control-limit-note">连续速度、调试模式、全身 LowCmd 和灵巧手原始位置/力矩接口保持关闭，避免持续运动误触。</p>
+              </div>
+              <p class="control-limit-note" id="localTeachNotice" hidden>当前产品使用“机器人调试”里的本地手掰示教；录制、播放与释放控制均经过独立安全确认。</p>
             </section>
           </div>
 
@@ -1069,7 +1118,7 @@
             </div>
           </div>
           <div class="perception-grid">
-            <section class="panel map-panel">
+            <section class="panel map-panel" data-capability="slam">
               <div class="slam-workflow-head">
                 <div class="slam-title-line">
                   <p class="eyebrow">SLAM / NAV</p>
@@ -1138,7 +1187,7 @@
 
               <div class="map-canvas" id="map-view" aria-label="Unitree SLAM 三维点云地图">
                 <div class="map-loading" id="mapLoading"><strong>正在连接点云</strong><span>等待 /api/perception/frame</span></div>
-                <div class="map-help" id="mapHelp">平移：左键按住拖动平移地图 · 滚轮缩放；方向：长按 ↶ / ↷ 调整地图朝向；右键无地图操作。G1 URDF + 蓝色箭头=机器人，绿色箭头=初始位姿，黄色箭头=导航目标。</div>
+                <div class="map-help" id="mapHelp" data-i18n-skip>平移：左键按住拖动平移地图 · 滚轮缩放；方向：长按 ↶ / ↷ 调整地图朝向；右键无地图操作。机器人 URDF + 蓝色箭头=机器人，绿色箭头=初始位姿，黄色箭头=导航目标。</div>
                 <div class="map-overlay-topbar">
                   <div class="slam-layer-legend" aria-label="Unitree SLAM 实际显示内容">
                     <button type="button" class="active" data-native-layer="global" title="显示或隐藏 SLAM 累积地图和蓝色体素障碍"><i class="legend-map"></i><span><strong>累积地图</strong><small>全局点云 + 体素障碍</small></span></button>
@@ -1185,9 +1234,9 @@
               </details>
             </section>
             <aside class="camera-column">
-              <section class="panel camera-panel" id="rgbCameraPanel">
+              <section class="panel camera-panel" id="rgbCameraPanel" data-capability="camera_rgb">
                 <div class="card-heading camera-integrated-heading">
-                  <div><p class="eyebrow">RGB</p><h3>USB / D435i 彩色画面</h3></div>
+                  <div><p class="eyebrow">RGB</p><h3>RGB 彩色画面</h3></div>
                   <div class="camera-inline-controls">
                     <span class="perception-badge pending" id="cameraServiceBadge">RGB 未启动</span>
                     <label class="camera-device-field"><span>手动覆盖</span><input id="rgbCameraSource" placeholder="留空自动检测" maxlength="13" aria-label="RGB 摄像头设备，留空自动检测" /></label>
@@ -1199,9 +1248,9 @@
                 <div class="camera-viewport" id="rgbCameraViewport"><img id="rgbCameraImage" alt="机器人 RGB 摄像头画面" /><div class="camera-empty" id="rgbCameraEmpty"><div class="camera-reticle"></div><strong>等待 RGB 画面</strong><span>V4L2 · MJPEG/JPEG</span></div></div>
                 <div class="camera-status" id="rgbCameraStatus" hidden><span class="status-dot muted-dot"></span><strong>未配置</strong><small>等待自动检测</small></div>
               </section>
-              <section class="panel camera-panel" id="depthCameraPanel">
+              <section class="panel camera-panel" id="depthCameraPanel" data-capability="camera_depth">
                 <div class="card-heading camera-integrated-heading">
-                  <div><p class="eyebrow">DEPTH</p><h3>深度 / 红外画面</h3></div>
+                  <div><p class="eyebrow">DEPTH</p><h3>深度画面</h3></div>
                   <div class="camera-inline-controls">
                     <span class="perception-badge pending" id="depthCameraBadge">深度未启动</span>
                     <label class="camera-device-field"><span>手动覆盖</span><input id="depthCameraSource" placeholder="留空自动检测" maxlength="13" aria-label="深度摄像头设备，留空自动检测" /></label>
@@ -1210,11 +1259,11 @@
                     <button type="button" class="icon-button camera-fullscreen" data-camera-fullscreen="depthCameraViewport" aria-label="全屏">⛶</button>
                   </div>
                 </div>
-                <div class="camera-viewport secondary-camera" id="depthCameraViewport"><img id="depthCameraImage" alt="机器人深度摄像头伪彩画面" /><div class="camera-empty" id="depthCameraEmpty"><div class="camera-reticle"></div><strong>等待深度画面</strong><span>0–5 m · TURBO COLORMAP</span></div></div>
+                <div class="camera-viewport secondary-camera" id="depthCameraViewport"><img id="depthCameraImage" alt="机器人深度摄像头伪彩画面" /><div class="camera-empty" id="depthCameraEmpty"><div class="camera-reticle"></div><strong>等待深度画面</strong><span>深度伪彩 · JPEG</span></div></div>
                 <div class="camera-status" id="depthCameraStatus" hidden><span class="status-dot muted-dot"></span><strong>未配置</strong><small>等待自动检测</small></div>
               </section>
               <span id="robotViewerConsoleSlot" hidden></span>
-              <p class="perception-feedback camera-inline-feedback" id="cameraFeedback" hidden>启动时自动暂停 App 第一人称画面；停止后仅恢复由本 Web 暂停的服务。</p>
+              <p class="perception-feedback camera-inline-feedback" id="cameraFeedback" hidden></p>
             </aside>
           </div>
         </article>
@@ -1222,7 +1271,7 @@
     </main>
 
     <footer>
-      <span>G1 WEB CONTROL · SAFETY INTERLOCKED</span>
+      <span id="footerProductLabel" data-i18n-skip>ROBOT WEB CONTROL · SAFETY INTERLOCKED</span>
       <span id="footerStatus">等待 WebSocket</span>
     </footer>
 

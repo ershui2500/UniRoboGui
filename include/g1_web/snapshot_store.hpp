@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <unitree/idl/go2/SportModeState_.hpp>
 #include <unitree/idl/hg/BmsState_.hpp>
@@ -261,6 +262,8 @@ class SnapshotStore {
   void UpdateControlCommand(const ControlCommandData& command);
   void UpdateMotion(const MotionData& motion);
   void PopulateMock(double elapsed_seconds);
+  void PopulateMock(double elapsed_seconds, std::uint8_t mode_machine,
+                    const std::vector<std::size_t>& semantic_motor_slots);
 
   RobotSnapshot GetSnapshot() const;
 

@@ -256,12 +256,18 @@ void SnapshotStore::UpdateMotion(const MotionData& motion) {
 }
 
 void SnapshotStore::PopulateMock(double elapsed_seconds) {
+  PopulateMock(elapsed_seconds, 2, {});
+}
+
+void SnapshotStore::PopulateMock(
+    double elapsed_seconds, std::uint8_t mode_machine,
+    const std::vector<std::size_t>& semantic_motor_slots) {
   std::lock_guard<std::mutex> lock(mutex_);
   snapshot_.dds_initialized = true;
   snapshot_.dds_error.clear();
   snapshot_.version = {1, 0};
   snapshot_.mode_pr = 0;
-  snapshot_.mode_machine = 2;
+  snapshot_.mode_machine = mode_machine;
   snapshot_.tick = static_cast<std::uint32_t>(elapsed_seconds * 500.0);
 
   const float wave = static_cast<float>(std::sin(elapsed_seconds));
@@ -276,7 +282,13 @@ void SnapshotStore::PopulateMock(double elapsed_seconds) {
 
   for (std::size_t i = 0; i < snapshot_.motors.size(); ++i) {
     auto& motor = snapshot_.motors[i];
-    motor.mode = i < kNamedJointCount ? 1 : 0;
+    motor.mode = semantic_motor_slots.empty()
+                     ? (i < kNamedJointCount ? 1 : 0)
+                     : (std::find(semantic_motor_slots.begin(),
+                                  semantic_motor_slots.end(), i) !=
+                                semantic_motor_slots.end()
+                            ? 1
+                            : 0);
     motor.q = wave * 0.2F + static_cast<float>(i) * 0.002F;
     motor.dq = std::cos(elapsed_seconds) * 0.1F;
     motor.ddq = -wave * 0.1F;
