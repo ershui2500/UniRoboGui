@@ -1,13 +1,12 @@
 #include "g1_web/json_serializer.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <type_traits>
+#include <vector>
 
 #include <json/json.h>
-
-#include "g1_web/g1_model_catalog.hpp"
-#include "g1_web/joint_names.hpp"
 
 #ifndef UNI_ROBO_GUI_VERSION
 #define UNI_ROBO_GUI_VERSION "dev"
@@ -87,17 +86,16 @@ Json::Value SourcesJson(const RobotSnapshot& snapshot,
   return result;
 }
 
-Json::Value MotorJson(const MotorData& motor, std::size_t index,
-                      bool named) {
+Json::Value MotorJson(const MotorData& motor, std::size_t motor_slot,
+                      const JointDescriptor* joint) {
   Json::Value result(Json::objectValue);
-  result["index"] = static_cast<Json::UInt>(index);
-  if (named) {
-    const auto& joint = JointNames()[index];
-    result["name"] = std::string(joint.name);
-    result["name_zh"] = std::string(joint.name_zh);
+  result["index"] = static_cast<Json::UInt>(motor_slot);
+  if (joint) {
+    result["name"] = joint->name;
+    result["name_zh"] = joint->name_zh;
   } else {
-    result["name"] = "reserved_slot_" + std::to_string(index);
-    result["name_zh"] = "原始槽 " + std::to_string(index);
+    result["name"] = "reserved_slot_" + std::to_string(motor_slot);
+    result["name_zh"] = "原始槽 " + std::to_string(motor_slot);
   }
   result["mode_raw"] = static_cast<Json::UInt>(motor.mode);
   result["q_rad"] = Number(motor.q);
@@ -261,6 +259,50 @@ Json::Value ControlJson(const ControlData& control) {
   return result;
 }
 
+const char* CapabilityKeyName(CapabilityKey key) {
+  switch (key) {
+    case CapabilityKey::kTelemetry:
+      return "telemetry";
+    case CapabilityKey::kLocomotion:
+      return "locomotion";
+    case CapabilityKey::kJointDebug:
+      return "joint_debug";
+    case CapabilityKey::kJointTeach:
+      return "joint_teach";
+    case CapabilityKey::kAudio:
+      return "audio";
+    case CapabilityKey::kCameraRgb:
+      return "camera_rgb";
+    case CapabilityKey::kCameraDepth:
+      return "camera_depth";
+    case CapabilityKey::kLidar:
+      return "lidar";
+    case CapabilityKey::kSlam:
+      return "slam";
+    case CapabilityKey::kHeadControl:
+      return "head_control";
+  }
+  return "unknown";
+}
+
+const char* VerificationLevelName(VerificationLevel level) {
+  switch (level) {
+    case VerificationLevel::kUnsupported:
+      return "unsupported";
+    case VerificationLevel::kImplemented:
+      return "implemented";
+    case VerificationLevel::kMockVerified:
+      return "mock_verified";
+    case VerificationLevel::kReadonlyVerified:
+      return "readonly_verified";
+    case VerificationLevel::kControlVerified:
+      return "control_verified";
+    case VerificationLevel::kDisabled:
+      return "disabled";
+  }
+  return "unsupported";
+}
+
 std::string WriteJson(const Json::Value& value) {
   Json::StreamWriterBuilder builder;
   builder["commentStyle"] = "None";
@@ -268,9 +310,43 @@ std::string WriteJson(const Json::Value& value) {
   return Json::writeString(builder, value);
 }
 
+bool ProfileCapabilityAvailable(const RobotProfile& profile,
+                                CapabilityKey key) {
+  for (const auto& capability : profile.capabilities) {
+    if (capability.key == key) {
+      return capability.implemented && capability.available;
+    }
+  }
+  return false;
+}
+
+std::string TelemetryRequiredSources(const RobotProfile& profile) {
+  for (const auto& capability : profile.capabilities) {
+    if (capability.key != CapabilityKey::kTelemetry) continue;
+    const auto required = capability.parameters.find("required_sources");
+    if (required != capability.parameters.end()) return required->second;
+  }
+  return "low_state,bms,secondary_imu,mainboard,odometry";
+}
+
+bool CsvContains(const std::string& csv, const std::string& value) {
+  std::size_t start = 0;
+  while (start <= csv.size()) {
+    const auto end = csv.find(',', start);
+    if (csv.substr(start, end == std::string::npos ? std::string::npos
+                                                   : end - start) == value) {
+      return true;
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return false;
+}
+
 }  // namespace
 
-std::string SerializeSnapshot(const RobotSnapshot& snapshot) {
+std::string SerializeSnapshot(const RobotProfile& profile,
+                              const RobotSnapshot& snapshot) {
   const auto now = SteadyClock::now();
   Json::Value root = CommonRoot(snapshot, now);
 
@@ -279,13 +355,13 @@ std::string SerializeSnapshot(const RobotSnapshot& snapshot) {
   robot["mode_pr_raw"] = static_cast<Json::UInt>(snapshot.mode_pr);
   robot["mode_machine_raw"] =
       static_cast<Json::UInt>(snapshot.mode_machine);
-  const auto* model = FindG1Model(snapshot.mode_machine);
+  const auto* model = FindModelVariant(profile, snapshot.mode_machine);
   robot["model_supported"] = model != nullptr;
   robot["model_source"] = "local";
-  robot["model_dof"] = 29;
+  robot["model_dof"] = static_cast<Json::UInt>(profile.joint_schema.joints.size());
   if (model) {
-    robot["model_name"] = std::string(model->name);
-    robot["urdf_file"] = std::string(model->urdf_file);
+    robot["model_name"] = model->name;
+    robot["urdf_file"] = model->urdf_file;
   } else {
     robot["model_name"] = Json::Value(Json::nullValue);
     robot["urdf_file"] = Json::Value(Json::nullValue);
@@ -332,14 +408,24 @@ std::string SerializeSnapshot(const RobotSnapshot& snapshot) {
   root["imu"] = imu;
 
   Json::Value joints(Json::arrayValue);
-  for (std::size_t i = 0; i < kNamedJointCount; ++i) {
-    joints.append(MotorJson(snapshot.motors[i], i, true));
+  std::vector<bool> semantic_slots(snapshot.motors.size(), false);
+  for (const auto& joint : profile.joint_schema.joints) {
+    if (joint.motor_slot >= snapshot.motors.size()) continue;
+    semantic_slots[joint.motor_slot] = true;
+    joints.append(MotorJson(snapshot.motors[joint.motor_slot],
+                            joint.motor_slot, &joint));
   }
   root["joints"] = joints;
 
   Json::Value reserved(Json::arrayValue);
-  for (std::size_t i = kNamedJointCount; i < kMotorSlotCount; ++i) {
-    reserved.append(MotorJson(snapshot.motors[i], i, false));
+  const auto raw_motor_slot_count =
+      std::min(snapshot.motors.size(), profile.joint_schema.motor_slot_count);
+  for (std::size_t motor_slot = 0; motor_slot < raw_motor_slot_count;
+       ++motor_slot) {
+    if (!semantic_slots[motor_slot]) {
+      reserved.append(MotorJson(snapshot.motors[motor_slot], motor_slot,
+                                nullptr));
+    }
   }
   root["reserved_motor_slots"] = reserved;
 
@@ -356,7 +442,75 @@ std::string SerializeSnapshot(const RobotSnapshot& snapshot) {
   return WriteJson(root);
 }
 
-std::string SerializeHealth(const RobotSnapshot& snapshot) {
+std::string SerializeRobotManifest(const RobotProfile& profile,
+                                   const RobotSnapshot& snapshot) {
+  Json::Value root(Json::objectValue);
+  root["schema_version"] = 1;
+
+  Json::Value identity(Json::objectValue);
+  identity["vendor"] = profile.identity.vendor;
+  identity["family"] = profile.identity.family;
+  identity["product_id"] = profile.identity.product_id;
+  identity["variant"] = profile.identity.variant;
+  identity["display_name"] = profile.identity.display_name;
+  identity["morphology"] = profile.identity.morphology;
+  root["identity"] = identity;
+
+  Json::Value model(Json::objectValue);
+  const auto* selected_model = FindModelVariant(profile, snapshot.mode_machine);
+  model["supported"] = selected_model != nullptr;
+  model["asset_root"] = profile.model_asset_root;
+  model["package"] = profile.model_package;
+  model["dof"] = static_cast<Json::UInt>(profile.joint_schema.joints.size());
+  if (selected_model) {
+    model["model_name"] = selected_model->name;
+    model["urdf_file"] = selected_model->urdf_file;
+  } else {
+    model["model_name"] = Json::Value(Json::nullValue);
+    model["urdf_file"] = Json::Value(Json::nullValue);
+  }
+  root["model"] = model;
+
+  Json::Value joints(Json::arrayValue);
+  for (const auto& descriptor : profile.joint_schema.joints) {
+    Json::Value joint(Json::objectValue);
+    joint["name"] = descriptor.name;
+    joint["name_zh"] = descriptor.name_zh;
+    joint["urdf_joint_name"] = descriptor.urdf_joint_name;
+    joint["display_group"] = descriptor.display_group;
+    joint["motor_slot"] = static_cast<Json::UInt>(descriptor.motor_slot);
+    joints.append(joint);
+  }
+  root["joints"] = joints;
+
+  Json::Value capabilities(Json::arrayValue);
+  for (const auto& descriptor : profile.capabilities) {
+    Json::Value capability(Json::objectValue);
+    capability["key"] = CapabilityKeyName(descriptor.key);
+    capability["implemented"] = descriptor.implemented;
+    capability["available"] = descriptor.available;
+    capability["reason"] = descriptor.reason;
+    capability["verification_level"] =
+        VerificationLevelName(descriptor.verification_level);
+    Json::Value parameters(Json::objectValue);
+    for (const auto& [key, value] : descriptor.parameters) {
+      parameters[key] = value;
+    }
+    capability["parameters"] = parameters;
+    capabilities.append(capability);
+  }
+  root["capabilities"] = capabilities;
+
+  Json::Value diagnostics(Json::objectValue);
+  diagnostics["mode_machine_raw"] =
+      static_cast<Json::UInt>(snapshot.mode_machine);
+  root["diagnostics"] = diagnostics;
+
+  return WriteJson(root);
+}
+
+std::string SerializeHealth(const RobotProfile& profile,
+                            const RobotSnapshot& snapshot) {
   const auto now = SteadyClock::now();
   Json::Value root = CommonRoot(snapshot, now);
   const bool llm_ready =
@@ -368,23 +522,39 @@ std::string SerializeHealth(const RobotSnapshot& snapshot) {
        snapshot.voice.chat_go_closed &&
        snapshot.voice.llm.customer_api_available &&
        snapshot.voice.llm.customer_api_configured);
-  bool all_online = snapshot.dds_initialized && snapshot.voice.initialized &&
-                    llm_ready && snapshot.control.initialized &&
-                    snapshot.control.enabled;
-  for (const auto& source : snapshot.sources) {
+  const bool audio_required =
+      ProfileCapabilityAvailable(profile, CapabilityKey::kAudio);
+  const bool control_required =
+      ProfileCapabilityAvailable(profile, CapabilityKey::kLocomotion) ||
+      ProfileCapabilityAvailable(profile, CapabilityKey::kJointDebug) ||
+      ProfileCapabilityAvailable(profile, CapabilityKey::kJointTeach);
+  bool all_online = snapshot.dds_initialized;
+  if (audio_required) all_online = all_online && snapshot.voice.initialized && llm_ready;
+  if (control_required) {
+    all_online = all_online && snapshot.control.initialized && snapshot.control.enabled;
+  }
+
+  const auto source_online = [&](const SourceState& source) {
     const auto age_ms = AgeMs(source, now);
-    if (ClassifyFreshness(source.received, age_ms < 0 ? 3001 : age_ms) !=
-        Freshness::kOnline) {
+    return ClassifyFreshness(source.received, age_ms < 0 ? 3001 : age_ms) ==
+           Freshness::kOnline;
+  };
+  const auto required_sources = TelemetryRequiredSources(profile);
+  for (std::size_t index = 0;
+       index < static_cast<std::size_t>(SourceId::kCount); ++index) {
+    const auto source = static_cast<SourceId>(index);
+    if (CsvContains(required_sources, SourceName(source)) &&
+        !source_online(snapshot.sources[index])) {
       all_online = false;
     }
   }
   root["status"] = all_online ? "ok" : "degraded";
   root["motion_control_enabled"] =
-      snapshot.control.initialized && snapshot.control.enabled;
-  root["voice_tts_enabled"] = snapshot.voice.initialized;
+      control_required && snapshot.control.initialized && snapshot.control.enabled;
+  root["voice_tts_enabled"] = audio_required && snapshot.voice.initialized;
   root["chat_go_closed"] = snapshot.voice.chat_go_closed;
   root["llm_mode"] = snapshot.voice.llm.mode;
-  root["llm_ready"] = llm_ready;
+  root["llm_ready"] = audio_required && llm_ready;
   return WriteJson(root);
 }
 

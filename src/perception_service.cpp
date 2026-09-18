@@ -55,6 +55,7 @@ constexpr double kMaximumMapCoordinateM = 45.0;
 constexpr double kMaximumNavigationDistanceM = 10.0;
 constexpr auto kPoseFreshness = std::chrono::milliseconds(1500);
 constexpr std::int64_t kLidarInputFreshnessMs = 500;
+constexpr std::int64_t kSlamTopicFreshnessMs = 1500;
 constexpr float kLowObstacleCellM = 0.10F;
 constexpr float kLowObstacleMinForwardM = 0.35F;
 constexpr float kLowObstacleMaxForwardM = 1.60F;
@@ -88,6 +89,26 @@ std::int64_t MonotonicMs() {
 std::int64_t AtomicAgeMs(const std::atomic<std::int64_t>& timestamp_ms) {
   const auto timestamp = timestamp_ms.load(std::memory_order_relaxed);
   return timestamp > 0 ? MonotonicMs() - timestamp : -1;
+}
+
+bool ProcessRunning(const std::string& name) {
+  if (name.empty()) return false;
+  std::error_code error;
+  for (const auto& entry :
+       std::filesystem::directory_iterator("/proc", error)) {
+    if (error) return false;
+    const std::string pid = entry.path().filename().string();
+    if (pid.empty() ||
+        !std::all_of(pid.begin(), pid.end(),
+                     [](unsigned char ch) { return std::isdigit(ch); })) {
+      continue;
+    }
+    std::ifstream comm(entry.path() / "comm");
+    std::string process_name;
+    std::getline(comm, process_name);
+    if (process_name == name) return true;
+  }
+  return false;
 }
 
 std::string JsonText(const Json::Value& value) {
@@ -316,6 +337,8 @@ class SlamClient final : public unitree::robot::Client {
     }
   }
 
+  std::int32_t Probe() { return Noop(); }
+
   std::int32_t Invoke(std::int32_t api, const std::string& parameter,
                       std::string& response) {
     return Call(api, parameter, response);
@@ -378,6 +401,7 @@ struct PerceptionState {
   std::int32_t unitree_slam_api_result{0};
   std::int32_t lidar_driver_status_raw{-1};
   std::int32_t unitree_slam_status_raw{-1};
+  bool slam_rpc_ready{false};
   std::string service_error;
   std::string mode{"offline"};
   std::int32_t error_code{0};
@@ -684,7 +708,9 @@ LowObstacleDetection DetectLowObstacleForSafety(
 
 class PerceptionService::Impl {
  public:
-  Impl(bool mock, bool navigation_enabled) {
+  Impl(bool mock, bool navigation_enabled,
+       const IDeviceCapabilityPolicy& device_policy)
+      : device_policy_(device_policy) {
     state_.mock = mock;
     state_.navigation_enabled = navigation_enabled || mock;
     navigation_bridge_ = std::make_unique<RosNavigationBridge>(mock);
@@ -698,6 +724,7 @@ class PerceptionService::Impl {
       error.clear();
       return true;
     }
+    std::set<std::string> startup_dependencies;
     try {
       if (state_.mock) {
         state_.initialized = true;
@@ -706,32 +733,39 @@ class PerceptionService::Impl {
         state_.unitree_slam_enabled = true;
         state_.lidar_driver_status_raw = 0;
         state_.unitree_slam_status_raw = 0;
+        state_.slam_rpc_ready = true;
         PopulateMockCloudsLocked();
         running_.store(true);
         mock_thread_ = std::thread([this] { MockLoop(); });
       } else {
-        client_ = std::make_unique<SlamClient>();
-        client_->Init();
-        robot_state_client_ =
-            std::make_unique<unitree::robot::b2::RobotStateClient>();
-        robot_state_client_->SetTimeout(10.0F);
-        robot_state_client_->Init();
+        if (!client_) {
+          client_ = std::make_unique<SlamClient>();
+          client_->Init();
+        }
+        if (!robot_state_client_) {
+          robot_state_client_ =
+              std::make_unique<unitree::robot::b2::RobotStateClient>();
+          robot_state_client_->SetTimeout(10.0F);
+          robot_state_client_->Init();
+        }
         RefreshServiceStatesLocked();
         SubscribeLocked();
-        // Keep the sensing pipeline warm so opening the web workspace does
-        // not pay the service-launch cost before the first live point cloud.
-        // This does not invoke mapping, localization or navigation APIs.
-        bool started_lidar = false;
-        bool started_slam = false;
-        if (EnsureServiceActiveLocked("lidar_driver", started_lidar)) {
-          lidar_started_by_web_ = started_lidar;
-          if (EnsureServiceActiveLocked("unitree_slam", started_slam)) {
-            slam_started_by_web_ = started_slam;
-          }
+        // Dependency startup is policy-driven. External dependencies are
+        // readiness prerequisites and are never started or stopped by Web.
+        if (!PrepareDependenciesLocked(startup_dependencies)) {
+          throw std::runtime_error(state_.service_error.empty()
+                                       ? "slam_dependency_unavailable"
+                                       : state_.service_error);
         }
-        // Accept live sensing topics immediately. Mapping/localization state is
-        // still changed only by an explicit confirmed slam_operate command.
-        state_.task_stream_active = true;
+        if (!WaitForLidarInputsLocked()) {
+          throw std::runtime_error("slam_raw_input_timeout");
+        }
+        if (!EnsureSlamRpcReadyLocked()) {
+          throw std::runtime_error(state_.service_error);
+        }
+        // Mapping/localization streams are task-scoped. G1's separate raw
+        // preview remains policy-driven and does not require this gate.
+        state_.task_stream_active = false;
         state_.initialized = true;
         state_.mode = "ready";
       }
@@ -748,6 +782,9 @@ class PerceptionService::Impl {
       error = exception.what();
     } catch (...) {
       error = "unknown_slam_initialization_error";
+    }
+    if (!startup_dependencies.empty()) {
+      RollbackStartedDependenciesLocked(startup_dependencies);
     }
     state_.initialization_error = error;
     state_.mode = "offline";
@@ -771,11 +808,12 @@ class PerceptionService::Impl {
     CloseSubscriber(slam_info_);
     std::lock_guard<std::mutex> lock(mutex_);
     if (robot_state_client_) {
-      if (slam_started_by_web_) SwitchServiceLocked("unitree_slam", false);
-      if (lidar_started_by_web_) SwitchServiceLocked("lidar_driver", false);
+      const auto& dependencies = device_policy_.Perception().dependencies;
+      for (auto it = dependencies.rbegin(); it != dependencies.rend(); ++it) {
+        StopOwnedDependencyLocked(it->name);
+      }
     }
-    slam_started_by_web_ = false;
-    lidar_started_by_web_ = false;
+    web_started_dependencies_.clear();
     client_.reset();
     robot_state_client_.reset();
     state_.initialized = false;
@@ -878,6 +916,10 @@ class PerceptionService::Impl {
         result.error = "slam_pose_stale";
         return result;
       }
+      if (!NavigationTopicsFreshLocked()) {
+        result.error = "slam_topic_stale";
+        return result;
+      }
       const double distance = std::hypot(request.pose.x - state_.pose.x,
                                          request.pose.y - state_.pose.y);
       if (distance > kMaximumNavigationDistanceM) {
@@ -896,6 +938,10 @@ class PerceptionService::Impl {
         result.error = "navigation_runtime_disabled";
         return result;
       }
+      if (!NavigationTopicsFreshLocked()) {
+        result.error = "slam_topic_stale";
+        return result;
+      }
     } else if (request.command == "stop_slam") {
       api = kApiStopSlam;
     } else {
@@ -909,25 +955,29 @@ class PerceptionService::Impl {
         request.command == "initialize_pose" ||
         request.command == "navigate" ||
         request.command == "resume_navigation";
-    bool started_lidar = false;
-    bool started_slam = false;
+    std::set<std::string> started_now;
     if (!state_.mock && needs_slam_services) {
-      if (!EnsureServiceActiveLocked("lidar_driver", started_lidar) ||
-          !EnsureServiceActiveLocked("unitree_slam", started_slam)) {
-        if (started_slam) SwitchServiceLocked("unitree_slam", false);
-        if (started_lidar) SwitchServiceLocked("lidar_driver", false);
+      if (!PrepareDependenciesLocked(started_now)) {
         result.error = "slam_dependency_start_failed";
         return result;
       }
-      WaitForLidarInputsLocked();
+      if (!WaitForLidarInputsLocked()) {
+        RollbackStartedDependenciesLocked(started_now);
+        result.error = "slam_raw_input_timeout";
+        return result;
+      }
     }
-    result.lidar_started = started_lidar;
-    result.slam_started = started_slam;
+    result.lidar_started =
+        started_now.count(device_policy_.Perception().lidar_service) != 0;
+    result.slam_started =
+        started_now.count(device_policy_.Perception().slam_service) != 0;
 
     result.request_id = ++state_.last_request_id;
     result.api_result = 0;
     const bool cancel_already_paused =
         request.command == "cancel_navigation" && state_.mode == "paused";
+    const bool stop_already_stopped =
+        request.command == "stop_slam" && state_.mode == "stopped";
     if (state_.mock) {
       ApplyMockCommandLocked(request);
       result.accepted = true;
@@ -940,13 +990,19 @@ class PerceptionService::Impl {
       result.response =
           R"({"succeed":true,"errorCode":0,"info":"already paused; Web task cancelled"})";
     } else {
+      if (!EnsureSlamRpcReadyLocked()) {
+        RollbackStartedDependenciesLocked(started_now);
+        result.error = "slam_rpc_unavailable";
+        return result;
+      }
+      const std::int64_t operation_started_ms = MonotonicMs();
       std::string response;
       result.api_result = client_->Invoke(api, JsonText(parameter), response);
       // RobotState can report the process as active before slam_operate has
       // advertised its RPC endpoint. Retry at short intervals instead of
       // imposing the old unconditional 3s + 2s sleeps on every cold start.
       for (int attempt = 0;
-           result.api_result == 3104 && started_slam && attempt < 20;
+           result.api_result == 3104 && result.slam_started && attempt < 20;
            ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
         response.clear();
@@ -968,21 +1024,33 @@ class PerceptionService::Impl {
                   << " error=" << result.error
                   << " response=" << result.response << '\n';
       }
+      if (result.accepted &&
+          !WaitForOperationTopicsLocked(request.command,
+                                        operation_started_ms)) {
+        Json::Value stop_parameter(Json::objectValue);
+        stop_parameter["data"] = Json::Value(Json::objectValue);
+        std::string stop_response;
+        client_->Invoke(kApiStopSlam, JsonText(stop_parameter), stop_response);
+        result.accepted = false;
+        result.error = "slam_topic_timeout";
+        state_.mode = "stopped";
+        state_.map_loaded = false;
+        state_.task_stream_active = false;
+        state_.target_set = false;
+        state_.paused = false;
+      }
       if (!result.accepted && needs_slam_services) {
-        if (started_slam) SwitchServiceLocked("unitree_slam", false);
-        if (started_lidar) SwitchServiceLocked("lidar_driver", false);
+        RollbackStartedDependenciesLocked(started_now);
       }
       if (request.command == "stop_slam") {
-        const bool slam_closed = SwitchServiceLocked("unitree_slam", false);
-        slam_started_by_web_ = false;
-        // Keep lidar_driver warm: its raw Mid-360 topic is the default live
-        // preview after the SLAM task ends.
+        const std::string& slam_name =
+            device_policy_.Perception().slam_service;
+        const bool owned = web_started_dependencies_.count(slam_name) != 0;
+        const bool slam_closed = !owned || StopOwnedDependencyLocked(slam_name);
         if (!slam_closed) {
           result.accepted = false;
           result.error = "slam_service_stop_failed";
-        } else if (result.api_result != 0) {
-          // Closing the dependencies is the requested terminal state and is
-          // idempotent even when API 1901 reports that SLAM was already down.
+        } else if (result.api_result != 0 && stop_already_stopped) {
           result.accepted = true;
           result.error.clear();
         }
@@ -1114,18 +1182,41 @@ class PerceptionService::Impl {
     root["navigation_enabled"] = state_.navigation_enabled;
     root["initialization_error"] = state_.initialization_error;
     Json::Value services(Json::objectValue);
-    services["lidar_driver"]["enabled"] = state_.lidar_driver_enabled;
-    services["lidar_driver"]["api_result"] =
-        state_.lidar_driver_api_result;
-    services["lidar_driver"]["status_raw"] =
-        state_.lidar_driver_status_raw;
-    services["unitree_slam"]["enabled"] = state_.unitree_slam_enabled;
-    services["unitree_slam"]["api_result"] =
-        state_.unitree_slam_api_result;
-    services["unitree_slam"]["status_raw"] =
-        state_.unitree_slam_status_raw;
+    const auto& deployment = device_policy_.Perception();
+    for (const auto& dependency : deployment.dependencies) {
+      if (dependency.name.empty()) continue;
+      auto& service = services[dependency.name];
+      bool dependency_enabled = DependencyActiveLocked(dependency.name);
+      if (state_.mock) {
+        if (dependency.name == deployment.lidar_service) {
+          dependency_enabled = state_.lidar_driver_enabled;
+        } else if (dependency.name == deployment.slam_service) {
+          dependency_enabled = state_.unitree_slam_enabled;
+        }
+      }
+      service["enabled"] = dependency_enabled;
+      const auto status = service_status_.find(dependency.name);
+      const auto protect = service_protect_.find(dependency.name);
+      service["status_raw"] =
+          status == service_status_.end() ? -1 : status->second;
+      service["protect"] =
+          protect == service_protect_.end() ? -1 : protect->second;
+      service["configured_lifecycle"] =
+          DependencyLifecycleName(dependency.lifecycle);
+      service["lifecycle"] =
+          DependencyLifecycleName(EffectiveLifecycleLocked(dependency));
+      service["started_by_web"] =
+          web_started_dependencies_.count(dependency.name) != 0;
+      if (dependency.name == deployment.lidar_service) {
+        service["api_result"] = state_.lidar_driver_api_result;
+      }
+      if (dependency.name == deployment.slam_service) {
+        service["api_result"] = state_.unitree_slam_api_result;
+      }
+    }
     services["error"] = state_.service_error;
     root["services"] = std::move(services);
+    root["slam_rpc_ready"] = state_.slam_rpc_ready;
     root["mode"] = state_.mode;
     root["error_code"] = state_.error_code;
     root["info"] = state_.info;
@@ -1162,28 +1253,36 @@ class PerceptionService::Impl {
     root["raw_info"] = state_.raw_info;
     root["raw_key_info"] = state_.raw_key_info;
     Json::Value lidar_inputs(Json::objectValue);
+    lidar_inputs["required"] = deployment.raw_input_required;
     lidar_inputs["point_cloud_age_ms"] =
         Json::Int64(AtomicAgeMs(raw_lidar_last_ms_));
     lidar_inputs["imu_age_ms"] =
         Json::Int64(AtomicAgeMs(raw_lidar_imu_last_ms_));
     lidar_inputs["ready"] =
-        state_.mock ||
+        !deployment.raw_input_required || state_.mock ||
         (lidar_inputs["point_cloud_age_ms"].asInt64() >= 0 &&
          lidar_inputs["point_cloud_age_ms"].asInt64() <= kLidarInputFreshnessMs &&
          lidar_inputs["imu_age_ms"].asInt64() >= 0 &&
          lidar_inputs["imu_age_ms"].asInt64() <= kLidarInputFreshnessMs);
     root["lidar_inputs"] = std::move(lidar_inputs);
     Json::Value topics(Json::objectValue);
-    topics["raw_lidar_points"] = "rt/utlidar/cloud_livox_mid360";
-    topics["raw_lidar_imu"] = "rt/utlidar/imu_livox_mid360";
-    topics["mapping_points"] = "rt/unitree/slam_mapping/points";
-    topics["mapping_odom"] = "rt/unitree/slam_mapping/odom";
-    topics["relocation_points"] = "rt/unitree/slam_relocation/points";
-    topics["relocation_odom"] = "rt/unitree/slam_relocation/odom";
-    topics["global_map"] = "rt/unitree/slam_relocation/global_map";
-    topics["info"] = "rt/slam_info";
-    topics["key_info"] = "rt/slam_key_info";
+    const auto add_topic = [&](const char* key, const std::string& topic) {
+      if (!topic.empty()) topics[key] = topic;
+    };
+    add_topic("raw_lidar_points", deployment.raw_lidar_points_topic);
+    add_topic("raw_lidar_imu", deployment.raw_lidar_imu_topic);
+    add_topic("mapping_points", deployment.mapping_points_topic);
+    add_topic("mapping_odom", deployment.mapping_odom_topic);
+    add_topic("relocation_points", deployment.relocation_points_topic);
+    add_topic("relocation_odom", deployment.relocation_odom_topic);
+    add_topic("global_map", deployment.global_map_topic);
+    add_topic("info", deployment.slam_info_topic);
+    add_topic("key_info", deployment.slam_key_info_topic);
     root["topics"] = std::move(topics);
+    root["device"]["lidar_model"] = deployment.lidar_model;
+    root["device"]["raw_input_required"] = deployment.raw_input_required;
+    root["device"]["raw_lidar_rotate_x_180"] =
+        deployment.rotate_raw_lidar_x_180;
     Json::Value point_filter(Json::objectValue);
     point_filter["transport_encoding"] = "base64_u16le_xyz";
     point_filter["live_max_points"] = Json::UInt64(kMaximumLivePoints);
@@ -1195,13 +1294,19 @@ class PerceptionService::Impl {
     point_filter["global_isolated_voxel_filter"] = false;
     root["point_filter"] = std::move(point_filter);
     Json::Value low_obstacle_safety(Json::objectValue);
-    low_obstacle_safety["source"] = "raw_mid360";
-    low_obstacle_safety["forward_min_m"] = kLowObstacleMinForwardM;
-    low_obstacle_safety["forward_max_m"] = kLowObstacleMaxForwardM;
-    low_obstacle_safety["half_width_m"] = kLowObstacleHalfWidthM;
-    low_obstacle_safety["minimum_relief_m"] = kLowObstacleMinReliefM;
-    low_obstacle_safety["action"] = "pause_navigation";
+    const bool low_obstacle_available = !deployment.low_obstacle_source.empty();
+    low_obstacle_safety["available"] = low_obstacle_available;
     low_obstacle_safety["physical_blind_area_remains"] = true;
+    if (low_obstacle_available) {
+      low_obstacle_safety["source"] = deployment.low_obstacle_source;
+      low_obstacle_safety["forward_min_m"] = kLowObstacleMinForwardM;
+      low_obstacle_safety["forward_max_m"] = kLowObstacleMaxForwardM;
+      low_obstacle_safety["half_width_m"] = kLowObstacleHalfWidthM;
+      low_obstacle_safety["minimum_relief_m"] = kLowObstacleMinReliefM;
+      low_obstacle_safety["action"] = "pause_navigation";
+    } else {
+      low_obstacle_safety["reason"] = "raw_low_obstacle_input_unverified";
+    }
     root["low_obstacle_safety"] = std::move(low_obstacle_safety);
     return JsonText(root);
   }
@@ -1255,6 +1360,133 @@ class PerceptionService::Impl {
     return navigation_bridge_->SerializeTopics();
   }
 
+  std::vector<DeviceCapabilityRuntime> ProbeDeviceCapabilities() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      const auto& deployment = device_policy_.Perception();
+      if (!state_.mock && deployment.attachment_required &&
+          !deployment.attachment_declared) {
+        state_.slam_rpc_ready = false;
+        state_.service_error = "required_attachment_disabled";
+      } else if (!state_.mock && !deployment.dependencies.empty()) {
+        std::set<std::string> started_now;
+        try {
+          if (!robot_state_client_) {
+            robot_state_client_ =
+                std::make_unique<unitree::robot::b2::RobotStateClient>();
+            robot_state_client_->SetTimeout(10.0F);
+            robot_state_client_->Init();
+          }
+          RefreshServiceStatesLocked();
+          if (PrepareDependenciesLocked(started_now) &&
+              !EnsureSlamRpcReadyLocked()) {
+            RollbackStartedDependenciesLocked(started_now);
+          }
+        } catch (const std::exception& exception) {
+          RollbackStartedDependenciesLocked(started_now);
+          state_.slam_rpc_ready = false;
+          state_.service_error = exception.what();
+        } catch (...) {
+          RollbackStartedDependenciesLocked(started_now);
+          state_.slam_rpc_ready = false;
+          state_.service_error = "service_probe_failed";
+        }
+      }
+    }
+    return DeviceCapabilities();
+  }
+
+  std::vector<DeviceCapabilityRuntime> DeviceCapabilities() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto& deployment = device_policy_.Perception();
+    HardwarePresence lidar_presence = state_.mock
+                                          ? HardwarePresence::kPresent
+                                          : device_policy_.DetectHardware(
+                                                CapabilityKey::kLidar);
+    const auto service_known = [](std::int32_t status) {
+      return status == 0 || status == 1;
+    };
+    if (!state_.mock && !deployment.raw_lidar_points_topic.empty() &&
+        AtomicAgeMs(raw_lidar_last_ms_) >= 0 &&
+        AtomicAgeMs(raw_lidar_last_ms_) <= kLidarInputFreshnessMs) {
+      lidar_presence = HardwarePresence::kPresent;
+    } else if (!deployment.raw_lidar_points_topic.empty() &&
+               lidar_presence == HardwarePresence::kUnknown &&
+               service_known(state_.lidar_driver_status_raw)) {
+      lidar_presence = HardwarePresence::kPresent;
+    }
+
+    DeviceCapabilityRuntime lidar;
+    lidar.key = CapabilityKey::kLidar;
+    lidar.hardware_presence = lidar_presence;
+    lidar.service_available =
+        state_.mock || service_known(state_.lidar_driver_status_raw);
+    lidar.deployment_enabled = !deployment.raw_lidar_points_topic.empty();
+    if (!lidar.deployment_enabled) {
+      lidar.reason = "raw_lidar_topic_unverified";
+    } else if (!lidar.service_available) {
+      lidar.reason = "lidar_service_unavailable";
+    } else if (lidar.hardware_presence == HardwarePresence::kAbsent) {
+      lidar.reason = "lidar_hardware_not_detected";
+    }
+
+    HardwarePresence slam_presence =
+        state_.mock ? HardwarePresence::kPresent
+                    : device_policy_.DetectHardware(CapabilityKey::kSlam);
+    if (!deployment.attachment_required &&
+        slam_presence == HardwarePresence::kUnknown) {
+      slam_presence = lidar_presence;
+    }
+    bool dependencies_ready = state_.mock;
+    if (!state_.mock) {
+      dependencies_ready = !deployment.dependencies.empty();
+      for (const auto& dependency : deployment.dependencies) {
+        if (!DependencyActiveLocked(dependency.name)) {
+          dependencies_ready = false;
+          break;
+        }
+      }
+    }
+
+    DeviceCapabilityRuntime slam;
+    slam.key = CapabilityKey::kSlam;
+    slam.hardware_presence = slam_presence;
+    slam.service_available =
+        state_.mock || (dependencies_ready && state_.slam_rpc_ready);
+    slam.deployment_enabled = !deployment.dependencies.empty() &&
+                              !deployment.slam_service.empty() &&
+                              !deployment.mapping_points_topic.empty() &&
+                              !deployment.mapping_odom_topic.empty() &&
+                              !deployment.relocation_points_topic.empty() &&
+                              !deployment.relocation_odom_topic.empty() &&
+                              !deployment.slam_info_topic.empty() &&
+                              !deployment.slam_key_info_topic.empty();
+    if (deployment.attachment_required && !deployment.attachment_declared) {
+      slam.reason = "required_attachment_disabled";
+    } else if (!slam.deployment_enabled) {
+      slam.reason = "slam_deployment_not_configured";
+    } else if (!dependencies_ready) {
+      slam.reason = "slam_dependency_unavailable";
+    } else if (!state_.slam_rpc_ready && !state_.mock) {
+      slam.reason = "slam_rpc_unavailable";
+    } else if (slam.hardware_presence == HardwarePresence::kAbsent) {
+      slam.reason = "lidar_hardware_not_detected";
+    }
+    const auto topic_fresh = [](const std::atomic<std::int64_t>& timestamp) {
+      const auto age = AtomicAgeMs(timestamp);
+      return age >= 0 && age <= kSlamTopicFreshnessMs;
+    };
+    const bool mapping_verified = topic_fresh(mapping_points_last_ms_) &&
+                                  topic_fresh(mapping_odom_last_ms_);
+    const bool relocation_verified = topic_fresh(relocation_points_last_ms_) &&
+                                     topic_fresh(relocation_odom_last_ms_);
+    if (!state_.mock && slam.service_available &&
+        (mapping_verified || relocation_verified)) {
+      slam.verification_level = VerificationLevel::kReadonlyVerified;
+    }
+    return {lidar, slam};
+  }
+
   bool ConfigureNavigationTopic(const std::string& kind,
                                 const std::string& topic,
                                 std::string& error) {
@@ -1262,35 +1494,92 @@ class PerceptionService::Impl {
   }
 
  private:
-  void RefreshServiceStatesLocked() {
+  const PerceptionDependency* FindDependencyLocked(
+      const std::string& name) const {
+    const auto& dependencies = device_policy_.Perception().dependencies;
+    const auto found = std::find_if(
+        dependencies.begin(), dependencies.end(),
+        [&](const PerceptionDependency& dependency) {
+          return dependency.name == name;
+        });
+    return found == dependencies.end() ? nullptr : &*found;
+  }
+
+  bool RefreshServiceStatesLocked() {
+    service_status_.clear();
+    service_protect_.clear();
     std::vector<unitree::robot::b2::ServiceState> services;
     const std::int32_t result = robot_state_client_->ServiceList(services);
     if (result != 0) {
       state_.service_error = "service_list_failed:" + std::to_string(result);
-      return;
+      state_.lidar_driver_status_raw = -1;
+      state_.unitree_slam_status_raw = -1;
+      state_.lidar_driver_enabled = false;
+      state_.unitree_slam_enabled = false;
+      return false;
     }
     for (const auto& service : services) {
-      if (service.name == "lidar_driver") {
-        state_.lidar_driver_status_raw = service.status;
-        state_.lidar_driver_enabled = service.status == 0;
-      } else if (service.name == "unitree_slam") {
-        state_.unitree_slam_status_raw = service.status;
-        state_.unitree_slam_enabled = service.status == 0;
-      }
+      service_status_[service.name] = service.status;
+      service_protect_[service.name] = service.protect;
     }
+    const auto& deployment = device_policy_.Perception();
+    const auto update_named = [&](const std::string& name,
+                                  std::int32_t& status, bool& enabled) {
+      const auto found = service_status_.find(name);
+      status = found == service_status_.end() ? -1 : found->second;
+      enabled = found != service_status_.end()
+                    ? found->second == 0
+                    : ProcessRunning(name);
+    };
+    update_named(deployment.lidar_service, state_.lidar_driver_status_raw,
+                 state_.lidar_driver_enabled);
+    update_named(deployment.slam_service, state_.unitree_slam_status_raw,
+                 state_.unitree_slam_enabled);
     state_.service_error.clear();
+    return true;
+  }
+
+  DependencyLifecycle EffectiveLifecycleLocked(
+      const PerceptionDependency& dependency) const {
+    if (state_.mock) return dependency.lifecycle;
+    if (dependency.lifecycle == DependencyLifecycle::kExternalRequired) {
+      return DependencyLifecycle::kExternalRequired;
+    }
+    const auto status = service_status_.find(dependency.name);
+    const auto protect = service_protect_.find(dependency.name);
+    return status != service_status_.end() &&
+                   protect != service_protect_.end() &&
+                   protect->second == 0
+               ? DependencyLifecycle::kManagedByWeb
+               : DependencyLifecycle::kExternalRequired;
+  }
+
+  bool DependencyActiveLocked(const std::string& name) const {
+    const auto status = service_status_.find(name);
+    return status != service_status_.end() ? status->second == 0
+                                           : ProcessRunning(name);
   }
 
   bool SwitchServiceLocked(const std::string& name, bool enable) {
+    const auto* dependency = FindDependencyLocked(name);
+    if (!dependency ||
+        EffectiveLifecycleLocked(*dependency) !=
+            DependencyLifecycle::kManagedByWeb) {
+      state_.service_error = name + "_external_required";
+      return false;
+    }
     std::int32_t status = -1;
     const std::int32_t result =
         robot_state_client_->ServiceSwitch(name, enable ? 1 : 0, status);
+    service_status_[name] = status;
     const bool expected = enable ? status == 0 : status == 1;
-    if (name == "lidar_driver") {
+    const auto& deployment = device_policy_.Perception();
+    if (name == deployment.lidar_service) {
       state_.lidar_driver_api_result = result;
       state_.lidar_driver_status_raw = status;
       state_.lidar_driver_enabled = result == 0 && status == 0;
-    } else {
+    }
+    if (name == deployment.slam_service) {
       state_.unitree_slam_api_result = result;
       state_.unitree_slam_status_raw = status;
       state_.unitree_slam_enabled = result == 0 && status == 0;
@@ -1305,33 +1594,93 @@ class PerceptionService::Impl {
     return true;
   }
 
-  bool WaitForServiceActiveLocked(const std::string& name) {
-    // ServiceSwitch can acknowledge before the process has reached its
-    // running state. Confirm RobotState readiness before calling slam_operate.
+  bool WaitForDependencyActiveLocked(const std::string& name) {
     for (int attempt = 0; attempt < 50; ++attempt) {
       RefreshServiceStatesLocked();
-      const bool enabled = name == "lidar_driver"
-                               ? state_.lidar_driver_enabled
-                               : state_.unitree_slam_enabled;
-      if (enabled) return true;
+      if (DependencyActiveLocked(name)) return true;
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     state_.service_error = name + "_start_timeout";
     return false;
   }
 
-  bool EnsureServiceActiveLocked(const std::string& name, bool& started) {
+  bool EnsureDependencyActiveLocked(const PerceptionDependency& dependency,
+                                    bool& started) {
     RefreshServiceStatesLocked();
-    const bool enabled = name == "lidar_driver"
-                             ? state_.lidar_driver_enabled
-                             : state_.unitree_slam_enabled;
-    if (enabled) return true;
-    if (!SwitchServiceLocked(name, true)) return false;
+    if (DependencyActiveLocked(dependency.name)) return true;
+    if (EffectiveLifecycleLocked(dependency) !=
+        DependencyLifecycle::kManagedByWeb) {
+      state_.service_error = dependency.name + "_external_required";
+      return false;
+    }
+    if (!SwitchServiceLocked(dependency.name, true)) return false;
+    web_started_dependencies_.insert(dependency.name);
     started = true;
-    return WaitForServiceActiveLocked(name);
+    return WaitForDependencyActiveLocked(dependency.name);
+  }
+
+  bool StopOwnedDependencyLocked(const std::string& name) {
+    if (web_started_dependencies_.count(name) == 0) return true;
+    const auto* dependency = FindDependencyLocked(name);
+    if (!dependency) return false;
+    RefreshServiceStatesLocked();
+    if (EffectiveLifecycleLocked(*dependency) !=
+        DependencyLifecycle::kManagedByWeb) {
+      state_.service_error = name + "_management_no_longer_available";
+      return false;
+    }
+    if (!SwitchServiceLocked(name, false)) return false;
+    web_started_dependencies_.erase(name);
+    return true;
+  }
+
+  void RollbackStartedDependenciesLocked(
+      const std::set<std::string>& started_now) {
+    const auto& dependencies = device_policy_.Perception().dependencies;
+    for (auto it = dependencies.rbegin(); it != dependencies.rend(); ++it) {
+      if (started_now.count(it->name) != 0) {
+        StopOwnedDependencyLocked(it->name);
+      }
+    }
+  }
+
+  bool PrepareDependenciesLocked(std::set<std::string>& started_now) {
+    const auto& dependencies = device_policy_.Perception().dependencies;
+    for (const auto& dependency : dependencies) {
+      bool started = false;
+      if (EnsureDependencyActiveLocked(dependency, started)) {
+        if (started) started_now.insert(dependency.name);
+        continue;
+      }
+      RollbackStartedDependenciesLocked(started_now);
+      return false;
+    }
+    return true;
+  }
+
+  bool EnsureSlamRpcReadyLocked() {
+    if (state_.mock) {
+      state_.slam_rpc_ready = true;
+      return true;
+    }
+    if (!client_) {
+      client_ = std::make_unique<SlamClient>();
+      client_->Init();
+    }
+    std::int32_t result = client_->Probe();
+    for (int attempt = 0; result == 3104 && attempt < 20; ++attempt) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      result = client_->Probe();
+    }
+    state_.slam_rpc_ready = result == 0;
+    if (!state_.slam_rpc_ready) {
+      state_.service_error = "slam_rpc_unavailable:" + std::to_string(result);
+    }
+    return state_.slam_rpc_ready;
   }
 
   bool WaitForLidarInputsLocked() {
+    if (!device_policy_.Perception().raw_input_required) return true;
     for (int attempt = 0; attempt < 50; ++attempt) {
       const auto cloud_age = AtomicAgeMs(raw_lidar_last_ms_);
       const auto imu_age = AtomicAgeMs(raw_lidar_imu_last_ms_);
@@ -1345,6 +1694,38 @@ class PerceptionService::Impl {
               << " point_cloud_age_ms=" << AtomicAgeMs(raw_lidar_last_ms_)
               << " imu_age_ms=" << AtomicAgeMs(raw_lidar_imu_last_ms_)
               << '\n';
+    return false;
+  }
+
+  bool NavigationTopicsFreshLocked() const {
+    if (state_.mock) return true;
+    const auto points_age = AtomicAgeMs(relocation_points_last_ms_);
+    const auto odom_age = AtomicAgeMs(relocation_odom_last_ms_);
+    return points_age >= 0 && points_age <= kSlamTopicFreshnessMs &&
+           odom_age >= 0 && odom_age <= kSlamTopicFreshnessMs;
+  }
+
+  bool WaitForOperationTopicsLocked(const std::string& command,
+                                    std::int64_t after_ms) const {
+    if (state_.mock) return true;
+    const bool mapping = command == "start_mapping";
+    const bool relocation =
+        command == "load_map" || command == "initialize_pose";
+    if (!mapping && !relocation) return true;
+    const auto* points =
+        mapping ? &mapping_points_last_ms_ : &relocation_points_last_ms_;
+    const auto* odom =
+        mapping ? &mapping_odom_last_ms_ : &relocation_odom_last_ms_;
+    for (int attempt = 0; attempt < 50; ++attempt) {
+      const auto points_stamp = points->load(std::memory_order_relaxed);
+      const auto odom_stamp = odom->load(std::memory_order_relaxed);
+      if (points_stamp >= after_ms && odom_stamp >= after_ms &&
+          AtomicAgeMs(*points) <= kSlamTopicFreshnessMs &&
+          AtomicAgeMs(*odom) <= kSlamTopicFreshnessMs) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     return false;
   }
 
@@ -1464,49 +1845,80 @@ class PerceptionService::Impl {
   }
 
   void SubscribeLocked() {
-    slam_info_ = MakeSubscriber<StringMessage>(
-        "rt/slam_info", [this](const StringMessage& message) {
-          HandleInfo(message.data(), false);
-        });
-    slam_key_info_ = MakeSubscriber<StringMessage>(
-        "rt/slam_key_info", [this](const StringMessage& message) {
-          HandleInfo(message.data(), true);
-        });
-    mapping_points_ = MakeSubscriber<PointCloudMessage>(
-        "rt/unitree/slam_mapping/points",
-        [this](const PointCloudMessage& message) {
-          HandleCloud(message, "mapping", false);
-        });
-    raw_lidar_points_ = MakeSubscriber<PointCloudMessage>(
-        "rt/utlidar/cloud_livox_mid360",
-        [this](const PointCloudMessage& message) {
-          HandleRawLidarCloud(message);
-        });
-    raw_lidar_imu_ = MakeSubscriber<ImuMessage>(
-        "rt/utlidar/imu_livox_mid360",
-        [this](const ImuMessage&) {
-          raw_lidar_imu_last_ms_.store(MonotonicMs(), std::memory_order_relaxed);
-        });
-    relocation_points_ = MakeSubscriber<PointCloudMessage>(
-        "rt/unitree/slam_relocation/points",
-        [this](const PointCloudMessage& message) {
-          HandleCloud(message, "relocation", false);
-        });
-    global_map_ = MakeSubscriber<PointCloudMessage>(
-        "rt/unitree/slam_relocation/global_map",
-        [this](const PointCloudMessage& message) {
-          HandleCloud(message, "global_map", true);
-        });
-    mapping_odom_ = MakeSubscriber<OdometryMessage>(
-        "rt/unitree/slam_mapping/odom",
-        [this](const OdometryMessage& message) {
-          HandleOdometry(message, "mapping");
-        });
-    relocation_odom_ = MakeSubscriber<OdometryMessage>(
-        "rt/unitree/slam_relocation/odom",
-        [this](const OdometryMessage& message) {
-          HandleOdometry(message, "relocation");
-        });
+    const auto& deployment = device_policy_.Perception();
+    if (!deployment.slam_info_topic.empty()) {
+      slam_info_ = MakeSubscriber<StringMessage>(
+          deployment.slam_info_topic, [this](const StringMessage& message) {
+            slam_info_last_ms_.store(MonotonicMs(), std::memory_order_relaxed);
+            HandleInfo(message.data(), false);
+          });
+    }
+    if (!deployment.slam_key_info_topic.empty()) {
+      slam_key_info_ = MakeSubscriber<StringMessage>(
+          deployment.slam_key_info_topic, [this](const StringMessage& message) {
+            slam_key_info_last_ms_.store(MonotonicMs(),
+                                         std::memory_order_relaxed);
+            HandleInfo(message.data(), true);
+          });
+    }
+    if (!deployment.mapping_points_topic.empty()) {
+      mapping_points_ = MakeSubscriber<PointCloudMessage>(
+          deployment.mapping_points_topic,
+          [this](const PointCloudMessage& message) {
+            mapping_points_last_ms_.store(MonotonicMs(),
+                                          std::memory_order_relaxed);
+            HandleCloud(message, "mapping", false);
+          });
+    }
+    if (!deployment.raw_lidar_points_topic.empty()) {
+      raw_lidar_points_ = MakeSubscriber<PointCloudMessage>(
+          deployment.raw_lidar_points_topic,
+          [this](const PointCloudMessage& message) {
+            HandleRawLidarCloud(message);
+          });
+    }
+    if (!deployment.raw_lidar_imu_topic.empty()) {
+      raw_lidar_imu_ = MakeSubscriber<ImuMessage>(
+          deployment.raw_lidar_imu_topic,
+          [this](const ImuMessage&) {
+            raw_lidar_imu_last_ms_.store(MonotonicMs(),
+                                         std::memory_order_relaxed);
+          });
+    }
+    if (!deployment.relocation_points_topic.empty()) {
+      relocation_points_ = MakeSubscriber<PointCloudMessage>(
+          deployment.relocation_points_topic,
+          [this](const PointCloudMessage& message) {
+            relocation_points_last_ms_.store(MonotonicMs(),
+                                             std::memory_order_relaxed);
+            HandleCloud(message, "relocation", false);
+          });
+    }
+    if (!deployment.global_map_topic.empty()) {
+      global_map_ = MakeSubscriber<PointCloudMessage>(
+          deployment.global_map_topic,
+          [this](const PointCloudMessage& message) {
+            HandleCloud(message, "global_map", true);
+          });
+    }
+    if (!deployment.mapping_odom_topic.empty()) {
+      mapping_odom_ = MakeSubscriber<OdometryMessage>(
+          deployment.mapping_odom_topic,
+          [this](const OdometryMessage& message) {
+            mapping_odom_last_ms_.store(MonotonicMs(),
+                                        std::memory_order_relaxed);
+            HandleOdometry(message, "mapping");
+          });
+    }
+    if (!deployment.relocation_odom_topic.empty()) {
+      relocation_odom_ = MakeSubscriber<OdometryMessage>(
+          deployment.relocation_odom_topic,
+          [this](const OdometryMessage& message) {
+            relocation_odom_last_ms_.store(MonotonicMs(),
+                                           std::memory_order_relaxed);
+            HandleOdometry(message, "relocation");
+          });
+    }
   }
 
   template <typename Message, typename Callback>
@@ -1584,13 +1996,13 @@ class PerceptionService::Impl {
     raw_lidar_last_ms_.store(MonotonicMs(), std::memory_order_relaxed);
     auto decoded = DecodePointCloud(message, kMaximumLiveDecodePoints);
     if (!decoded.valid) return;
-    // The G1 Mid-360 is mounted upside-down. Convert livox_frame into the
-    // upright robot display frame with a proper 180-degree rotation about X
-    // (x, y, z -> x, -y, -z). Applying a screen-space mirror would reverse
-    // handedness and make navigation geometry misleading.
-    for (auto& point : decoded.points) {
-      point.y = -point.y;
-      point.z = -point.z;
+    // Installation transforms are deployment facts. Apply only the selected
+    // device policy's proper X-axis rotation to the raw sensor frame.
+    if (device_policy_.Perception().rotate_raw_lidar_x_180) {
+      for (auto& point : decoded.points) {
+        point.y = -point.y;
+        point.z = -point.z;
+      }
     }
     const auto low_obstacle = DetectLowObstacleForSafety(decoded.points);
     decoded.points = FilterPointCloudForWeb(decoded.points, kRawLiveFilter);
@@ -1631,8 +2043,8 @@ class PerceptionService::Impl {
       return;
     }
     // Prefer task-specific map-frame data while it is flowing. Otherwise the
-    // always-on Mid-360 topic supplies the default live preview without
-    // starting mapping or localization.
+    // deployment's always-on raw lidar topic supplies the default live preview
+    // without starting mapping or localization.
     if (last_slam_cloud_ != Clock::time_point{} &&
         std::chrono::duration_cast<std::chrono::milliseconds>(
             Clock::now() - last_slam_cloud_).count() < 500) {
@@ -1642,7 +2054,7 @@ class PerceptionService::Impl {
     state_.live_points = std::move(decoded.points);
     state_.point_frame = std::move(decoded.frame_id);
     state_.source_point_count = decoded.source_points;
-    state_.point_source = "utlidar_mid360";
+    state_.point_source = device_policy_.Perception().raw_point_source;
     ++state_.sequence;
   }
 
@@ -1837,8 +2249,10 @@ class PerceptionService::Impl {
           state_.source_point_count = state_.live_points.size();
           AppendTrajectoryLocked(state_.pose);
           ++state_.sequence;
-        } else if (state_.lidar_driver_enabled) {
-          // Mock the always-on raw Mid-360 fallback used by the real service.
+        } else if (state_.lidar_driver_enabled &&
+                   !device_policy_.Perception().raw_lidar_points_topic.empty()) {
+          // Mock only deployments that actually define an always-on raw lidar
+          // fallback. R1 intentionally leaves the raw topic unverified/empty.
           state_.live_points.clear();
           for (int i = 0; i < 1700; ++i) {
             const float angle = i * 0.043F + static_cast<float>(elapsed * 0.12);
@@ -1849,7 +2263,7 @@ class PerceptionService::Impl {
                  static_cast<float>(i % 255)});
           }
           state_.source_point_count = state_.live_points.size();
-          state_.point_source = "utlidar_mid360";
+          state_.point_source = device_policy_.Perception().raw_point_source;
           state_.point_frame = "livox_frame";
           ++state_.sequence;
         }
@@ -1928,6 +2342,7 @@ class PerceptionService::Impl {
     }
   }
 
+  const IDeviceCapabilityPolicy& device_policy_;
   mutable std::mutex mutex_;
   PerceptionState state_;
   std::unique_ptr<SlamClient> client_;
@@ -1953,15 +2368,24 @@ class PerceptionService::Impl {
       relocation_odom_;
   std::atomic<bool> running_{false};
   std::thread mock_thread_;
-  bool lidar_started_by_web_{false};
-  bool slam_started_by_web_{false};
+  std::set<std::string> web_started_dependencies_;
+  std::unordered_map<std::string, std::int32_t> service_status_;
+  std::unordered_map<std::string, std::int32_t> service_protect_;
   std::atomic<std::int64_t> raw_lidar_last_ms_{0};
   std::atomic<std::int64_t> raw_lidar_imu_last_ms_{0};
+  std::atomic<std::int64_t> mapping_points_last_ms_{0};
+  std::atomic<std::int64_t> mapping_odom_last_ms_{0};
+  std::atomic<std::int64_t> relocation_points_last_ms_{0};
+  std::atomic<std::int64_t> relocation_odom_last_ms_{0};
+  std::atomic<std::int64_t> slam_info_last_ms_{0};
+  std::atomic<std::int64_t> slam_key_info_last_ms_{0};
   Clock::time_point last_slam_cloud_{};
 };
 
-PerceptionService::PerceptionService(bool mock, bool navigation_enabled)
-    : impl_(std::make_unique<Impl>(mock, navigation_enabled)) {}
+PerceptionService::PerceptionService(
+    bool mock, bool navigation_enabled,
+    const IDeviceCapabilityPolicy& device_policy)
+    : impl_(std::make_unique<Impl>(mock, navigation_enabled, device_policy)) {}
 
 PerceptionService::~PerceptionService() = default;
 
@@ -1998,6 +2422,14 @@ std::string PerceptionService::SerializeNavigationScene() const {
 
 std::string PerceptionService::SerializeNavigationTopics() const {
   return impl_->SerializeNavigationTopics();
+}
+
+std::vector<DeviceCapabilityRuntime> PerceptionService::ProbeDeviceCapabilities() {
+  return impl_->ProbeDeviceCapabilities();
+}
+
+std::vector<DeviceCapabilityRuntime> PerceptionService::DeviceCapabilities() const {
+  return impl_->DeviceCapabilities();
 }
 
 bool PerceptionService::ConfigureNavigationTopic(const std::string& kind,

@@ -5,6 +5,8 @@
 
 #include <unitree/robot/channel/channel_factory.hpp>
 
+#include "g1_web/robot_registry.hpp"
+
 namespace g1_web {
 
 UnitreeDataSource::UnitreeDataSource(SnapshotStore& store) : store_(store) {}
@@ -12,66 +14,86 @@ UnitreeDataSource::UnitreeDataSource(SnapshotStore& store) : store_(store) {}
 UnitreeDataSource::~UnitreeDataSource() { Stop(); }
 
 bool UnitreeDataSource::Start(const std::string& network_interface,
-                             std::string& error) {
+                             std::string& error,
+                             const TelemetrySubscriptionPlan& plan) {
   try {
     unitree::robot::ChannelFactory::Instance()->Init(0, network_interface);
 
-    low_state_ = std::make_shared<unitree::robot::ChannelSubscriber<
-        unitree_hg::msg::dds_::LowState_>>("rt/lf/lowstate");
-    low_state_->InitChannel(
-        [this](const void* data) {
-          store_.UpdateLowState(
-              *static_cast<const unitree_hg::msg::dds_::LowState_*>(data));
-        },
-        1);
+    for (const auto& source : plan.sources) {
+      switch (source.kind) {
+        case TelemetrySourceKind::kHgLowState:
+          low_state_ = std::make_shared<unitree::robot::ChannelSubscriber<
+              unitree_hg::msg::dds_::LowState_>>(source.topic);
+          low_state_->InitChannel(
+              [this](const void* data) {
+                store_.UpdateLowState(
+                    *static_cast<const unitree_hg::msg::dds_::LowState_*>(
+                        data));
+              },
+              1);
+          break;
 
-    bms_ = std::make_shared<unitree::robot::ChannelSubscriber<
-        unitree_hg::msg::dds_::BmsState_>>("rt/lf/bmsstate");
-    bms_->InitChannel(
-        [this](const void* data) {
-          store_.UpdateBms(
-              *static_cast<const unitree_hg::msg::dds_::BmsState_*>(data));
-        },
-        1);
+        case TelemetrySourceKind::kHgBmsState:
+          bms_ = std::make_shared<unitree::robot::ChannelSubscriber<
+              unitree_hg::msg::dds_::BmsState_>>(source.topic);
+          bms_->InitChannel(
+              [this](const void* data) {
+                store_.UpdateBms(
+                    *static_cast<const unitree_hg::msg::dds_::BmsState_*>(
+                        data));
+              },
+              1);
+          break;
 
-    secondary_imu_ = std::make_shared<unitree::robot::ChannelSubscriber<
-        unitree_hg::msg::dds_::IMUState_>>("rt/lf/secondary_imu");
-    secondary_imu_->InitChannel(
-        [this](const void* data) {
-          store_.UpdateSecondaryImu(
-              *static_cast<const unitree_hg::msg::dds_::IMUState_*>(data));
-        },
-        1);
+        case TelemetrySourceKind::kHgImuState:
+          secondary_imu_ = std::make_shared<unitree::robot::ChannelSubscriber<
+              unitree_hg::msg::dds_::IMUState_>>(source.topic);
+          secondary_imu_->InitChannel(
+              [this](const void* data) {
+                store_.UpdateSecondaryImu(
+                    *static_cast<const unitree_hg::msg::dds_::IMUState_*>(
+                        data));
+              },
+              1);
+          break;
 
-    mainboard_ = std::make_shared<unitree::robot::ChannelSubscriber<
-        unitree_hg::msg::dds_::MainBoardState_>>("rt/lf/mainboardstate");
-    mainboard_->InitChannel(
-        [this](const void* data) {
-          store_.UpdateMainBoard(
-              *static_cast<const unitree_hg::msg::dds_::MainBoardState_*>(
-                  data));
-        },
-        1);
+        case TelemetrySourceKind::kHgMainBoardState:
+          mainboard_ = std::make_shared<unitree::robot::ChannelSubscriber<
+              unitree_hg::msg::dds_::MainBoardState_>>(source.topic);
+          mainboard_->InitChannel(
+              [this](const void* data) {
+                store_.UpdateMainBoard(
+                    *static_cast<
+                        const unitree_hg::msg::dds_::MainBoardState_*>(data));
+              },
+              1);
+          break;
 
-    odometry_ = std::make_shared<unitree::robot::ChannelSubscriber<
-        unitree_go::msg::dds_::SportModeState_>>("rt/odommodestate");
-    odometry_->InitChannel(
-        [this](const void* data) {
-          store_.UpdateOdometry(
-              *static_cast<const unitree_go::msg::dds_::SportModeState_*>(
-                  data));
-        },
-        1);
+        case TelemetrySourceKind::kGo2SportModeState:
+          odometry_ = std::make_shared<unitree::robot::ChannelSubscriber<
+              unitree_go::msg::dds_::SportModeState_>>(source.topic);
+          odometry_->InitChannel(
+              [this](const void* data) {
+                store_.UpdateOdometry(
+                    *static_cast<
+                        const unitree_go::msg::dds_::SportModeState_*>(data));
+              },
+              1);
+          break;
 
-    sport_mode_ = std::make_shared<unitree::robot::ChannelSubscriber<
-        unitree_hg::msg::dds_::SportModeState_>>("rt/sportmodestate");
-    sport_mode_->InitChannel(
-        [this](const void* data) {
-          store_.UpdateSportMode(
-              *static_cast<
-                  const unitree_hg::msg::dds_::SportModeState_*>(data));
-        },
-        1);
+        case TelemetrySourceKind::kHgSportModeState:
+          sport_mode_ = std::make_shared<unitree::robot::ChannelSubscriber<
+              unitree_hg::msg::dds_::SportModeState_>>(source.topic);
+          sport_mode_->InitChannel(
+              [this](const void* data) {
+                store_.UpdateSportMode(
+                    *static_cast<
+                        const unitree_hg::msg::dds_::SportModeState_*>(data));
+              },
+              1);
+          break;
+      }
+    }
 
     store_.SetDdsStatus(true);
     error.clear();
@@ -116,18 +138,48 @@ void UnitreeDataSource::Stop() {
 
 MockDataSource::MockDataSource(SnapshotStore& store) : store_(store) {}
 
+MockDataSource::MockDataSource(SnapshotStore& store, const RobotProfile& profile)
+    : store_(store) {
+  if (!profile.model_variants.empty()) {
+    mode_machine_ =
+        static_cast<std::uint8_t>(profile.model_variants.front().selector_value);
+  }
+  for (const auto& capability : profile.capabilities) {
+    if (capability.key != CapabilityKey::kLocomotion) continue;
+    const auto allowed_fsm = capability.parameters.find("allowed_fsm");
+    if (allowed_fsm != capability.parameters.end()) {
+      try {
+        initial_fsm_id_ =
+            static_cast<std::uint32_t>(std::stoul(allowed_fsm->second));
+      } catch (...) {
+      }
+    }
+    break;
+  }
+  semantic_motor_slots_.reserve(profile.joint_schema.joints.size());
+  for (const auto& joint : profile.joint_schema.joints) {
+    semantic_motor_slots_.push_back(joint.motor_slot);
+  }
+}
+
 MockDataSource::~MockDataSource() { Stop(); }
 
 void MockDataSource::Start() {
   if (running_.exchange(true)) {
     return;
   }
+  unitree_hg::msg::dds_::SportModeState_ state;
+  state.fsm_id(initial_fsm_id_);
+  state.fsm_mode(0);
+  state.task_id(0);
+  state.task_time(0.0F);
+  store_.UpdateSportMode(state);
   thread_ = std::thread([this] {
     const auto started = SteadyClock::now();
     while (running_.load()) {
       const double elapsed =
           std::chrono::duration<double>(SteadyClock::now() - started).count();
-      store_.PopulateMock(elapsed);
+      store_.PopulateMock(elapsed, mode_machine_, semantic_motor_slots_);
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
   });

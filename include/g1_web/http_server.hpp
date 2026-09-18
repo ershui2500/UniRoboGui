@@ -1,12 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
 #include "g1_web/control_service.hpp"
 #include "g1_web/camera_service.hpp"
 #include "g1_web/perception_service.hpp"
+#include "g1_web/robot_profile.hpp"
 #include "g1_web/snapshot_store.hpp"
 #include "g1_web/voice_service.hpp"
 
@@ -18,9 +20,11 @@ class HttpServer {
              ControlService& control_service,
              PerceptionService& perception_service,
              CameraService& camera_service,
+             const RobotProfile& robot_profile,
              std::string bind_address,
              std::uint16_t port, std::string web_root,
-             unsigned int publish_hz);
+             unsigned int publish_hz,
+             std::function<void(const std::string&)> robot_switch_request = {});
   ~HttpServer();
 
   bool Start(std::string& error);

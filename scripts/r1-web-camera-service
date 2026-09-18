@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+depth_client_pattern='(^|/)client 192\.168\.123\.161$'
+
+depth_active() {
+  /usr/bin/pgrep -f "$depth_client_pattern" >/dev/null 2>&1
+}
+
+case "${1:-}" in
+  depth-is-active)
+    depth_active && exit 0
+    exit 3
+    ;;
+  depth-start)
+    if depth_active; then
+      exit 0
+    fi
+    exec /usr/local/bin/unitree_depth_start
+    ;;
+  depth-stop)
+    exec /usr/local/bin/unitree_depth_stop
+    ;;
+  *)
+    echo "usage: $0 {depth-start|depth-stop|depth-is-active}" >&2
+    exit 2
+    ;;
+esac

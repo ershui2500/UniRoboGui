@@ -15,9 +15,9 @@
 #include <unitree/robot/b2/robot_state/robot_state_client.hpp>
 #include <unitree/robot/channel/channel_publisher.hpp>
 #include <unitree/robot/channel/channel_subscriber.hpp>
-#include <unitree/robot/g1/audio/g1_audio_client.hpp>
 #include <unitree/robot/internal/internal_request_response.hpp>
 
+#include "g1_web/audio_capability.hpp"
 #include "g1_web/snapshot_store.hpp"
 
 namespace g1_web {
@@ -64,6 +64,7 @@ struct CustomerQaEntry {
 
 struct CustomerVoiceConfig {
   std::string api_url;
+  std::string proxy_url;
   std::string api_key;
   std::string model;
   bool api_key_configured{false};
@@ -87,7 +88,8 @@ class VoiceService {
   friend struct VoiceServiceTestAccess;
 
  public:
-  VoiceService(SnapshotStore& store, bool mock);
+  VoiceService(SnapshotStore& store,
+               std::unique_ptr<IAudioCapability> audio_capability, bool mock);
   ~VoiceService();
 
   bool Start(std::string& error);
@@ -185,6 +187,7 @@ class VoiceService {
   bool chat_go_closed_{false};
   std::string llm_mode_{"builtin"};
   std::string customer_api_url_;
+  std::string customer_proxy_url_;
   std::string customer_api_key_;
   std::string customer_model_;
   std::string customer_role_prompt_;
@@ -197,7 +200,9 @@ class VoiceService {
   std::string customer_config_path_{"config/customer_voice.json"};
   std::int64_t pending_builtin_request_id_{0};
 
-  std::unique_ptr<unitree::robot::g1::AudioClient> audio_client_;
+  std::unique_ptr<IAudioCapability> audio_capability_;
+  std::atomic<bool> audio_capability_available_{false};
+  std::string audio_capability_error_;
   std::unique_ptr<unitree::robot::b2::RobotStateClient>
       robot_state_client_;
   std::shared_ptr<unitree::robot::ChannelSubscriber<

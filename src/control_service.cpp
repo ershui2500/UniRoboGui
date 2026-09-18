@@ -7,7 +7,6 @@
 #include <exception>
 #include <iostream>
 #include <sstream>
-#include <unordered_set>
 #include <utility>
 
 #include <json/json.h>
@@ -16,23 +15,20 @@ namespace g1_web {
 namespace {
 
 constexpr std::size_t kRecentRequestLimit = 64;
-constexpr float kMaximumForwardSpeedMps = 3.0F;
-constexpr float kMaximumLateralSpeedMps = 1.0F;
-constexpr float kMaximumYawSpeedRadS = 1.5F;
-constexpr float kVelocityLeaseSeconds = 0.25F;
+constexpr char kLocomotionMotionOwner[] = "locomotion.motion";
+constexpr char kLocomotionCommandOwner[] = "locomotion.command";
+constexpr char kArmActionOwner[] = "arm_action";
 
-const std::unordered_set<std::int32_t>& AllowedArmActionIds() {
-  static const std::unordered_set<std::int32_t> ids{
-      11, 12, 15, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 99};
-  return ids;
-}
+struct ResourceReleaseGuard {
+  ResourceManager& manager;
+  ControlResource resource;
+  std::string owner;
+  bool release{false};
 
-const std::unordered_set<std::int32_t>& AllowedFsmIds() {
-  static const std::unordered_set<std::int32_t> ids{
-      0, 1, 2, 3, 4, 500, 501, 702, 706, 801, 802};
-  return ids;
-}
+  ~ResourceReleaseGuard() {
+    if (release) manager.Release(resource, owner);
+  }
+};
 
 bool IsFreshSportState(const ControlData& control) {
   if (!control.sport_state_received) {
@@ -42,54 +38,45 @@ bool IsFreshSportState(const ControlData& control) {
          std::chrono::seconds(1);
 }
 
-bool IsArmActionFsm(std::uint32_t fsm_id) {
-  return fsm_id == 500 || fsm_id == 501 || fsm_id == 801 ||
-         fsm_id == 802;
+const CapabilityDescriptor* FindCapability(const RobotProfile& profile,
+                                           CapabilityKey key) {
+  const auto capability = std::find_if(
+      profile.capabilities.begin(), profile.capabilities.end(),
+      [key](const auto& item) { return item.key == key; });
+  return capability == profile.capabilities.end() ? nullptr : &*capability;
 }
 
-bool IsLocomotionFsm(std::uint32_t fsm_id) {
-  return fsm_id == 500 || fsm_id == 501 || fsm_id == 801 ||
-         fsm_id == 802;
-}
+bool ModeTransitionAllowed(const RobotProfile& profile,
+                           const std::string& command,
+                           std::uint32_t source_fsm) {
+  const auto* locomotion = FindCapability(profile, CapabilityKey::kLocomotion);
+  if (!locomotion) return false;
+  const auto policy = locomotion->parameters.find("mode_sources");
+  if (policy == locomotion->parameters.end()) return true;
 
-bool IsWalkRunFsm(std::uint32_t fsm_id) {
-  return fsm_id == 801 || fsm_id == 802;
-}
-
-bool IsAllowedSpeedMode(std::int32_t speed_mode) {
-  return speed_mode == 0 || speed_mode == 1 || speed_mode == 3;
-}
-
-struct MotionLimits {
-  float forward_m_s;
-  float lateral_m_s;
-  float yaw_rad_s;
-};
-
-MotionLimits MotionLimitsForMode(std::int32_t speed_mode,
-                                std::uint32_t fsm_id) {
-  if (speed_mode == 3) {
-    return {3.0F, 1.0F, 1.5F};
-  }
-  if (IsWalkRunFsm(fsm_id)) {
-    if (speed_mode == 1) {
-      return {1.0F, 0.6F, 1.3F};
+  std::istringstream entries(policy->second);
+  std::string entry;
+  while (std::getline(entries, entry, ';')) {
+    const auto separator = entry.find(':');
+    if (separator == std::string::npos || entry.substr(0, separator) != command) {
+      continue;
     }
-    return {0.5F, 0.4F, 1.1F};
+    std::istringstream sources(entry.substr(separator + 1));
+    std::string source;
+    while (std::getline(sources, source, '|')) {
+      if (source == std::to_string(source_fsm)) return true;
+    }
+    return false;
   }
-  if (speed_mode == 1) {
-    return {1.0F, 0.35F, 0.8F};
-  }
-  return {0.5F, 0.2F, 0.5F};
+  return false;
 }
 
-bool IsSpeedModeAllowedForFsm(std::int32_t speed_mode,
-                              std::uint32_t fsm_id) {
-  if (IsWalkRunFsm(fsm_id)) {
-    return IsAllowedSpeedMode(speed_mode);
-  }
-  return (fsm_id == 500 || fsm_id == 501) &&
-         (speed_mode == 0 || speed_mode == 1);
+bool IsUnknownFsmMode(const RobotProfile& profile, std::uint32_t fsm_mode) {
+  const auto* locomotion = FindCapability(profile, CapabilityKey::kLocomotion);
+  if (!locomotion) return false;
+  const auto unknown = locomotion->parameters.find("fsm_mode_unknown");
+  return unknown != locomotion->parameters.end() &&
+         unknown->second == std::to_string(fsm_mode);
 }
 
 bool FirmwareActionAvailable(const std::string& raw,
@@ -109,6 +96,45 @@ bool FirmwareActionAvailable(const std::string& raw,
     }
   }
   return false;
+}
+
+CapabilityKey ControlCapabilityForRequest(const std::string& category,
+                                          const std::string& command) {
+  if (category == "mode") return CapabilityKey::kLocomotion;
+  return command == "execute_custom" || command == "stop_custom"
+             ? CapabilityKey::kJointTeach
+             : CapabilityKey::kJointDebug;
+}
+
+std::string ArmActionApiError(std::int32_t result) {
+  switch (result) {
+    case 3103:
+      return "arm_action_api_unavailable";
+    case 3104:
+      return "arm_action_timeout";
+    case 3204:
+      return "arm_action_invalid_parameter";
+    case 7399:
+      return "arm_action_service_error";
+    case 7400:
+      return "arm_action_occupied";
+    case 7401:
+      return "arm_action_holding";
+    case 7402:
+      return "arm_action_invalid_id";
+    case 7403:
+      return "arm_action_file_error";
+    case 7404:
+      return "arm_action_fsm_not_allowed";
+    case 7405:
+      return "arm_action_name_exists";
+    case 7406:
+      return "arm_action_low_battery";
+    case 7407:
+      return "arm_action_motor_error";
+    default:
+      return "sdk_api_error";
+  }
 }
 
 bool FirmwareTeachActionAvailable(const std::string& raw,
@@ -143,42 +169,34 @@ bool ControlService::Start(std::string& error) {
   control.enabled = true;
 
   try {
-    if (mock_) {
-      control.initialized = true;
-      control.action_list_api_result = 0;
-      control.action_list_raw =
-          R"([[{"id":99,"name":"release_arm"},{"id":11,"name":"blow_kiss_with_both_hands"},{"id":17,"name":"clamp"},{"id":18,"name":"high_five"},{"id":19,"name":"hug"},{"id":22,"name":"refuse"},{"id":25,"name":"wave_under_head"},{"id":26,"name":"wave_above_head"},{"id":27,"name":"shake_hand"}],[{"name":"Waist_Drum_Dance","time":9.5},{"name":"Spin_discs","time":6.9},{"name":"Scratch_head","time":8.1}]])";
+    LocomotionInitialization locomotion_state;
+    std::string locomotion_error;
+    if (!locomotion_) {
+      control.initialization_error = "locomotion_adapter_missing";
+    } else if (!locomotion_->Initialize(locomotion_state,
+                                        locomotion_error)) {
+      control.initialization_error = locomotion_error;
     } else {
-      loco_client_ = std::make_unique<unitree::robot::g1::LocoClient>();
-      loco_client_->SetTimeout(10.0F);
-      loco_client_->Init();
-
-      motion_client_ =
-          std::make_unique<unitree::robot::g1::LocoClient>();
-      motion_client_->SetTimeout(1.0F);
-      motion_client_->Init();
-
-      arm_action_client_ =
-          std::make_unique<unitree::robot::g1::G1ArmActionClient>();
-      arm_action_client_->SetTimeout(10.0F);
-      arm_action_client_->Init();
-
-      int fsm_id = 0;
-      int fsm_mode = 0;
-      const std::int32_t fsm_id_result =
-          loco_client_->GetFsmId(fsm_id);
-      const std::int32_t fsm_mode_result =
-          loco_client_->GetFsmMode(fsm_mode);
-      if (fsm_id_result == 0 && fsm_mode_result == 0) {
+      if (locomotion_state.state_valid) {
         unitree_hg::msg::dds_::SportModeState_ state;
-        state.fsm_id(static_cast<std::uint32_t>(fsm_id));
-        state.fsm_mode(static_cast<std::uint32_t>(fsm_mode));
+        state.fsm_id(locomotion_state.fsm_id);
+        state.fsm_mode(locomotion_state.fsm_mode);
         store_.UpdateSportMode(state);
       }
-
-      control.action_list_api_result =
-          arm_action_client_->GetActionList(control.action_list_raw);
-      control.initialized = true;
+      if (mock_) {
+        control.initialized = true;
+        if (joint_debug_policy_ && joint_debug_policy_->SupportsArmActions()) {
+          control.action_list_api_result = 0;
+          control.action_list_raw = joint_debug_policy_->MockArmActionList();
+        }
+      } else {
+        if (joint_debug_policy_) {
+          control.action_list_api_result =
+              joint_debug_policy_->InitializeArmActions(
+                  control.action_list_raw);
+        }
+        control.initialized = true;
+      }
     }
   } catch (const std::exception& exception) {
     control.initialization_error = exception.what();
@@ -196,18 +214,19 @@ bool ControlService::Start(std::string& error) {
   store_.SetControlState(control);
 
   if (!control.initialized) {
-    loco_client_.reset();
-    motion_client_.reset();
-    arm_action_client_.reset();
+    if (locomotion_) locomotion_->Shutdown();
+    if (joint_debug_policy_) joint_debug_policy_->ShutdownArmActions();
     error = control.initialization_error;
     return false;
   }
 
   running_.store(true);
-  StartJointDebugImpl(*joint_debug_);
-  applied_speed_mode_ = -1;
+  if (joint_debug_) StartJointDebugImpl(*joint_debug_);
   worker_ = std::thread([this] { WorkerLoop(); });
   motion_worker_ = std::thread([this] { MotionWorkerLoop(); });
+  if (poll_locomotion_state_) {
+    state_worker_ = std::thread([this] { StateWorkerLoop(); });
+  }
   error.clear();
   return true;
 }
@@ -225,16 +244,23 @@ void ControlService::Stop() {
   if (motion_worker_.joinable()) {
     motion_worker_.join();
   }
-  if (motion_active_.exchange(false) && !mock_ && motion_client_) {
-    motion_client_->StopMove();
+  if (state_worker_.joinable()) {
+    state_worker_.join();
   }
-  arm_action_client_.reset();
-  motion_client_.reset();
-  loco_client_.reset();
-  applied_speed_mode_ = -1;
-  std::lock_guard<std::mutex> lock(queue_mutex_);
-  queue_.clear();
-  command_running_ = false;
+  if (motion_active_.exchange(false) && locomotion_) {
+    locomotion_->ApplyVelocity(0.0F, 0.0F, 0.0F, 0, false);
+  }
+  resources_.ReleaseOwner(kLocomotionMotionOwner);
+  if (joint_debug_policy_) joint_debug_policy_->ShutdownArmActions();
+  if (locomotion_) locomotion_->Shutdown();
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    queue_.clear();
+    command_running_ = false;
+    arm_interrupt_running_ = false;
+  }
+  resources_.ReleaseOwner(kLocomotionCommandOwner);
+  resources_.ReleaseOwner(kArmActionOwner);
 }
 
 ControlSubmitResult ControlService::Submit(
@@ -242,12 +268,9 @@ ControlSubmitResult ControlService::Submit(
     const std::string& command, std::int32_t argument,
     bool confirmed, const std::string& action_name) {
   ControlSubmitResult result;
-  if (!running_.load()) {
-    result.error = "control_not_ready";
-    return result;
-  }
-  if (JointDebugActive()) {
-    result.error = "control_busy";
+  const auto ready = safety_.CheckServiceReady(running_.load());
+  if (!ready.allowed) {
+    result.error = ready.error;
     return result;
   }
   if (!IsValidRequestKey(request_key)) {
@@ -262,8 +285,15 @@ ControlSubmitResult ControlService::Submit(
     result.error = "invalid_teach_action_name";
     return result;
   }
-  if (!confirmed) {
-    result.error = "confirmation_required";
+  const auto confirmation = safety_.CheckConfirmation(confirmed);
+  if (!confirmation.allowed) {
+    result.error = confirmation.error;
+    return result;
+  }
+  const auto capability = safety_.CheckCapability(
+      robot_profile_, ControlCapabilityForRequest(category, command), mock_);
+  if (!capability.allowed) {
+    result.error = capability.error;
     return result;
   }
 
@@ -273,6 +303,38 @@ ControlSubmitResult ControlService::Submit(
   request.command = command;
   request.argument = argument;
   request.action_name = action_name;
+  request.resource = category == "mode" ? ControlResource::Locomotion
+                                        : ControlResource::Arm;
+  request.resource_owner = category == "mode" ? kLocomotionCommandOwner
+                                               : kArmActionOwner;
+  const bool arm_interrupt =
+      joint_debug_policy_ &&
+      joint_debug_policy_->SupportsArmActionInterrupts() &&
+      category == "arm_action" &&
+      ((command == "execute" && argument == 99) ||
+       command == "stop_custom");
+
+  const bool stop_command =
+      category == "mode" && (command == "damp" || command == "stop_move");
+  if (!(stop_command &&
+        resources_.Query(ControlResource::Locomotion) ==
+            kLocomotionMotionOwner)) {
+    const auto acquired =
+        resources_.Acquire(request.resource, request.resource_owner);
+    const auto resource = safety_.CheckResource(
+        acquired, resources_.Query(ControlResource::Locomotion) ==
+                          kLocomotionMotionOwner
+                      ? "motion_active"
+                      : "control_busy");
+    if (!resource.allowed) {
+      result.error = resource.error;
+      return result;
+    }
+    request.release_resource = !acquired.already_owned;
+  }
+  ResourceReleaseGuard submit_resource_guard{
+      resources_, request.resource, request.resource_owner,
+      request.release_resource};
 
   std::string precondition_error;
   if (!ValidatePreconditions(request, precondition_error)) {
@@ -283,6 +345,7 @@ ControlSubmitResult ControlService::Submit(
     SubmitVelocity(0.0F, 0.0F, 0.0F, 0, false);
   }
 
+  bool execute_immediately = false;
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     const auto duplicate = recent_requests_.find(request_key);
@@ -292,7 +355,10 @@ ControlSubmitResult ControlService::Submit(
       result.request_id = duplicate->second;
       return result;
     }
-    if (command_running_ || !queue_.empty()) {
+    execute_immediately = arm_interrupt && command_running_ &&
+                          !arm_interrupt_running_ && queue_.empty();
+    if ((command_running_ || arm_interrupt_running_ || !queue_.empty()) &&
+        !execute_immediately) {
       result.error = "control_busy";
       return result;
     }
@@ -304,7 +370,8 @@ ControlSubmitResult ControlService::Submit(
       recent_requests_.erase(recent_request_order_.front());
       recent_request_order_.pop_front();
     }
-    queue_.push_back(request);
+    if (execute_immediately) arm_interrupt_running_ = true;
+    else queue_.push_back(request);
   }
 
   ControlCommandData command_data;
@@ -317,6 +384,15 @@ ControlSubmitResult ControlService::Submit(
   command_data.state = "queued";
   command_data.accepted_time_ms = SystemTimeMs();
   store_.UpdateControlCommand(command_data);
+  submit_resource_guard.release = false;
+  if (execute_immediately) {
+    Execute(std::move(request));
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    arm_interrupt_running_ = false;
+    result.accepted = true;
+    result.request_id = command_data.request_id;
+    return result;
+  }
   queue_cv_.notify_one();
 
   result.accepted = true;
@@ -328,57 +404,57 @@ MotionSubmitResult ControlService::SubmitVelocity(
     float vx_m_s, float vy_m_s, float vyaw_rad_s,
     std::int32_t speed_mode, bool active) {
   MotionSubmitResult result;
-  if (!running_.load()) {
-    result.error = "control_not_ready";
+  const auto ready = safety_.CheckServiceReady(running_.load());
+  if (!ready.allowed) {
+    result.error = ready.error;
     return result;
   }
-  if (active && JointDebugActive()) {
-    result.error = "control_busy";
-    return result;
+  if (active) {
+    const auto capability = safety_.CheckCapability(
+        robot_profile_, CapabilityKey::kLocomotion, mock_);
+    if (!capability.allowed) {
+      result.error = capability.error;
+      return result;
+    }
   }
+
+  ResourceReleaseGuard velocity_resource_guard{
+      resources_, ControlResource::Locomotion, kLocomotionMotionOwner, false};
+  if (active) {
+    const auto acquired =
+        resources_.Acquire(ControlResource::Locomotion,
+                           kLocomotionMotionOwner);
+    const auto resource = safety_.CheckResource(acquired);
+    if (!resource.allowed) {
+      result.error = resource.error;
+      return result;
+    }
+    velocity_resource_guard.release = !acquired.already_owned;
+  }
+
+  const auto reject = [](const std::string& error) {
+    MotionSubmitResult rejected;
+    rejected.error = error;
+    return rejected;
+  };
+
   if (!std::isfinite(vx_m_s) || !std::isfinite(vy_m_s) ||
       !std::isfinite(vyaw_rad_s)) {
-    result.error = "invalid_velocity";
-    return result;
+    return reject("invalid_velocity");
   }
 
   if (active) {
-    if (!IsAllowedSpeedMode(speed_mode)) {
-      result.error = "invalid_speed_mode";
-      return result;
-    }
     const auto control = store_.GetSnapshot().control;
-    const auto limits = MotionLimitsForMode(speed_mode, control.fsm_id);
-    if (std::abs(vx_m_s) > kMaximumForwardSpeedMps ||
-        std::abs(vx_m_s) > limits.forward_m_s ||
-        std::abs(vy_m_s) > kMaximumLateralSpeedMps ||
-        std::abs(vy_m_s) > limits.lateral_m_s ||
-        std::abs(vyaw_rad_s) > kMaximumYawSpeedRadS ||
-        std::abs(vyaw_rad_s) > limits.yaw_rad_s ||
-        (std::abs(vx_m_s) < 0.001F &&
-         std::abs(vy_m_s) < 0.001F &&
-         std::abs(vyaw_rad_s) < 0.001F)) {
-      result.error = "velocity_out_of_range";
-      return result;
-    }
-    if (!IsFreshSportState(control)) {
-      result.error = "sport_state_stale";
-      return result;
-    }
-    if (!IsLocomotionFsm(control.fsm_id)) {
-      result.error = "motion_fsm_not_allowed";
-      return result;
-    }
-    if (!IsSpeedModeAllowedForFsm(speed_mode, control.fsm_id)) {
-      result.error = "speed_mode_requires_walkrun";
-      return result;
-    }
+    const auto freshness = safety_.CheckFreshness(
+        IsFreshSportState(control), "sport_state_stale");
+    if (!freshness.allowed) return reject(freshness.error);
+    result.error = locomotion_->ValidateVelocity(
+        control, vx_m_s, vy_m_s, vyaw_rad_s, speed_mode);
+    if (!result.error.empty()) return reject(result.error);
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
-      if (command_running_ || !queue_.empty()) {
-        result.error = "control_busy";
-        return result;
-      }
+      if (command_running_ || arm_interrupt_running_ || !queue_.empty())
+        return reject("control_busy");
     }
   } else {
     vx_m_s = 0.0F;
@@ -394,6 +470,9 @@ MotionSubmitResult ControlService::SubmitVelocity(
   request.vyaw_rad_s = vyaw_rad_s;
   request.speed_mode = speed_mode;
   request.active = active;
+  request.release_resource =
+      !active && resources_.Query(ControlResource::Locomotion) ==
+                     kLocomotionMotionOwner;
   {
     std::lock_guard<std::mutex> lock(motion_mutex_);
     pending_velocity_ = request;
@@ -411,6 +490,7 @@ MotionSubmitResult ControlService::SubmitVelocity(
   motion.state = "queued";
   motion.updated_time_ms = SystemTimeMs();
   store_.UpdateMotion(motion);
+  velocity_resource_guard.release = false;
   motion_cv_.notify_one();
 
   result.accepted = true;
@@ -420,24 +500,22 @@ MotionSubmitResult ControlService::SubmitVelocity(
 
 bool ControlService::IsKnownCommand(const std::string& category,
                                     const std::string& command,
-                                    std::int32_t argument) {
+                                    std::int32_t argument) const {
   if (category == "mode") {
-    if (command == "set_fsm_id") {
-      return AllowedFsmIds().count(argument) != 0;
-    }
-    return command == "damp" || command == "zero_torque" ||
-           command == "start" || command == "squat" ||
-           command == "sit" || command == "stand_up" ||
-           command == "balance_stand" || command == "stop_move";
+    return locomotion_ && locomotion_->IsKnownModeCommand(command, argument);
+  }
+  if (category == "arm_action" &&
+      (!joint_debug_policy_ || !joint_debug_policy_->SupportsArmActions())) {
+    return false;
   }
   if (category == "arm_action" && command == "execute") {
-    return AllowedArmActionIds().count(argument) != 0;
+    return joint_debug_policy_->IsKnownArmAction(argument);
   }
   if (category == "arm_action" && command == "execute_custom") {
-    return argument == 0;
+    return joint_debug_policy_->SupportsCustomArmActions() && argument == 0;
   }
   if (category == "arm_action" && command == "stop_custom") {
-    return argument == 0;
+    return joint_debug_policy_->SupportsCustomArmActions() && argument == 0;
   }
   return false;
 }
@@ -448,17 +526,19 @@ bool ControlService::ValidatePreconditions(
     error.clear();
     return true;
   }
-  if (motion_active_.load()) {
-    error = "motion_active";
-    return false;
-  }
-
   const auto control = store_.GetSnapshot().control;
-  if (!IsFreshSportState(control)) {
-    error = "sport_state_stale";
+  const auto freshness = safety_.CheckFreshness(
+      IsFreshSportState(control), "sport_state_stale");
+  if (!freshness.allowed) {
+    error = freshness.error;
     return false;
   }
   if (request.category == "arm_action") {
+    const bool arm_interrupt =
+        joint_debug_policy_ &&
+        joint_debug_policy_->SupportsArmActionInterrupts() &&
+        ((request.command == "execute" && request.argument == 99) ||
+         request.command == "stop_custom");
     if (!mock_ && request.command == "execute" &&
         (control.action_list_api_result != 0 ||
          !FirmwareActionAvailable(control.action_list_raw,
@@ -473,23 +553,34 @@ bool ControlService::ValidatePreconditions(
       error = "teach_action_not_available_on_firmware";
       return false;
     }
-    const auto snapshot = store_.GetSnapshot();
-    if ((request.argument == 20 || request.argument == 21) &&
-        snapshot.mode_machine != 5 && snapshot.mode_machine != 6) {
-      error = "arm_action_not_supported_by_model";
+    if (!arm_interrupt) {
+      const auto snapshot = store_.GetSnapshot();
+      if ((request.argument == 20 || request.argument == 21) &&
+          snapshot.mode_machine != 5 && snapshot.mode_machine != 6) {
+        error = "arm_action_not_supported_by_model";
+        return false;
+      }
+      if (!locomotion_ || !locomotion_->IsOperationalFsm(control.fsm_id)) {
+        error = "arm_action_fsm_not_allowed";
+        return false;
+      }
+      if (control.fsm_mode != 0 && control.fsm_mode != 3) {
+        error = "arm_action_robot_not_static";
+        return false;
+      }
+    }
+  } else {
+    if (control.fsm_mode != 0 &&
+        !IsUnknownFsmMode(robot_profile_, control.fsm_mode)) {
+      error = "robot_not_static";
       return false;
     }
-    if (!IsArmActionFsm(control.fsm_id)) {
-      error = "arm_action_fsm_not_allowed";
+    if (request.category == "mode" &&
+        !ModeTransitionAllowed(robot_profile_, request.command,
+                               control.fsm_id)) {
+      error = "mode_transition_not_allowed";
       return false;
     }
-    if (control.fsm_mode != 0 && control.fsm_mode != 3) {
-      error = "arm_action_robot_not_static";
-      return false;
-    }
-  } else if (control.fsm_mode != 0) {
-    error = "robot_not_static";
-    return false;
   }
 
   error.clear();
@@ -547,35 +638,23 @@ void ControlService::MotionWorkerLoop() {
     store_.UpdateMotion(motion);
 
     try {
-      if (mock_) {
-        applied_speed_mode_ = request.speed_mode;
-        motion.api_result = 0;
-      } else if (request.active) {
+      if (request.active) {
         const auto control = store_.GetSnapshot().control;
-        if (!IsFreshSportState(control) ||
-            !IsLocomotionFsm(control.fsm_id)) {
-          motion.api_result = -1;
-          motion.error = "motion_precondition_changed";
-        } else if (!IsSpeedModeAllowedForFsm(
-                       request.speed_mode, control.fsm_id)) {
-          motion.api_result = -1;
-          motion.error = "speed_mode_requires_walkrun";
-        } else {
-          if (applied_speed_mode_ != request.speed_mode) {
-            motion.api_result =
-                motion_client_->SetSpeedMode(request.speed_mode);
-            if (motion.api_result == 0) {
-              applied_speed_mode_ = request.speed_mode;
-            }
-          }
-          if (motion.api_result == 0) {
-            motion.api_result = motion_client_->SetVelocity(
-                request.vx_m_s, request.vy_m_s,
-                request.vyaw_rad_s, kVelocityLeaseSeconds);
-          }
-        }
+        const auto freshness = safety_.CheckFreshness(
+            IsFreshSportState(control), "motion_precondition_changed");
+        motion.error = freshness.allowed
+                           ? locomotion_->ValidateVelocityExecution(
+                                 control, request.speed_mode)
+                           : freshness.error;
+      }
+      if (motion.error.empty()) {
+        const auto execution = locomotion_->ApplyVelocity(
+            request.vx_m_s, request.vy_m_s, request.vyaw_rad_s,
+            request.speed_mode, request.active);
+        motion.api_result = execution.api_result;
+        motion.error = execution.error;
       } else {
-        motion.api_result = motion_client_->StopMove();
+        motion.api_result = -1;
       }
     } catch (const std::exception& exception) {
       motion.api_result = -1;
@@ -593,17 +672,47 @@ void ControlService::MotionWorkerLoop() {
     } else {
       motion.state = "failed";
       motion.active = false;
+      motion.vx_m_s = 0.0F;
+      motion.vy_m_s = 0.0F;
+      motion.vyaw_rad_s = 0.0F;
+      motion.speed_mode = 0;
       motion_active_.store(false);
     }
     if (!request.active) {
       motion_active_.store(false);
+    }
+    if ((motion.state == "failed" && request.active) ||
+        (!request.active && request.release_resource)) {
+      safety_.CleanupControlFailure(resources_, ControlResource::Locomotion,
+                                    kLocomotionMotionOwner);
     }
     motion.updated_time_ms = SystemTimeMs();
     store_.UpdateMotion(motion);
   }
 }
 
+void ControlService::StateWorkerLoop() {
+  while (running_.load()) {
+    LocomotionInitialization state;
+    std::string error;
+    if (locomotion_ && locomotion_->QueryState(state, error) &&
+        state.state_valid) {
+      unitree_hg::msg::dds_::SportModeState_ message;
+      message.fsm_id(state.fsm_id);
+      message.fsm_mode(state.fsm_mode);
+      const auto current = store_.GetSnapshot().control;
+      message.task_id(current.task_id);
+      message.task_time(current.task_time_s);
+      store_.UpdateSportMode(message);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
+}
+
 void ControlService::Execute(Request request) {
+  ResourceReleaseGuard resource_guard{resources_, request.resource,
+                                      request.resource_owner,
+                                      request.release_resource};
   ControlCommandData command;
   command.request_id = request.request_id;
   command.request_key = request.request_key;
@@ -613,7 +722,10 @@ void ControlService::Execute(Request request) {
   command.action_name = request.action_name;
   command.state = "running";
   command.accepted_time_ms = SystemTimeMs();
-  store_.UpdateControlCommand(command);
+  if (store_.GetSnapshot().control.last_command.request_id <=
+      command.request_id) {
+    store_.UpdateControlCommand(command);
+  }
 
   std::cout << "[CONTROL] request=" << request.request_id
             << " category=" << request.category
@@ -644,7 +756,10 @@ void ControlService::Execute(Request request) {
       command.api_result == 0 && command.error.empty() ? "succeeded"
                                                        : "failed";
   command.completed_time_ms = SystemTimeMs();
-  store_.UpdateControlCommand(command);
+  if (store_.GetSnapshot().control.last_command.request_id <=
+      command.request_id) {
+    store_.UpdateControlCommand(command);
+  }
   std::cout << "[CONTROL] request=" << request.request_id
             << " result=" << command.api_result
             << " state=" << command.state
@@ -657,42 +772,31 @@ std::int32_t ControlService::ExecuteReal(const Request& request,
   std::int32_t result = -1;
   std::int32_t target_fsm = -1;
   if (request.category == "mode") {
-    if (request.command == "damp") {
-      result = loco_client_->Damp();
-      target_fsm = 1;
-    } else if (request.command == "zero_torque") {
-      result = loco_client_->ZeroTorque();
-      target_fsm = 0;
-    } else if (request.command == "start") {
-      result = loco_client_->Start();
-      target_fsm = 500;
-    } else if (request.command == "squat") {
-      result = loco_client_->Squat();
-      target_fsm = 2;
-    } else if (request.command == "sit") {
-      result = loco_client_->Sit();
-      target_fsm = 3;
-    } else if (request.command == "stand_up") {
-      result = loco_client_->StandUp();
-      target_fsm = 4;
-    } else if (request.command == "balance_stand") {
-      result = loco_client_->BalanceStand();
-    } else if (request.command == "stop_move") {
-      result = loco_client_->StopMove();
-    } else if (request.command == "set_fsm_id") {
-      result = loco_client_->SetFsmId(request.argument);
-      target_fsm = request.argument;
-    }
+    const auto execution =
+        locomotion_->ExecuteMode(request.command, request.argument);
+    result = execution.api_result;
+    target_fsm = execution.target_fsm;
+    error = execution.error;
   } else if (request.command == "execute") {
-    result = arm_action_client_->ExecuteAction(request.argument);
+    result = joint_debug_policy_
+                 ? joint_debug_policy_->ExecuteArmAction(request.argument)
+                 : -1;
   } else if (request.command == "execute_custom") {
-    result = arm_action_client_->ExecuteAction(request.action_name);
+    result = joint_debug_policy_
+                 ? joint_debug_policy_->ExecuteArmAction(request.action_name)
+                 : -1;
   } else if (request.command == "stop_custom") {
-    result = arm_action_client_->StopCustomAction();
+    result = joint_debug_policy_
+                 ? joint_debug_policy_->StopCustomArmAction()
+                 : -1;
   }
 
   if (result != 0) {
-    error = "sdk_api_error";
+    if (error.empty()) {
+      error = request.category == "arm_action"
+                  ? ArmActionApiError(result)
+                  : "sdk_api_error";
+    }
     return result;
   }
   if (target_fsm >= 0 &&
@@ -713,20 +817,12 @@ void ControlService::ExecuteMock(const Request& request) {
   state.task_id(current.task_id);
   state.task_time(current.task_time_s);
 
-  if (request.command == "damp") {
-    state.fsm_id(1);
-  } else if (request.command == "zero_torque") {
-    state.fsm_id(0);
-  } else if (request.command == "start") {
-    state.fsm_id(500);
-  } else if (request.command == "squat") {
-    state.fsm_id(2);
-  } else if (request.command == "sit") {
-    state.fsm_id(3);
-  } else if (request.command == "stand_up") {
-    state.fsm_id(4);
-  } else if (request.command == "set_fsm_id") {
-    state.fsm_id(static_cast<std::uint32_t>(request.argument));
+  if (request.category == "mode") {
+    const auto execution =
+        locomotion_->ExecuteMode(request.command, request.argument);
+    if (execution.target_fsm >= 0) {
+      state.fsm_id(static_cast<std::uint32_t>(execution.target_fsm));
+    }
   } else if (request.category == "arm_action" &&
              request.command == "execute") {
     state.task_id(static_cast<std::uint32_t>(request.argument));

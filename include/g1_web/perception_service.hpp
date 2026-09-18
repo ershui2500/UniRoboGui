@@ -8,6 +8,8 @@
 
 #include <unitree/idl/ros2/PointCloud2_.hpp>
 
+#include "g1_web/device_capability.hpp"
+
 namespace g1_web {
 
 struct PointSample {
@@ -95,7 +97,8 @@ LowObstacleDetection DetectLowObstacleForSafety(
 
 class PerceptionService {
  public:
-  PerceptionService(bool mock, bool navigation_enabled);
+  PerceptionService(bool mock, bool navigation_enabled,
+                    const IDeviceCapabilityPolicy& device_policy);
   ~PerceptionService();
 
   bool Start(std::string& error);
@@ -109,6 +112,8 @@ class PerceptionService {
                             std::string& body) const;
   std::string SerializeNavigationScene() const;
   std::string SerializeNavigationTopics() const;
+  std::vector<DeviceCapabilityRuntime> ProbeDeviceCapabilities();
+  std::vector<DeviceCapabilityRuntime> DeviceCapabilities() const;
   bool ConfigureNavigationTopic(const std::string& kind,
                                 const std::string& topic,
                                 std::string& error);

@@ -1,5 +1,6 @@
 # Developer-only agent instructions stay local and must never be published.
 /AGENTS.md
+/*_AGENTS.md
 
 # Robot snapshots and mounted/live workspaces stay local.
 **/.robot-backups/
@@ -12,6 +13,9 @@
 /G1开发帮助/
 /G1开发文档/
 /G1参考资料/
+/R1参考资料/
+/博客文章/
+/docs/robot-platform-tasks/
 /ROBOT_BACKUP_MANIFEST.md
 
 # Generated build, test and runtime state.
