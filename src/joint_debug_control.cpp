@@ -11,8 +11,10 @@
 #include <stdexcept>
 
 #include <json/json.h>
+#include <unitree/idl/go2/LowCmd_.hpp>
 #include <unitree/idl/go2/WirelessController_.hpp>
 #include <unitree/idl/hg/LowCmd_.hpp>
+#include <unitree/robot/b2/motion_switcher/motion_switcher_client.hpp>
 #include <unitree/robot/b2/robot_state/robot_state_client.hpp>
 #include <unitree/robot/channel/channel_publisher.hpp>
 #include <unitree/robot/channel/channel_subscriber.hpp>
@@ -24,13 +26,15 @@ namespace {
 constexpr char kArmTopic[] = "rt/arm_sdk";
 constexpr char kLowCmdTopic[] = "rt/lowcmd";
 constexpr char kRemoteTopic[] = "rt/wirelesscontroller";
-constexpr char kSportService[] = "ai_sport";
 constexpr char kJointDebugArmOwner[] = "joint_debug.arm";
 constexpr char kJointDebugWholeBodyOwner[] = "joint_debug.whole_body";
+constexpr char kJointDebugModeSwitchOwner[] = "joint_debug.mode_switch";
 constexpr char kJointTeachOwner[] = "joint_teach";
 constexpr float kBodyPeriodSeconds = 0.002F;
 constexpr float kArmMaximumVelocity = 0.5F;
 constexpr float kBodyMaximumVelocity = 0.25F;
+constexpr float kGo2PosStop = 2.146E9F;
+constexpr float kGo2VelStop = 16000.0F;
 constexpr auto kTeachSamplePeriod = std::chrono::milliseconds(50);
 constexpr std::size_t kMaximumTeachFrames = 2400;
 
@@ -78,12 +82,16 @@ std::uint16_t RemoteBindingMask(const std::string& id) {
   return binding == kRemoteBindings.end() ? 0 : binding->mask;
 }
 
-std::string RemoteBindingLabel(const std::string& id) {
-  if (id.find("+UP") != std::string::npos) return id + "(↑)";
-  if (id.find("+RIGHT") != std::string::npos) return id + "(→)";
-  if (id.find("+DOWN") != std::string::npos) return id + "(↓)";
-  if (id.find("+LEFT") != std::string::npos) return id + "(←)";
-  return id;
+std::string RemoteBindingLabel(const std::string& id,
+                               const std::string& secondary_key) {
+  std::string label = id;
+  if (secondary_key != "F3" && label.rfind("F3+", 0) == 0)
+    label.replace(0, 2, secondary_key);
+  if (label.find("+UP") != std::string::npos) return label + "(↑)";
+  if (label.find("+RIGHT") != std::string::npos) return label + "(→)";
+  if (label.find("+DOWN") != std::string::npos) return label + "(↓)";
+  if (label.find("+LEFT") != std::string::npos) return label + "(←)";
+  return label;
 }
 
 bool GroupIncluded(const JointDescriptor& joint,
@@ -119,6 +127,15 @@ std::vector<std::size_t> JointIndicesForMode(
     const std::string& mode) {
   const auto groups = policy.GroupsForMode(mode);
   return policy.TransportForMode(mode) == JointDebugTransport::kArmSdk
+             ? ArmSdkJointIndicesForGroups(schema, policy, groups)
+             : JointIndicesForGroups(schema, groups);
+}
+
+std::vector<std::size_t> TeachJointIndices(
+    const JointSchema& schema, const IJointDebugPolicy& policy) {
+  const auto groups = policy.TeachGroups();
+  return policy.TransportForMode(policy.TeachMode()) ==
+                 JointDebugTransport::kArmSdk
              ? ArmSdkJointIndicesForGroups(schema, policy, groups)
              : JointIndicesForGroups(schema, groups);
 }
@@ -166,7 +183,34 @@ std::string WriteJson(const Json::Value& value) {
 }
 
 const char* TransportTopic(JointDebugTransport transport) {
-  return transport == JointDebugTransport::kLowCmd ? kLowCmdTopic : kArmTopic;
+  return transport == JointDebugTransport::kArmSdk ? kArmTopic : kLowCmdTopic;
+}
+
+bool IsLowCmdTransport(JointDebugTransport transport) {
+  return transport == JointDebugTransport::kLowCmd ||
+         transport == JointDebugTransport::kGo2LowCmd;
+}
+
+std::string MotionSwitcherServiceName(const std::string& form,
+                                      const std::string& name) {
+  if (form == "0") {
+    if (name == "normal") return "sport_mode";
+    if (name == "ai") return "ai_sport";
+    if (name == "advanced") return "advanced_sport";
+  }
+  if (name == "ai-w") return "wheeled_sport(go2W)";
+  if (name == "normal-w") return "wheeled_sport(b2W)";
+  return name;
+}
+
+std::string MotionSwitcherError(std::int32_t result) {
+  if (result == 7002) return "motion_service_busy";
+  if (result == 7004) return "motion_mode_not_supported";
+  return "motion_service_switch_failed";
+}
+
+bool IsCrouchedFsm(std::uint32_t fsm_id) {
+  return fsm_id == 1004 || fsm_id == 2006;
 }
 
 }  // namespace
@@ -204,8 +248,8 @@ class ControlService::JointDebugImpl {
             policy.profile().joint_schema, policy, "upper_body")),
         full_body_indices(JointIndicesForMode(
             policy.profile().joint_schema, policy, "full_body")),
-        teach_joint_indices(ArmSdkJointIndicesForGroups(
-            policy.profile().joint_schema, policy, policy.TeachGroups())) {
+        teach_joint_indices(
+            TeachJointIndices(policy.profile().joint_schema, policy)) {
     const auto joint_count = policy.profile().joint_schema.joints.size();
     limits.resize(joint_count);
     current.resize(joint_count);
@@ -228,16 +272,35 @@ class ControlService::JointDebugImpl {
                                            CapabilityKey::kJointTeach, mock)
                           .allowed;
       if (!mock) {
-        robot_state =
-            std::make_unique<unitree::robot::b2::RobotStateClient>();
-        robot_state->SetTimeout(2.0F);
-        robot_state->Init();
-        arm_publisher = std::make_shared<unitree::robot::ChannelPublisher<
-            unitree_hg::msg::dds_::LowCmd_>>(kArmTopic);
-        arm_publisher->InitChannel();
-        lowcmd_publisher = std::make_shared<unitree::robot::ChannelPublisher<
-            unitree_hg::msg::dds_::LowCmd_>>(kLowCmdTopic);
-        lowcmd_publisher->InitChannel();
+        if (policy.UsesMotionSwitcherForLowCmd()) {
+          motion_switcher =
+              std::make_unique<unitree::robot::b2::MotionSwitcherClient>();
+          motion_switcher->SetTimeout(2.0F);
+          motion_switcher->Init();
+        } else {
+          robot_state =
+              std::make_unique<unitree::robot::b2::RobotStateClient>();
+          robot_state->SetTimeout(2.0F);
+          robot_state->Init();
+        }
+        if (!policy.GroupsForMode("upper_body").empty()) {
+          arm_publisher = std::make_shared<unitree::robot::ChannelPublisher<
+              unitree_hg::msg::dds_::LowCmd_>>(kArmTopic);
+          arm_publisher->InitChannel();
+        }
+        if (!policy.GroupsForMode("full_body").empty()) {
+          const auto transport = policy.TransportForMode("full_body");
+          if (transport == JointDebugTransport::kGo2LowCmd) {
+            go2_lowcmd_publisher =
+                std::make_shared<unitree::robot::ChannelPublisher<
+                    unitree_go::msg::dds_::LowCmd_>>(kLowCmdTopic);
+            go2_lowcmd_publisher->InitChannel();
+          } else if (transport == JointDebugTransport::kLowCmd) {
+            lowcmd_publisher = std::make_shared<unitree::robot::ChannelPublisher<
+                unitree_hg::msg::dds_::LowCmd_>>(kLowCmdTopic);
+            lowcmd_publisher->InitChannel();
+          }
+        }
         if (teach_enabled && policy.SupportsTeachRemoteControl()) {
           try {
             remote_subscriber = std::make_shared<unitree::robot::ChannelSubscriber<
@@ -303,6 +366,7 @@ class ControlService::JointDebugImpl {
     remote_control_ready = false;
     RequestStop();
     if (worker.joinable()) worker.join();
+    if (service_monitor.joinable()) service_monitor.join();
     std::string resource_owner;
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -313,6 +377,8 @@ class ControlService::JointDebugImpl {
       mode = "idle";
       arm_publisher.reset();
       lowcmd_publisher.reset();
+      go2_lowcmd_publisher.reset();
+      motion_switcher.reset();
       robot_state.reset();
       initialized = false;
     }
@@ -391,9 +457,40 @@ class ControlService::JointDebugImpl {
 
   bool RefreshAiSport(std::string& error) {
     if (mock) {
+      std::chrono::milliseconds delay;
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        delay = mock_service_delay;
+      }
+      if (delay.count() > 0) std::this_thread::sleep_for(delay);
       std::lock_guard<std::mutex> lock(mutex);
       ai_sport_found = true;
       ai_sport_active = mock_ai_sport_active;
+      active_motion_mode = mock_ai_sport_active ? "mcf" : "";
+      active_motion_service = active_motion_mode;
+      error.clear();
+      return true;
+    }
+    if (policy.UsesMotionSwitcherForLowCmd()) {
+      if (!motion_switcher) {
+        error = "service_state_unavailable";
+        return false;
+      }
+      std::lock_guard<std::mutex> service_lock(service_mutex);
+      std::string form;
+      std::string name;
+      const auto result = motion_switcher->CheckMode(form, name);
+      if (result != 0) {
+        error = "service_state_unavailable";
+        return false;
+      }
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        ai_sport_found = true;
+        ai_sport_active = !name.empty();
+        active_motion_mode = name;
+        active_motion_service = MotionSwitcherServiceName(form, name);
+      }
       error.clear();
       return true;
     }
@@ -404,18 +501,25 @@ class ControlService::JointDebugImpl {
       error = "service_state_unavailable";
       return false;
     }
+    const auto blocking_services = policy.LowCmdBlockingServices();
     bool next_sport_found = false;
     bool next_sport_active = false;
+    std::string next_active_service;
     for (const auto& service : services) {
-      if (service.name == kSportService) {
-        next_sport_found = true;
-        next_sport_active = service.status == 0;
+      if (std::find(blocking_services.begin(), blocking_services.end(),
+                    service.name) == blocking_services.end())
+        continue;
+      next_sport_found = true;
+      if (service.status == 0) {
+        next_sport_active = true;
+        if (next_active_service.empty()) next_active_service = service.name;
       }
     }
     {
       std::lock_guard<std::mutex> lock(mutex);
       ai_sport_found = next_sport_found;
       ai_sport_active = next_sport_active;
+      active_motion_service = next_active_service;
     }
     error.clear();
     return true;
@@ -649,6 +753,10 @@ class ControlService::JointDebugImpl {
   bool ai_sport_found{false};
   bool ai_sport_active{true};
   bool mock_ai_sport_active{false};
+  std::chrono::milliseconds mock_service_delay{0};
+  std::string active_motion_service;
+  std::string active_motion_mode;
+  std::string released_motion_mode;
   bool limits_loaded{false};
   std::uint8_t limits_mode{0};
   std::vector<std::size_t> upper_body_indices;
@@ -675,13 +783,17 @@ class ControlService::JointDebugImpl {
   std::string holding_action_name;
   SteadyClock::time_point playback_next_frame{};
   std::thread worker;
+  std::thread service_monitor;
   std::shared_ptr<unitree::robot::ChannelPublisher<
       unitree_hg::msg::dds_::LowCmd_>> arm_publisher;
   std::shared_ptr<unitree::robot::ChannelPublisher<
       unitree_hg::msg::dds_::LowCmd_>> lowcmd_publisher;
+  std::shared_ptr<unitree::robot::ChannelPublisher<
+      unitree_go::msg::dds_::LowCmd_>> go2_lowcmd_publisher;
   std::shared_ptr<unitree::robot::ChannelSubscriber<
       unitree_go::msg::dds_::WirelessController_>> remote_subscriber;
   std::unique_ptr<unitree::robot::b2::RobotStateClient> robot_state;
+  std::unique_ptr<unitree::robot::b2::MotionSwitcherClient> motion_switcher;
 };
 
 ControlService::ControlService(
@@ -733,6 +845,13 @@ void ControlService::SetMockJointDebugAiSport(bool ai_sport_active) {
   joint_debug_->mock_ai_sport_active = ai_sport_active;
 }
 
+void ControlService::SetMockJointDebugServiceDelay(
+    std::chrono::milliseconds delay) {
+  if (!joint_debug_ || !mock_) return;
+  std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+  joint_debug_->mock_service_delay = delay;
+}
+
 void ControlService::SetMockJointDebugRemoteKeys(std::uint16_t keys) {
   if (!joint_debug_ || !mock_) return;
   joint_debug_->HandleRemoteKeys(keys);
@@ -753,7 +872,8 @@ std::string ControlService::SerializeJointDebugStatus() {
     return WriteJson(root);
   }
   std::string service_error;
-  if (joint_debug_->initialized) joint_debug_->RefreshAiSport(service_error);
+  if (joint_debug_->initialized && !joint_debug_->IsActive())
+    joint_debug_->RefreshAiSport(service_error);
   const auto snapshot = store_.GetSnapshot();
   std::string limit_error;
   const bool limits_ready =
@@ -775,11 +895,18 @@ std::string ControlService::SerializeJointDebugStatus() {
   root["remote_binding_supported"] =
       joint_debug_->teach_enabled &&
       joint_debug_->policy.SupportsTeachRemoteControl();
+  root["teach_mode"] = joint_debug_->policy.TeachMode();
+  root["teach_control_topic"] = TransportTopic(
+      joint_debug_->policy.TransportForMode(joint_debug_->policy.TeachMode()));
+  root["remote_secondary_function_key"] =
+      joint_debug_->policy.TeachRemoteSecondaryKeyLabel();
   if (root["remote_binding_supported"].asBool()) {
     for (const auto& binding : kRemoteBindings) {
       Json::Value item(Json::objectValue);
       item["id"] = binding.id;
-      item["label"] = RemoteBindingLabel(binding.id);
+      item["label"] = RemoteBindingLabel(
+          binding.id,
+          joint_debug_->policy.TeachRemoteSecondaryKeyLabel());
       remote_binding_options.append(item);
     }
   }
@@ -796,6 +923,23 @@ std::string ControlService::SerializeJointDebugStatus() {
   root["arm_sdk_weight"] = joint_debug_->weight;
   root["ai_sport_found"] = joint_debug_->ai_sport_found;
   root["ai_sport_active"] = joint_debug_->ai_sport_active;
+  root["motion_service_found"] = joint_debug_->ai_sport_found;
+  root["motion_service_active"] = joint_debug_->ai_sport_active;
+  root["active_motion_service"] = joint_debug_->active_motion_service;
+  root["motion_mode_switch_supported"] =
+      joint_debug_->policy.UsesMotionSwitcherForLowCmd();
+  const auto full_body_groups =
+      joint_debug_->policy.GroupsForMode("full_body");
+  if (!full_body_groups.empty()) {
+    const auto gain = joint_debug_->policy.NormalGainForMode(
+        robot_profile_.joint_schema.joints.front(), "full_body");
+    root["position_kp"] = gain.kp;
+    root["position_kd"] = gain.kd;
+  }
+  Json::Value motion_service_names(Json::arrayValue);
+  for (const auto& service : joint_debug_->policy.LowCmdBlockingServices())
+    motion_service_names.append(service);
+  root["motion_service_names"] = motion_service_names;
   root["debug_mode_detected"] =
       joint_debug_->ai_sport_found && !joint_debug_->ai_sport_active;
   root["lowstate_fresh"] = LowStateFresh(snapshot);
@@ -838,7 +982,9 @@ std::string ControlService::SerializeJointDebugStatus() {
     if (transport == JointDebugTransport::kArmSdk) {
       return SportStateFresh(snapshot.control) && upper_body_fsm_allowed;
     }
-    return snapshot.mode_pr == 0 && service_error.empty() &&
+    if (transport == JointDebugTransport::kLowCmd && snapshot.mode_pr != 0)
+      return false;
+    return service_error.empty() &&
            joint_debug_->ai_sport_found && !joint_debug_->ai_sport_active;
   };
   root["upper_body_allowed"] = mode_allowed("upper_body");
@@ -902,13 +1048,13 @@ std::string ControlService::SerializeJointDebugStatus() {
   const auto active_transport =
       joint_debug_->policy.TransportForMode(joint_debug_->mode);
   root["control_hz"] =
-      active_transport == JointDebugTransport::kLowCmd
+      IsLowCmdTransport(active_transport)
           ? 500
           : static_cast<int>(std::lround(
                 1.0F / joint_debug_->policy.ArmSdkPeriodSeconds()));
   root["maximum_velocity_rad_s"] =
-      active_transport == JointDebugTransport::kLowCmd ? kBodyMaximumVelocity
-                                                       : kArmMaximumVelocity;
+      IsLowCmdTransport(active_transport) ? kBodyMaximumVelocity
+                                          : kArmMaximumVelocity;
   return WriteJson(root);
 }
 
@@ -960,7 +1106,7 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
       result.error = "control_busy";
       return result;
     }
-    teach_control = requested_mode == "upper_body" &&
+    teach_control = requested_mode == joint_debug_->policy.TeachMode() &&
                     joint_debug_->teach_state != "idle";
     resource_owner = teach_control
                          ? kJointTeachOwner
@@ -994,14 +1140,19 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
   ResourceOwnerReleaseGuard resource_guard{
       resources_, resource_owner, !acquired.already_owned};
   if (teach_control) {
-    const auto arm = safety_.CheckResource(
-        resources_.Acquire(ControlResource::Arm, resource_owner));
-    if (!arm.allowed) {
-      result.error = arm.error;
+    const auto teach_transport =
+        joint_debug_->policy.TransportForMode(requested_mode);
+    const auto controlled = safety_.CheckResource(resources_.Acquire(
+        teach_transport == JointDebugTransport::kArmSdk
+            ? ControlResource::Arm
+            : ControlResource::WholeBody,
+        resource_owner));
+    if (!controlled.allowed) {
+      result.error = controlled.error;
       return result;
     }
   }
-  if (transport == JointDebugTransport::kLowCmd) {
+  if (IsLowCmdTransport(transport)) {
     const auto lowcmd = safety_.CheckResource(
         resources_.Acquire(ControlResource::LowCmd, resource_owner));
     if (!lowcmd.allowed) {
@@ -1048,12 +1199,12 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
     result.error = error;
     return result;
   }
-  if (transport == JointDebugTransport::kLowCmd &&
+  if (IsLowCmdTransport(transport) &&
       !joint_debug_->RefreshAiSport(error)) {
     result.error = error;
     return result;
   }
-  if (transport == JointDebugTransport::kLowCmd) {
+  if (IsLowCmdTransport(transport)) {
     std::lock_guard<std::mutex> lock(joint_debug_->mutex);
     if (!joint_debug_->ai_sport_found || joint_debug_->ai_sport_active) {
       result.error = "debug_mode_required";
@@ -1115,7 +1266,7 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
       joint_debug_->active_resource_owner = resource_owner;
       joint_debug_->last_error.clear();
       const bool instant_teach_takeover =
-          requested_mode == "upper_body" &&
+          requested_mode == joint_debug_->policy.TeachMode() &&
           (joint_debug_->teach_state == "recording" ||
            joint_debug_->teach_state == "playing");
       joint_debug_->weight = instant_teach_takeover ? 1.0F : 0.0F;
@@ -1126,9 +1277,43 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
   }
   if (start_worker) {
     if (joint_debug_->worker.joinable()) joint_debug_->worker.join();
+    if (joint_debug_->service_monitor.joinable())
+      joint_debug_->service_monitor.join();
     try {
+      if (IsLowCmdTransport(transport)) {
+        joint_debug_->service_monitor =
+            std::thread([impl = joint_debug_.get()] {
+              while (true) {
+                std::string service_error;
+                const bool refreshed = impl->RefreshAiSport(service_error);
+                bool service_conflict = false;
+                {
+                  std::lock_guard<std::mutex> lock(impl->mutex);
+                  if (!impl->active || impl->stopping) break;
+                  service_conflict =
+                      !refreshed || !impl->ai_sport_found ||
+                      impl->ai_sport_active;
+                  if (service_conflict) {
+                    impl->last_error = service_error.empty()
+                                           ? "debug_mode_required"
+                                           : service_error;
+                    impl->stopping = true;
+                  }
+                }
+                if (service_conflict) {
+                  impl->cv.notify_all();
+                  break;
+                }
+                std::unique_lock<std::mutex> lock(impl->mutex);
+                if (impl->cv.wait_for(lock, std::chrono::milliseconds(500),
+                                      [&] {
+                                        return !impl->active || impl->stopping;
+                                      }))
+                  break;
+              }
+            });
+      }
       joint_debug_->worker = std::thread([impl = joint_debug_.get()] {
-      auto next_service_check = SteadyClock::now();
       try {
         while (true) {
         std::string mode;
@@ -1156,12 +1341,11 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
         }
         const auto transport = impl->policy.TransportForMode(mode);
         const float period =
-            transport == JointDebugTransport::kLowCmd
-                ? kBodyPeriodSeconds
-                : impl->policy.ArmSdkPeriodSeconds();
+            IsLowCmdTransport(transport) ? kBodyPeriodSeconds
+                                         : impl->policy.ArmSdkPeriodSeconds();
         const float maximum_step =
-            (transport == JointDebugTransport::kLowCmd ? kBodyMaximumVelocity
-                                                       : kArmMaximumVelocity) *
+            (IsLowCmdTransport(transport) ? kBodyMaximumVelocity
+                                          : kArmMaximumVelocity) *
             period;
         const auto snapshot = impl->store.GetSnapshot();
         if (!stopping && transport == JointDebugTransport::kArmSdk) {
@@ -1215,31 +1399,24 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
           }
         }
 
-        if (transport == JointDebugTransport::kLowCmd &&
-            SteadyClock::now() >= next_service_check) {
-          std::string service_error;
-          const bool refreshed = impl->RefreshAiSport(service_error);
-          bool service_conflict = false;
-          {
-            std::lock_guard<std::mutex> lock(impl->mutex);
-            service_conflict =
-                !impl->ai_sport_found || impl->ai_sport_active;
-          }
-          if (!refreshed || service_conflict) {
-            std::lock_guard<std::mutex> lock(impl->mutex);
-            impl->last_error = service_error.empty()
-                                   ? "debug_mode_required"
-                                   : service_error;
-            impl->stopping = true;
-            stopping = true;
-          }
-          next_service_check = SteadyClock::now() +
-                               std::chrono::milliseconds(500);
-        }
-
         unitree_hg::msg::dds_::LowCmd_ command;
+        unitree_go::msg::dds_::LowCmd_ go2_command;
         command.mode_pr() = 0;
         command.mode_machine() = snapshot.mode_machine;
+        if (transport == JointDebugTransport::kGo2LowCmd) {
+          go2_command.head()[0] = 0xFE;
+          go2_command.head()[1] = 0xEF;
+          go2_command.level_flag() = 0xFF;
+          go2_command.gpio() = 0;
+          for (auto& motor : go2_command.motor_cmd()) {
+            motor.mode() = 0x01;
+            motor.q() = kGo2PosStop;
+            motor.dq() = kGo2VelStop;
+            motor.tau() = 0.0F;
+            motor.kp() = 0.0F;
+            motor.kd() = 0.0F;
+          }
+        }
         bool finished = true;
         {
           std::lock_guard<std::mutex> lock(impl->mutex);
@@ -1287,81 +1464,101 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
             if (!stopping && releasing && impl->weight >= 1.0F) {
               impl->teach_state = "recording";
               impl->last_record_sample = {};
-            } else if (!stopping && impl->teach_state == "playing" && finished &&
-                !impl->playback_started && impl->weight >= 1.0F) {
-              impl->playback_started = true;
-              impl->playback_next_frame =
-                  SteadyClock::now() + kTeachSamplePeriod;
-            } else if (!stopping && impl->teach_state == "playing" &&
-                       impl->playback_started && finished &&
-                       impl->playback_index >=
-                           impl->playback_frames.size()) {
-              if (impl->playback_hold_after) {
-                impl->teach_state = "holding";
-                impl->holding_action_name = impl->playback_action_name;
-                impl->playback_started = false;
-                impl->playback_frames.clear();
-              } else {
-                impl->teach_state = "idle";
-                impl->holding_action_name.clear();
-                impl->stopping = true;
-                stopping = true;
-              }
             }
-            finished = stopping && impl->weight <= 0.0F;
           }
+          const bool teach_takeover_ready =
+              transport != JointDebugTransport::kArmSdk ||
+              impl->weight >= 1.0F;
+          if (!stopping && impl->teach_state == "playing" && finished &&
+              !impl->playback_started && teach_takeover_ready) {
+            impl->playback_started = true;
+            impl->playback_next_frame =
+                SteadyClock::now() + kTeachSamplePeriod;
+          } else if (!stopping && impl->teach_state == "playing" &&
+                     impl->playback_started && finished &&
+                     impl->playback_index >= impl->playback_frames.size()) {
+            if (impl->playback_hold_after) {
+              impl->teach_state = "holding";
+              impl->holding_action_name = impl->playback_action_name;
+              impl->playback_started = false;
+              impl->playback_frames.clear();
+            } else {
+              impl->teach_state = "idle";
+              impl->holding_action_name.clear();
+              impl->stopping = true;
+              stopping = true;
+            }
+          }
+          if (transport == JointDebugTransport::kArmSdk)
+            finished = stopping && impl->weight <= 0.0F;
           const bool passive_teach =
-              transport == JointDebugTransport::kArmSdk &&
               impl->teach_state == "recording";
           const auto& schema = impl->policy.profile().joint_schema;
-          for (std::size_t index = 0; index < schema.joints.size(); ++index) {
-            const auto& descriptor = schema.joints[index];
-            const bool arm_sdk_support =
-                transport == JointDebugTransport::kArmSdk &&
-                impl->policy.ArmSdkJoint(descriptor);
-            if (mode != "full_body" && !impl->selected[index] &&
-                !arm_sdk_support) {
-              continue;
+          const auto populate_motors = [&](auto& output_command) {
+            for (std::size_t index = 0; index < schema.joints.size(); ++index) {
+              const auto& descriptor = schema.joints[index];
+              const bool arm_sdk_support =
+                  transport == JointDebugTransport::kArmSdk &&
+                  impl->policy.ArmSdkJoint(descriptor);
+              if (mode != "full_body" && !impl->selected[index] &&
+                  !arm_sdk_support) {
+                continue;
+              }
+              const bool passive_selected =
+                  passive_teach && impl->selected[index];
+              const auto gain =
+                  passive_selected
+                      ? impl->policy.RecordingGainForMode(descriptor, mode)
+                      : impl->policy.NormalGainForMode(descriptor, mode);
+              auto& motor = output_command.motor_cmd().at(descriptor.motor_slot);
+              motor.mode() = stopping && IsLowCmdTransport(transport) ? 0 : 1;
+              motor.q() =
+                  passive_selected
+                      ? (gain.hold_record_start_pose
+                             ? impl->current[index]
+                             : snapshot.motors.at(descriptor.motor_slot).q)
+                      : impl->current[index];
+              motor.dq() = 0.0F;
+              motor.kp() =
+                  stopping && IsLowCmdTransport(transport) ? 0.0F : gain.kp;
+              motor.kd() =
+                  stopping && IsLowCmdTransport(transport) ? 0.0F : gain.kd;
+              motor.tau() = 0.0F;
+              impl->stats.last_q[descriptor.motor_slot] = motor.q();
+              impl->stats.last_kp[descriptor.motor_slot] = motor.kp();
+              impl->stats.last_kd[descriptor.motor_slot] = motor.kd();
             }
-            const bool passive_selected =
-                passive_teach && impl->selected[index];
-            const auto gain =
-                passive_selected
-                    ? impl->policy.RecordingGainForMode(descriptor, mode)
-                    : impl->policy.NormalGainForMode(descriptor, mode);
-            auto& motor = command.motor_cmd().at(descriptor.motor_slot);
-            motor.mode() =
-                stopping && transport == JointDebugTransport::kLowCmd ? 0 : 1;
-            motor.q() = passive_selected
-                            ? (gain.hold_record_start_pose
-                                   ? impl->current[index]
-                                   : snapshot.motors.at(descriptor.motor_slot).q)
-                            : impl->current[index];
-            motor.dq() = 0.0F;
-            motor.kp() = stopping && transport == JointDebugTransport::kLowCmd
-                             ? 0.0F
-                             : gain.kp;
-            motor.kd() = stopping && transport == JointDebugTransport::kLowCmd
-                             ? 0.0F
-                             : gain.kd;
-            motor.tau() = 0.0F;
-            impl->stats.last_q[descriptor.motor_slot] = motor.q();
-            impl->stats.last_kp[descriptor.motor_slot] = motor.kp();
-            impl->stats.last_kd[descriptor.motor_slot] = motor.kd();
-          }
+          };
+          if (transport == JointDebugTransport::kGo2LowCmd)
+            populate_motors(go2_command);
+          else
+            populate_motors(command);
           ++impl->stats.publish_count;
-          if (transport == JointDebugTransport::kLowCmd)
+          if (IsLowCmdTransport(transport))
             impl->stats.lowcmd_published = true;
         }
         if (transport == JointDebugTransport::kLowCmd) {
           command.crc() = Crc32Core(
               reinterpret_cast<std::uint32_t*>(&command),
               (sizeof(command) >> 2U) - 1U);
+        } else if (transport == JointDebugTransport::kGo2LowCmd) {
+          go2_command.crc() = Crc32Core(
+              reinterpret_cast<std::uint32_t*>(&go2_command),
+              (sizeof(go2_command) >> 2U) - 1U);
         }
-        const bool published = impl->mock ||
-            (transport == JointDebugTransport::kLowCmd
-                 ? impl->lowcmd_publisher->Write(command)
-                 : impl->arm_publisher->Write(command));
+        bool published = impl->mock;
+        if (!impl->mock) {
+          if (transport == JointDebugTransport::kGo2LowCmd) {
+            published = impl->go2_lowcmd_publisher &&
+                        impl->go2_lowcmd_publisher->Write(go2_command);
+          } else if (transport == JointDebugTransport::kLowCmd) {
+            published = impl->lowcmd_publisher &&
+                        impl->lowcmd_publisher->Write(command);
+          } else {
+            published = impl->arm_publisher &&
+                        impl->arm_publisher->Write(command);
+          }
+        }
         if (!published) {
           std::lock_guard<std::mutex> lock(impl->mutex);
           impl->last_error = "dds_publish_failed";
@@ -1467,7 +1664,7 @@ JointDebugSubmitResult ControlService::StartJointTeachRecording(
     joint_debug_->last_record_sample = {};
     joint_debug_->record_frames.clear();
   }
-  result = ApplyJointDebug("upper_body", targets, true);
+  result = ApplyJointDebug(joint_debug_->policy.TeachMode(), targets, true);
   if (!result.accepted) {
     std::lock_guard<std::mutex> lock(joint_debug_->mutex);
     joint_debug_->teach_state = "idle";
@@ -1678,7 +1875,7 @@ JointDebugSubmitResult ControlService::PlayJointTeachAction(
     targets.emplace_back(joint_debug_->teach_joint_indices[position],
                          frames.front()[position]);
   }
-  result = ApplyJointDebug("upper_body", targets, true);
+  result = ApplyJointDebug(joint_debug_->policy.TeachMode(), targets, true);
   if (!result.accepted) {
     std::lock_guard<std::mutex> lock(joint_debug_->mutex);
     joint_debug_->teach_state = "idle";
@@ -1806,6 +2003,342 @@ JointDebugSubmitResult ControlService::StopJointDebug(bool confirmed) {
     joint_debug_->playback_hold_after = false;
     joint_debug_->playback_action_name.clear();
     joint_debug_->holding_action_name.clear();
+  }
+  result.accepted = true;
+  return result;
+}
+
+JointDebugSubmitResult ControlService::SwitchJointDebugMode(
+    bool enter_low_level, bool confirmed) {
+  std::lock_guard<std::recursive_mutex> request_lock(
+      joint_debug_request_mutex_);
+  JointDebugSubmitResult result;
+  const auto ready = safety_.CheckServiceReady(
+      running_.load() && joint_debug_ && joint_debug_->initialized);
+  if (!ready.allowed) {
+    result.error = ready.error;
+    return result;
+  }
+  const auto confirmation = safety_.CheckConfirmation(confirmed);
+  if (!confirmation.allowed) {
+    result.error = confirmation.error;
+    return result;
+  }
+  if (!joint_debug_->policy.UsesMotionSwitcherForLowCmd() ||
+      (!mock_ && !joint_debug_->motion_switcher)) {
+    result.error = "motion_mode_switch_unsupported";
+    return result;
+  }
+  const auto locomotion = safety_.CheckCapability(
+      robot_profile_, CapabilityKey::kLocomotion, mock_);
+  const auto debug = safety_.CheckCapability(
+      robot_profile_, CapabilityKey::kJointDebug, mock_);
+  if (!locomotion.allowed || !debug.allowed) {
+    result.error = !locomotion.allowed ? locomotion.error : debug.error;
+    return result;
+  }
+  if (!enter_low_level && joint_debug_->IsActive()) {
+    const auto stopped = StopJointDebug(true);
+    if (!stopped.accepted) return stopped;
+  }
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    if (command_running_ || arm_interrupt_running_ || !queue_.empty() ||
+        motion_active_.load()) {
+      result.error = "control_busy";
+      return result;
+    }
+  }
+  const auto acquired = resources_.Acquire(
+      ControlResource::WholeBody, kJointDebugModeSwitchOwner);
+  const auto resource = safety_.CheckResource(acquired);
+  if (!resource.allowed) {
+    result.error = resource.error;
+    return result;
+  }
+  ResourceOwnerReleaseGuard resource_guard{
+      resources_, kJointDebugModeSwitchOwner, !acquired.already_owned};
+
+  std::string service_error;
+  if (!joint_debug_->RefreshAiSport(service_error)) {
+    result.error = service_error;
+    return result;
+  }
+
+  const auto update_mock_fsm = [&](std::uint32_t fsm_id) {
+    if (!mock_) return;
+    const auto current = store_.GetSnapshot().control;
+    unitree_hg::msg::dds_::SportModeState_ state;
+    state.fsm_id(fsm_id);
+    state.fsm_mode(0);
+    state.task_id(current.task_id);
+    state.task_time(current.task_time_s);
+    store_.UpdateSportMode(state);
+  };
+  const auto wait_for = [&](const auto& predicate,
+                            std::chrono::milliseconds timeout) {
+    const auto deadline = SteadyClock::now() + timeout;
+    while (running_.load() && SteadyClock::now() < deadline) {
+      if (predicate()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+  };
+  const auto execute_mode = [&](const std::string& command,
+                                std::uint32_t mock_fsm,
+                                const auto& reached) {
+    const auto execution = locomotion_->ExecuteMode(command, 0);
+    if (execution.api_result != 0 || !execution.error.empty()) {
+      result.error = execution.error.empty() ? "sdk_api_error"
+                                              : execution.error;
+      return false;
+    }
+    update_mock_fsm(mock_fsm);
+    if (!wait_for(
+            [&] {
+              const auto control = store_.GetSnapshot().control;
+              return control.sport_state_received && reached(control.fsm_id);
+            },
+            std::chrono::seconds(10))) {
+      result.error = "fsm_confirmation_timeout";
+      return false;
+    }
+    return true;
+  };
+
+  if (enter_low_level) {
+    bool service_active = false;
+    std::string active_mode;
+    {
+      std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+      service_active = joint_debug_->ai_sport_active;
+      active_mode = joint_debug_->active_motion_mode;
+    }
+    if (!service_active) {
+      result.accepted = true;
+      return result;
+    }
+    const auto snapshot = store_.GetSnapshot();
+    if (!SportStateFresh(snapshot.control)) {
+      result.error = "sport_state_stale";
+      return result;
+    }
+    const auto entry_pose_reached = [&](const RobotSnapshot& current) {
+      if (!LowStateFresh(current)) return false;
+      std::vector<float> positions;
+      positions.reserve(robot_profile_.joint_schema.joints.size());
+      for (const auto& joint : robot_profile_.joint_schema.joints)
+        positions.push_back(current.motors.at(joint.motor_slot).q);
+      return joint_debug_->policy.LowLevelEntryPoseReached(positions);
+    };
+    const bool already_crouched = entry_pose_reached(snapshot);
+    if (!already_crouched) {
+      Request stand_down;
+      stand_down.category = "mode";
+      stand_down.command = "stand_down";
+      std::string precondition_error;
+      if (!ValidatePreconditions(stand_down, precondition_error)) {
+        if (precondition_error != "mode_transition_not_allowed") {
+          result.error = precondition_error;
+          return result;
+        }
+        Request recovery;
+        recovery.category = "mode";
+        recovery.command = "recovery_stand";
+        if (!ValidatePreconditions(recovery, precondition_error)) {
+          result.error = precondition_error;
+          return result;
+        }
+        if (!execute_mode("recovery_stand", 1013,
+                          [](std::uint32_t fsm) { return fsm == 1013; })) {
+          return result;
+        }
+      }
+      if (!execute_mode("stand_down", 1004,
+                        [&](std::uint32_t fsm) {
+                          return entry_pose_reached(store_.GetSnapshot()) ||
+                                 (mock_ && IsCrouchedFsm(fsm));
+                        })) {
+        return result;
+      }
+    }
+    auto crouched_since = SteadyClock::time_point{};
+    if (!wait_for(
+            [&] {
+              const auto current = store_.GetSnapshot();
+              const bool crouched = entry_pose_reached(current) ||
+                                    (mock_ &&
+                                     IsCrouchedFsm(current.control.fsm_id));
+              if (!crouched) {
+                crouched_since = {};
+                return false;
+              }
+              if (crouched_since == SteadyClock::time_point{})
+                crouched_since = SteadyClock::now();
+              return SteadyClock::now() - crouched_since >=
+                     std::chrono::milliseconds(500);
+            },
+            std::chrono::seconds(10))) {
+      result.error = "stand_down_confirmation_timeout";
+      return result;
+    }
+    const auto crouched_snapshot = store_.GetSnapshot();
+    std::string limits_error;
+    if (!joint_debug_->LoadLimits(crouched_snapshot.mode_machine,
+                                  limits_error)) {
+      result.error = limits_error;
+      return result;
+    }
+    std::vector<std::pair<std::size_t, float>> hold_targets;
+    hold_targets.reserve(robot_profile_.joint_schema.joints.size());
+    {
+      std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+      for (std::size_t index = 0;
+           index < robot_profile_.joint_schema.joints.size(); ++index) {
+        const auto& limit = joint_debug_->limits[index];
+        const auto current = crouched_snapshot.motors.at(
+            robot_profile_.joint_schema.joints[index].motor_slot).q;
+        hold_targets.emplace_back(
+            index, std::clamp(current, limit.lower, limit.upper));
+      }
+    }
+    std::int32_t switch_result = 0;
+    if (mock_) {
+      std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+      joint_debug_->mock_ai_sport_active = false;
+    } else {
+      std::lock_guard<std::mutex> lock(joint_debug_->service_mutex);
+      switch_result = joint_debug_->motion_switcher->ReleaseMode();
+    }
+    if (switch_result != 0) {
+      result.error = MotionSwitcherError(switch_result);
+      return result;
+    }
+    {
+      std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+      joint_debug_->released_motion_mode =
+          active_mode.empty() ? "mcf" : active_mode;
+    }
+    if (!wait_for(
+            [&] {
+              std::string error;
+              if (!joint_debug_->RefreshAiSport(error)) return false;
+              std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+              return !joint_debug_->ai_sport_active;
+            },
+            std::chrono::seconds(8))) {
+      result.error = "motion_service_confirmation_timeout";
+      return result;
+    }
+    if (resource_guard.release) {
+      resources_.ReleaseOwner(kJointDebugModeSwitchOwner);
+      resource_guard.release = false;
+    }
+    const auto hold = ApplyJointDebug("full_body", hold_targets, true);
+    if (hold.accepted) return hold;
+    if (mock_) {
+      std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+      joint_debug_->mock_ai_sport_active = true;
+    } else {
+      std::lock_guard<std::mutex> lock(joint_debug_->service_mutex);
+      joint_debug_->motion_switcher->SelectMode(
+          active_mode.empty() ? "mcf" : active_mode);
+    }
+    result.error = hold.error.empty() ? "low_level_hold_failed" : hold.error;
+    return result;
+  }
+
+  bool service_active = false;
+  std::string resume_mode;
+  {
+    std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+    service_active = joint_debug_->ai_sport_active;
+    resume_mode = joint_debug_->released_motion_mode.empty()
+                      ? "mcf"
+                      : joint_debug_->released_motion_mode;
+  }
+  if (!service_active) {
+    std::int32_t switch_result = 0;
+    if (mock_) {
+      std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+      joint_debug_->mock_ai_sport_active = true;
+    } else {
+      const auto switch_deadline = SteadyClock::now() +
+                                   std::chrono::seconds(8);
+      do {
+        {
+          std::lock_guard<std::mutex> lock(joint_debug_->service_mutex);
+          switch_result =
+              joint_debug_->motion_switcher->SelectMode(resume_mode);
+        }
+        if (switch_result != 7002) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      } while (SteadyClock::now() < switch_deadline);
+    }
+    const bool service_restored = wait_for(
+            [&] {
+              std::string error;
+              if (!joint_debug_->RefreshAiSport(error)) return false;
+              std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+              return joint_debug_->ai_sport_active;
+            },
+            std::chrono::seconds(8));
+    if (!service_restored) {
+      result.error = switch_result == 0
+                         ? "motion_service_confirmation_timeout"
+                         : MotionSwitcherError(switch_result);
+      return result;
+    }
+  }
+  if (!mock_) {
+    LocomotionInitialization state;
+    std::string initialization_error;
+    if (!locomotion_->Initialize(state, initialization_error)) {
+      result.error = initialization_error.empty()
+                         ? "go2_sport_client_not_initialized"
+                         : initialization_error;
+      return result;
+    }
+  }
+  if (!execute_mode("recovery_stand", 1013,
+                    [](std::uint32_t fsm) { return fsm == 1013; })) {
+    return result;
+  }
+  auto recovered_since = SteadyClock::time_point{};
+  if (!wait_for(
+          [&] {
+            const auto current = store_.GetSnapshot();
+            if (mock_) {
+              if (current.control.fsm_id != 1013) {
+                recovered_since = {};
+                return false;
+              }
+            } else if (!LowStateFresh(current)) {
+              recovered_since = {};
+              return false;
+            } else {
+              std::vector<float> positions;
+              positions.reserve(robot_profile_.joint_schema.joints.size());
+              for (const auto& joint : robot_profile_.joint_schema.joints)
+                positions.push_back(current.motors.at(joint.motor_slot).q);
+              if (!joint_debug_->policy.HighLevelRecoveryPoseReached(
+                      positions)) {
+                recovered_since = {};
+                return false;
+              }
+            }
+            if (recovered_since == SteadyClock::time_point{})
+              recovered_since = SteadyClock::now();
+            return SteadyClock::now() - recovered_since >=
+                   std::chrono::milliseconds(500);
+          },
+          std::chrono::seconds(12))) {
+    result.error = "recovery_stand_confirmation_timeout";
+    return result;
+  }
+  if (!execute_mode("free_walk", 100,
+                    [](std::uint32_t fsm) { return fsm == 100; })) {
+    return result;
   }
   result.accepted = true;
   return result;

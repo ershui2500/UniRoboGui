@@ -38,6 +38,10 @@ add_library(g1_web_core
     src/g1_joint_debug_policy.cpp
     src/g1_locomotion_adapter.cpp
     src/g1_model_catalog.cpp
+    src/go2_audio_capability.cpp
+    src/go2_device_capability.cpp
+    src/go2_joint_debug_policy.cpp
+    src/go2_locomotion_adapter.cpp
     src/http_server.cpp
     src/json_serializer.cpp
     src/joint_debug_control.cpp
@@ -125,6 +129,11 @@ if(BUILD_TESTING)
     target_link_directories(g1_web_tests PRIVATE ${JSONCPP_LIBRARY_DIRS})
     target_link_libraries(g1_web_tests PRIVATE g1_web_core ${JSONCPP_LIBRARIES})
     add_test(NAME g1_web_core_tests COMMAND g1_web_tests)
+    add_executable(g1_web_go2_tests tests/test_go2.cpp)
+    target_include_directories(g1_web_go2_tests PRIVATE ${JSONCPP_INCLUDE_DIRS})
+    target_link_directories(g1_web_go2_tests PRIVATE ${JSONCPP_LIBRARY_DIRS})
+    target_link_libraries(g1_web_go2_tests PRIVATE g1_web_core ${JSONCPP_LIBRARIES})
+    add_test(NAME g1_web_go2_tests COMMAND g1_web_go2_tests)
     add_test(NAME g1_web_customer_config_http_tests
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_customer_config_http.py
                      $<TARGET_FILE:g1_web_server> ${CMAKE_CURRENT_SOURCE_DIR}/web)

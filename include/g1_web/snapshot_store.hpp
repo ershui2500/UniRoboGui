@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <unitree/idl/go2/SportModeState_.hpp>
+#include <unitree/idl/go2/LowState_.hpp>
 #include <unitree/idl/hg/BmsState_.hpp>
 #include <unitree/idl/hg/IMUState_.hpp>
 #include <unitree/idl/hg/LowState_.hpp>
@@ -92,6 +93,21 @@ struct MainBoardData {
   std::array<std::int16_t, 6> temperature_raw{};
   std::array<float, 6> value_raw{};
   std::array<std::uint32_t, 6> state_raw{};
+};
+
+struct FaultEntry {
+  std::uint64_t timestamp_raw{0};
+  std::uint32_t source{0};
+  std::uint32_t code{0};
+};
+
+struct FaultData {
+  bool received{false};
+  SteadyClock::time_point last_update{};
+  bool parse_valid{false};
+  std::string parse_error;
+  std::string raw_json;
+  std::vector<FaultEntry> entries;
 };
 
 struct AsrData {
@@ -221,12 +237,14 @@ struct RobotSnapshot {
   std::uint8_t mode_pr{0};
   std::uint8_t mode_machine{0};
   std::uint32_t tick{0};
+  std::uint8_t low_state_component_state_raw{0};
   ImuData hip_imu{};
   ImuData torso_imu{};
   std::array<MotorData, kMotorSlotCount> motors{};
   BatteryData battery{};
   OdometryData odometry{};
   MainBoardData mainboard{};
+  FaultData faults{};
   VoiceData voice{};
   ControlData control{};
 };
@@ -239,10 +257,14 @@ class SnapshotStore {
  public:
   void SetDdsStatus(bool initialized, const std::string& error = {});
   void UpdateLowState(const unitree_hg::msg::dds_::LowState_& message);
+  void UpdateGo2LowState(const unitree_go::msg::dds_::LowState_& message);
   void UpdateBms(const unitree_hg::msg::dds_::BmsState_& message);
   void UpdateSecondaryImu(const unitree_hg::msg::dds_::IMUState_& message);
   void UpdateMainBoard(const unitree_hg::msg::dds_::MainBoardState_& message);
   void UpdateOdometry(const unitree_go::msg::dds_::SportModeState_& message);
+  void UpdateGo2SportMode(
+      const unitree_go::msg::dds_::SportModeState_& message);
+  void UpdateGo2FaultList(const std::string& json);
   void SetVoiceState(const VoiceData& voice);
   void UpdateAsrSubscription(bool subscribed, std::int32_t api_result,
                              const std::string& error = {});

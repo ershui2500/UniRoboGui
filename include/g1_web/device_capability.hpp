@@ -55,6 +55,7 @@ struct PerceptionDeploymentPolicy {
   std::string slam_key_info_topic;
   std::string raw_point_source;
   std::string low_obstacle_source;
+  std::string service_version_status{"compatible"};
   bool attachment_required{false};
   bool attachment_declared{true};
   bool raw_input_required{true};

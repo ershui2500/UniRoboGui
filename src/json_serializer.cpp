@@ -109,6 +109,37 @@ Json::Value MotorJson(const MotorData& motor, std::size_t motor_slot,
   return result;
 }
 
+Json::Value FaultsJson(const FaultData& faults,
+                       SteadyClock::time_point now) {
+  Json::Value result(Json::objectValue);
+  result["topic"] = "rt/errorlist";
+  result["received"] = faults.received;
+  const auto age_ms = faults.received
+                          ? std::max<std::int64_t>(
+                                0, std::chrono::duration_cast<
+                                       std::chrono::milliseconds>(
+                                       now - faults.last_update)
+                                       .count())
+                          : -1;
+  result["status"] = FreshnessName(ClassifyFreshness(
+      faults.received, age_ms < 0 ? 3001 : age_ms));
+  result["age_ms"] = age_ms < 0 ? Json::Value(Json::nullValue)
+                                  : Json::Value(Json::Int64(age_ms));
+  result["parse_valid"] = faults.parse_valid;
+  result["parse_error"] = faults.parse_error;
+  result["raw_json"] = faults.raw_json;
+  Json::Value entries(Json::arrayValue);
+  for (const auto& fault : faults.entries) {
+    Json::Value entry(Json::objectValue);
+    entry["timestamp_raw"] = Json::UInt64(fault.timestamp_raw);
+    entry["source"] = Json::UInt(fault.source);
+    entry["code"] = Json::UInt(fault.code);
+    entries.append(entry);
+  }
+  result["entries"] = entries;
+  return result;
+}
+
 Json::Value CommonRoot(const RobotSnapshot& snapshot,
                        SteadyClock::time_point now) {
   const auto server_time = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -367,6 +398,8 @@ std::string SerializeSnapshot(const RobotProfile& profile,
     robot["urdf_file"] = Json::Value(Json::nullValue);
   }
   robot["tick"] = Json::UInt64(snapshot.tick);
+  robot["low_state_component_state_raw"] =
+      static_cast<Json::UInt>(snapshot.low_state_component_state_raw);
   root["robot"] = robot;
 
   Json::Value battery(Json::objectValue);
@@ -436,6 +469,7 @@ std::string SerializeSnapshot(const RobotProfile& profile,
   mainboard["value_raw"] = Array(snapshot.mainboard.value_raw);
   mainboard["state_raw"] = Array(snapshot.mainboard.state_raw);
   root["mainboard"] = mainboard;
+  root["fault_service"] = FaultsJson(snapshot.faults, now);
   root["voice"] = VoiceJson(snapshot.voice);
   root["control"] = ControlJson(snapshot.control);
 

@@ -214,6 +214,48 @@ std::vector<TtsSegment> SplitMixedTtsText(const std::string& text) {
   return segments;
 }
 
+std::vector<std::string> SplitBufferedTtsText(const std::string& text) {
+  std::vector<std::string> parts;
+  const auto append_part = [&parts](const std::string& value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return;
+    const auto last = value.find_last_not_of(" \t\r\n");
+    parts.push_back(value.substr(first, last - first + 1));
+  };
+  std::size_t begin = 0;
+  double speech_units = 0;
+  for (std::size_t offset = 0; offset < text.size();) {
+    std::uint32_t code_point = 0;
+    if (!DecodeUtf8CodePoint(text, offset, code_point)) return {};
+    if (IsHanCodePoint(code_point)) speech_units += 1;
+    else if (code_point < 128 &&
+             std::isalnum(static_cast<unsigned char>(code_point)) != 0) {
+      speech_units += 0.4;
+    }
+    const bool pause = code_point == 0xFF0C || code_point == 0x3002 ||
+                       code_point == ',' || code_point == '.' ||
+                       code_point == '!' || code_point == '?' ||
+                       code_point == 0xFF01 || code_point == 0xFF1F;
+    if ((speech_units >= 6 || (pause && speech_units >= 3)) &&
+        offset < text.size()) {
+      append_part(text.substr(begin, offset - begin));
+      begin = offset;
+      speech_units = 0;
+    }
+  }
+  const std::size_t prior_parts = parts.size();
+  append_part(text.substr(begin));
+  if (parts.size() > prior_parts && prior_parts > 0 && speech_units < 3) {
+    if (begin < text.size() &&
+        std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+      parts[prior_parts - 1] += ' ';
+    }
+    parts[prior_parts - 1] += parts.back();
+    parts.pop_back();
+  }
+  return parts;
+}
+
 std::chrono::milliseconds EstimateTtsPlaybackDuration(const std::string& text) {
   std::size_t code_points = 0;
   for (std::size_t offset = 0; offset < text.size();) {
@@ -233,6 +275,7 @@ constexpr std::size_t kMaximumLocalTtsPcmBytes = 8 * 1024 * 1024;
 constexpr std::size_t kUnitreeAudioChunkBytes = 96000;  // SDK example maximum: 3 s PCM
 constexpr std::size_t kLocalTtsPrebufferBytes = 8000;   // 250 ms @ 16 kHz mono s16le
 constexpr std::size_t kLocalTtsMinimumStreamBytes = 40000;  // 1.25 s incl. tail silence
+constexpr std::size_t kBufferedLocalTtsTailPaddingBytes = 32000;  // 1 s
 constexpr auto kLocalTtsSendPace = std::chrono::milliseconds(100);
 static_assert((kLocalTtsMinimumStreamBytes % 2) == 0,
               "local TTS minimum stream must contain whole s16le samples");
@@ -254,6 +297,7 @@ struct LocalTtsStreamContext {
   std::string stream_id;
   std::string pending_pcm;
   std::size_t total_pcm_bytes{0};
+  bool incremental{true};
   bool playback_started{false};
   std::chrono::steady_clock::time_point next_send_time{};
   std::int32_t api_result{0};
@@ -262,6 +306,21 @@ struct LocalTtsStreamContext {
 
 bool FlushLocalTtsPcm(LocalTtsStreamContext& context, bool force) {
   if (!context.audio_capability || context.api_result != 0) return false;
+  if (!context.incremental) {
+    if (!force) return true;
+    std::vector<std::uint8_t> pcm(context.pending_pcm.begin(),
+                                  context.pending_pcm.end());
+    context.api_result = context.audio_capability->PlayStream(
+        context.app_name, context.stream_id, std::move(pcm));
+    if (context.api_result != 0) {
+      context.error =
+          "local_tts_play_stream_failed_" + std::to_string(context.api_result);
+      return false;
+    }
+    context.pending_pcm.clear();
+    context.playback_started = true;
+    return true;
+  }
   if (!context.playback_started) {
     if (!force && context.pending_pcm.size() < kLocalTtsPrebufferBytes) {
       return true;
@@ -353,23 +412,26 @@ bool VoiceService::Start(std::string& error) {
 
   VoiceData voice;
   if (mock_) {
+    const auto audio_features =
+        audio_capability_ ? audio_capability_->Features()
+                          : AudioCapabilityFeatures{};
     voice.initialized = true;
-    voice.asr_subscribed = true;
-    voice.asr_control_api_result = 0;
-    voice.chat_go_found = true;
-    voice.chat_go_service_name = "chat_go";
-    voice.chat_go_closed = false;
-    voice.chat_go_status_raw = 0;
-    voice.llm.mode = "builtin";
-    voice.llm.builtin_api_available = true;
-    voice.llm.builtin_response_subscribed = true;
+    voice.asr_subscribed = audio_features.asr;
+    voice.asr_control_api_result = audio_features.asr ? 0 : -1;
+    voice.chat_go_found = audio_features.builtin_llm;
+    voice.chat_go_service_name = audio_features.builtin_llm ? "chat_go" : "";
+    voice.chat_go_closed = !audio_features.builtin_llm;
+    voice.chat_go_status_raw = audio_features.builtin_llm ? 0 : 1;
+    voice.llm.mode = audio_features.builtin_llm ? "builtin" : "customer";
+    voice.llm.builtin_api_available = audio_features.builtin_llm;
+    voice.llm.builtin_response_subscribed = audio_features.builtin_llm;
     voice.llm.customer_api_available = true;
-    chat_go_found_ = true;
-    chat_go_service_name_ = "chat_go";
-    chat_go_closed_ = false;
-    llm_mode_ = "builtin";
-    voice.vui_service_found = true;
-    voice.vui_service_status_raw = 0;
+    chat_go_found_ = audio_features.builtin_llm;
+    chat_go_service_name_ = audio_features.builtin_llm ? "chat_go" : "";
+    chat_go_closed_ = !audio_features.builtin_llm;
+    llm_mode_ = audio_features.builtin_llm ? "builtin" : "customer";
+    voice.vui_service_found = audio_features.volume;
+    voice.vui_service_status_raw = audio_features.volume ? 0 : -1;
     if (audio_capability_available_.load() && audio_capability_ &&
         audio_capability_->Features().volume) {
       std::uint8_t volume = 0;
@@ -409,14 +471,16 @@ bool VoiceService::Start(std::string& error) {
   last_customer_wake_asr_index_ = 0;
   customer_wake_until_ = {};
   running_.store(true);
-  std::string builtin_llm_error;
-  if (!StartBuiltinLlmChannels(builtin_llm_error)) {
-    LlmData llm = store_.GetSnapshot().voice.llm;
-    llm.builtin_api_available = false;
-    llm.builtin_response_subscribed = false;
-    llm.last_error = builtin_llm_error;
-    llm.updated_time_ms = SystemTimeMs();
-    PublishLlmState(llm, 0, chat_go_closed_ ? 1 : 0);
+  if (audio_capability_ && audio_capability_->Features().builtin_llm) {
+    std::string builtin_llm_error;
+    if (!StartBuiltinLlmChannels(builtin_llm_error)) {
+      LlmData llm = store_.GetSnapshot().voice.llm;
+      llm.builtin_api_available = false;
+      llm.builtin_response_subscribed = false;
+      llm.last_error = builtin_llm_error;
+      llm.updated_time_ms = SystemTimeMs();
+      PublishLlmState(llm, 0, chat_go_closed_ ? 1 : 0);
+    }
   }
   worker_ = std::thread([this] { WorkerLoop(); });
   return error.empty();
@@ -425,82 +489,101 @@ bool VoiceService::Start(std::string& error) {
 VoiceData VoiceService::InitializeRealVoice(std::string& error) {
   VoiceData voice;
   try {
+    const auto audio_features =
+        audio_capability_ ? audio_capability_->Features()
+                          : AudioCapabilityFeatures{};
     std::string asr_error;
-    if (audio_capability_ && audio_capability_->Features().asr) {
+    if (audio_features.asr) {
       voice.asr_subscribed = StartAsrSubscription(asr_error);
-    } else {
-      asr_error = "audio_asr_unavailable";
     }
     voice.asr_control_api_result = voice.asr_subscribed ? 0 : -1;
     voice.asr_control_error = asr_error;
 
-    robot_state_client_ =
-        std::make_unique<unitree::robot::b2::RobotStateClient>();
-    robot_state_client_->SetTimeout(10.0F);
-    robot_state_client_->Init();
+    if (audio_features.builtin_llm) {
+      robot_state_client_ =
+          std::make_unique<unitree::robot::b2::RobotStateClient>();
+      robot_state_client_->SetTimeout(10.0F);
+      robot_state_client_->Init();
 
-    std::vector<unitree::robot::b2::ServiceState> services;
-    const std::int32_t list_result =
-        robot_state_client_->ServiceList(services);
-    std::string chat_go_name;
-    if (list_result == 0) {
-      for (const auto& service : services) {
-        const std::string normalized = NormalizeServiceName(service.name);
-        if (normalized == "chatgo") {
-          chat_go_name = service.name;
-          voice.chat_go_found = true;
-          voice.chat_go_service_name = service.name;
-          voice.chat_go_status_raw = service.status;
-        } else if (normalized == "vuiservice") {
-          voice.vui_service_found = true;
-          voice.vui_service_status_raw = service.status;
+      std::vector<unitree::robot::b2::ServiceState> services;
+      const std::int32_t list_result =
+          robot_state_client_->ServiceList(services);
+      std::string chat_go_name;
+      if (list_result == 0) {
+        for (const auto& service : services) {
+          const std::string normalized = NormalizeServiceName(service.name);
+          if (normalized == "chatgo") {
+            chat_go_name = service.name;
+            voice.chat_go_found = true;
+            voice.chat_go_service_name = service.name;
+            voice.chat_go_status_raw = service.status;
+          } else if (normalized == "vuiservice") {
+            voice.vui_service_found = true;
+            voice.vui_service_status_raw = service.status;
+          }
         }
       }
-    }
 
-    if (chat_go_name.empty()) {
-      // ServiceList can be incomplete on some firmware. Use the documented
-      // user-visible name for one explicit switch attempt.
-      chat_go_name = "chat_go";
-      voice.chat_go_service_name = chat_go_name;
-    }
-    chat_go_service_name_ = chat_go_name;
-    chat_go_found_ = voice.chat_go_found;
+      if (chat_go_name.empty()) {
+        // ServiceList can be incomplete on some firmware. Use the documented
+        // user-visible name for one explicit switch attempt.
+        chat_go_name = "chat_go";
+        voice.chat_go_service_name = chat_go_name;
+      }
+      chat_go_service_name_ = chat_go_name;
+      chat_go_found_ = voice.chat_go_found;
 
-    std::int32_t switched_status = voice.chat_go_status_raw;
-    if (voice.chat_go_found && voice.chat_go_status_raw == 0) {
-      voice.chat_go_api_result = 0;
-      voice.chat_go_closed = false;
+      std::int32_t switched_status = voice.chat_go_status_raw;
+      if (voice.chat_go_found && voice.chat_go_status_raw == 0) {
+        voice.chat_go_api_result = 0;
+        voice.chat_go_closed = false;
+      } else {
+        voice.chat_go_api_result = robot_state_client_->ServiceSwitch(
+            chat_go_name, 1, switched_status);
+        voice.chat_go_status_raw = switched_status;
+        voice.chat_go_found =
+            voice.chat_go_found || voice.chat_go_api_result == 0;
+        voice.chat_go_closed =
+            !(voice.chat_go_api_result == 0 && switched_status == 0);
+      }
+      chat_go_found_ = voice.chat_go_found;
+      chat_go_closed_ = voice.chat_go_closed;
+      llm_mode_ = "builtin";
+      voice.llm.mode = "builtin";
     } else {
-      voice.chat_go_api_result = robot_state_client_->ServiceSwitch(
-          chat_go_name, 1, switched_status);
-      voice.chat_go_status_raw = switched_status;
-      voice.chat_go_found =
-          voice.chat_go_found || voice.chat_go_api_result == 0;
-      voice.chat_go_closed =
-          !(voice.chat_go_api_result == 0 && switched_status == 0);
+      chat_go_found_ = false;
+      chat_go_service_name_.clear();
+      chat_go_closed_ = true;
+      voice.chat_go_found = false;
+      voice.chat_go_service_name.clear();
+      voice.chat_go_closed = true;
+      voice.chat_go_api_result = 0;
+      voice.chat_go_status_raw = 1;
+      voice.llm.builtin_api_available = false;
+      voice.llm.builtin_response_subscribed = false;
+      llm_mode_ = "customer";
+      voice.llm.mode = "customer";
     }
-    chat_go_found_ = voice.chat_go_found;
-    chat_go_closed_ = voice.chat_go_closed;
-    llm_mode_ = "builtin";
-    voice.llm.mode = "builtin";
 #ifdef G1_WEB_HAS_CURL
     voice.llm.customer_api_available = true;
 #else
     voice.llm.customer_api_available = false;
 #endif
 
-    if (audio_capability_available_.load() && audio_capability_ &&
-        audio_capability_->Features().volume) {
+    if (audio_capability_available_.load() && audio_features.volume) {
       std::uint8_t volume = 0;
       voice.volume_api_result = audio_capability_->GetVolume(volume);
-      if (voice.volume_api_result == 0) voice.volume_pct = volume;
+      if (voice.volume_api_result == 0) {
+        voice.volume_pct = volume;
+        voice.vui_service_found = true;
+        voice.vui_service_status_raw = 0;
+      }
     } else {
       voice.volume_api_result = -1;
     }
 
     voice.initialized = true;
-    if (voice.chat_go_closed) {
+    if (audio_features.builtin_llm && voice.chat_go_closed) {
       error = "Failed to enable chat_go: ret=" +
               std::to_string(voice.chat_go_api_result) +
               ", status=" + std::to_string(voice.chat_go_status_raw);
@@ -723,9 +806,31 @@ void VoiceService::WorkerLoop() {
 
     if (tts.backend == "kokoro" && !mock_) {
       std::string local_tts_error;
-      if (PlayWithLocalTts(request.text, local_tts_error)) {
+      std::vector<std::string> parts{request.text};
+      if (audio_capability_ &&
+          !audio_capability_->Features().incremental_play_stream) {
+        parts = SplitBufferedTtsText(request.text);
+      }
+      bool played = !parts.empty();
+      for (const auto& part : parts) {
+        if (!PlayWithLocalTts(part, local_tts_error)) {
+          played = false;
+          break;
+        }
+      }
+      if (played) {
         tts.api_result = 0;
         tts.state = "succeeded";
+        tts.updated_time_ms = SystemTimeMs();
+        store_.UpdateTts(tts);
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        tts_in_flight_ = false;
+        continue;
+      }
+      if (!audio_capability_ || !audio_capability_->Features().tts) {
+        tts.api_result = -1;
+        tts.state = "failed";
+        tts.backend_error = local_tts_error;
         tts.updated_time_ms = SystemTimeMs();
         store_.UpdateTts(tts);
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -943,8 +1048,19 @@ CustomerVoiceConfigResult VoiceService::SetCustomerVoiceConfig(
     result.error = "customer_wake_word_empty";
     return result;
   }
+  const auto audio_features =
+      audio_capability_ ? audio_capability_->Features()
+                        : AudioCapabilityFeatures{};
+  if (config.wake_enabled && !audio_features.asr) {
+    result.error = "audio_asr_unavailable";
+    return result;
+  }
   if (config.tts_backend != "unitree" && config.tts_backend != "kokoro") {
     result.error = "invalid_customer_tts_backend";
+    return result;
+  }
+  if (config.tts_backend == "unitree" && !audio_features.tts) {
+    result.error = "audio_capability_unavailable";
     return result;
   }
   // Bound pathological payloads, but deduplicate before enforcing the actual
@@ -1168,6 +1284,13 @@ bool VoiceService::LoadCustomerVoiceConfig(std::string& error) {
   if (customer_tts_backend_ != "unitree" &&
       customer_tts_backend_ != "kokoro") {
     customer_tts_backend_ = "kokoro";
+  }
+  if (audio_capability_) {
+    const auto audio_features = audio_capability_->Features();
+    if (!audio_features.asr) customer_wake_enabled_ = false;
+    if (!audio_features.tts && customer_tts_backend_ == "unitree") {
+      customer_tts_backend_ = "kokoro";
+    }
   }
   customer_qa_entries_.clear();
   bool qa_entries_need_rewrite = false;
@@ -1867,8 +1990,10 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
   const std::string request_body = Json::writeString(writer, request);
 
   LocalTtsStreamContext stream_context;
+  const auto audio_features = audio_capability_->Features();
   stream_context.audio_capability = audio_capability_.get();
   stream_context.stream_id = std::to_string(SteadyTimeNs());
+  stream_context.incremental = audio_features.incremental_play_stream;
 
   std::uint64_t play_event_baseline = 0;
   {
@@ -1928,7 +2053,10 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
   // the speaker output remains inaudible. Keep the same stream alive with
   // trailing silence so sub-second Kokoro replies such as "您好" / "hello"
   // have enough buffered duration to reach the physical speaker.
-  if (stream_context.total_pcm_bytes < kLocalTtsMinimumStreamBytes) {
+  if (!stream_context.incremental) {
+    stream_context.pending_pcm.append(kBufferedLocalTtsTailPaddingBytes, '\0');
+    stream_context.total_pcm_bytes += kBufferedLocalTtsTailPaddingBytes;
+  } else if (stream_context.total_pcm_bytes < kLocalTtsMinimumStreamBytes) {
     const std::size_t padding_bytes =
         kLocalTtsMinimumStreamBytes - stream_context.total_pcm_bytes;
     stream_context.pending_pcm.append(padding_bytes, '\0');
@@ -1939,6 +2067,10 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
     error = stream_context.error.empty() ? "local_tts_play_stream_failed"
                                          : stream_context.error;
     return false;
+  }
+  if (!audio_features.play_state_events) {
+    error.clear();
+    return true;
   }
 
   std::unique_lock<std::mutex> play_lock(play_state_mutex_);
@@ -1994,6 +2126,20 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
 bool VoiceService::SwitchChatGo(bool enabled, std::int32_t& api_result,
                                 std::int32_t& status_raw,
                                 std::string& error) {
+  if (!audio_capability_ || !audio_capability_->Features().builtin_llm) {
+    if (enabled) {
+      api_result = -1;
+      status_raw = 1;
+      error = "builtin_llm_unavailable";
+      return false;
+    }
+    api_result = 0;
+    status_raw = 1;
+    chat_go_found_ = false;
+    chat_go_closed_ = true;
+    error.clear();
+    return true;
+  }
   if (mock_) {
     api_result = 0;
     status_raw = enabled ? 0 : 1;

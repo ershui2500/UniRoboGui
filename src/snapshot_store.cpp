@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
+
+#include <json/json.h>
 
 namespace g1_web {
 namespace {
@@ -30,6 +33,20 @@ ImuData ToImu(const unitree_go::msg::dds_::IMUState_& message) {
   result.rpy = message.rpy();
   result.temperature_raw = message.temperature();
   return result;
+}
+
+void AssignGo2SportState(
+    OdometryData& odometry,
+    const unitree_go::msg::dds_::SportModeState_& message) {
+  odometry.error_code = message.error_code();
+  odometry.mode_raw = message.mode();
+  odometry.gait_type_raw = message.gait_type();
+  odometry.progress = message.progress();
+  odometry.position = message.position();
+  odometry.velocity = message.velocity();
+  odometry.body_height = message.body_height();
+  odometry.yaw_speed = message.yaw_speed();
+  odometry.imu = ToImu(message.imu_state());
 }
 
 }  // namespace
@@ -114,6 +131,66 @@ void SnapshotStore::UpdateLowState(
   TouchLocked(SourceId::kLowState);
 }
 
+void SnapshotStore::UpdateGo2LowState(
+    const unitree_go::msg::dds_::LowState_& message) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  snapshot_.version = message.version();
+  snapshot_.mode_pr = 0;
+  snapshot_.mode_machine = 0;
+  snapshot_.tick = message.tick();
+  snapshot_.low_state_component_state_raw = message.bit_flag();
+  snapshot_.hip_imu = ToImu(message.imu_state());
+  snapshot_.torso_imu = {};
+
+  const auto& states = message.motor_state();
+  for (std::size_t i = 0; i < snapshot_.motors.size(); ++i) {
+    auto& target = snapshot_.motors[i];
+    if (i >= states.size()) {
+      target = {};
+      continue;
+    }
+    const auto& source = states[i];
+    target.mode = source.mode();
+    target.q = source.q();
+    target.dq = source.dq();
+    target.ddq = source.ddq();
+    target.tau_est = source.tau_est();
+    target.temperature = {
+        static_cast<std::int16_t>(source.temperature()), 0};
+    target.voltage = 0.0F;
+    target.sensor_raw = {source.lost(), source.reserve()[1]};
+    target.state_raw = source.reserve()[0];
+  }
+
+  const auto& source_bms = message.bms_state();
+  auto& battery = snapshot_.battery;
+  battery = {};
+  battery.version_high = source_bms.version_high();
+  battery.version_low = source_bms.version_low();
+  battery.function_raw = source_bms.status();
+  battery.current_raw = source_bms.current();
+  battery.soc = source_bms.soc();
+  battery.cycle = source_bms.cycle();
+  for (std::size_t i = 0; i < source_bms.cell_vol().size(); ++i) {
+    battery.cell_voltage_raw[i] = source_bms.cell_vol()[i];
+  }
+  battery.temperature_raw[0] =
+      static_cast<std::int16_t>(source_bms.bq_ntc()[0]);
+  battery.temperature_raw[1] =
+      static_cast<std::int16_t>(source_bms.bq_ntc()[1]);
+  battery.temperature_raw[2] =
+      static_cast<std::int16_t>(source_bms.mcu_ntc()[0]);
+  battery.temperature_raw[3] =
+      static_cast<std::int16_t>(source_bms.mcu_ntc()[1]);
+  battery.state_raw[0] = source_bms.status();
+
+  TouchLocked(SourceId::kLowState);
+  snapshot_.sources[static_cast<std::size_t>(SourceId::kBms)] = {
+      true,
+      snapshot_.sources[static_cast<std::size_t>(SourceId::kLowState)]
+          .last_update};
+}
+
 void SnapshotStore::UpdateBms(
     const unitree_hg::msg::dds_::BmsState_& message) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -153,17 +230,58 @@ void SnapshotStore::UpdateMainBoard(
 void SnapshotStore::UpdateOdometry(
     const unitree_go::msg::dds_::SportModeState_& message) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto& odometry = snapshot_.odometry;
-  odometry.error_code = message.error_code();
-  odometry.mode_raw = message.mode();
-  odometry.gait_type_raw = message.gait_type();
-  odometry.progress = message.progress();
-  odometry.position = message.position();
-  odometry.velocity = message.velocity();
-  odometry.body_height = message.body_height();
-  odometry.yaw_speed = message.yaw_speed();
-  odometry.imu = ToImu(message.imu_state());
+  AssignGo2SportState(snapshot_.odometry, message);
   TouchLocked(SourceId::kOdometry);
+}
+
+void SnapshotStore::UpdateGo2SportMode(
+    const unitree_go::msg::dds_::SportModeState_& message) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  AssignGo2SportState(snapshot_.odometry, message);
+  snapshot_.control.sport_state_received = true;
+  snapshot_.control.sport_state_last_update = SteadyClock::now();
+  // Go2 motion service V2 (software >= 1.1.6) reports the active motion
+  // state machine through SportModeState.error_code.  The legacy `mode`
+  // field is not the V2 control-state gate.
+  snapshot_.control.fsm_id = message.error_code();
+  snapshot_.control.fsm_mode = 0;
+  snapshot_.control.task_id = 0;
+  snapshot_.control.task_time_s = 0.0F;
+  TouchLocked(SourceId::kOdometry);
+}
+
+void SnapshotStore::UpdateGo2FaultList(const std::string& json) {
+  FaultData faults;
+  faults.received = true;
+  faults.last_update = SteadyClock::now();
+  faults.raw_json = json;
+
+  Json::CharReaderBuilder builder;
+  Json::Value root;
+  std::string parse_error;
+  std::istringstream stream(json);
+  if (!Json::parseFromStream(builder, stream, &root, &parse_error) ||
+      !root.isObject() || !root["errors"].isArray()) {
+    faults.parse_error = parse_error.empty() ? "invalid_errorlist_schema"
+                                             : "invalid_errorlist_json";
+  } else {
+    faults.parse_valid = true;
+    for (const auto& item : root["errors"]) {
+      if (!item.isArray() || item.size() < 3 ||
+          !item[0].isUInt64() || !item[1].isUInt() || !item[2].isUInt()) {
+        faults.parse_valid = false;
+        faults.parse_error = "invalid_errorlist_entry";
+        faults.entries.clear();
+        break;
+      }
+      faults.entries.push_back(
+          {item[0].asUInt64(), item[1].asUInt(), item[2].asUInt()});
+    }
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  snapshot_.faults = std::move(faults);
+  ++snapshot_.sequence;
 }
 
 void SnapshotStore::SetVoiceState(const VoiceData& voice) {
@@ -382,6 +500,12 @@ void SnapshotStore::PopulateMock(
     source.received = true;
     source.last_update = now;
   }
+  snapshot_.faults.received = true;
+  snapshot_.faults.last_update = now;
+  snapshot_.faults.parse_valid = true;
+  snapshot_.faults.parse_error.clear();
+  snapshot_.faults.raw_json = R"({"errors":[]})";
+  snapshot_.faults.entries.clear();
   ++snapshot_.sequence;
 }
 

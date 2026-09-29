@@ -33,6 +33,19 @@ bool UnitreeDataSource::Start(const std::string& network_interface,
               1);
           break;
 
+        case TelemetrySourceKind::kGo2LowState:
+          go2_low_state_ =
+              std::make_shared<unitree::robot::ChannelSubscriber<
+                  unitree_go::msg::dds_::LowState_>>(source.topic);
+          go2_low_state_->InitChannel(
+              [this](const void* data) {
+                store_.UpdateGo2LowState(
+                    *static_cast<const unitree_go::msg::dds_::LowState_*>(
+                        data));
+              },
+              1);
+          break;
+
         case TelemetrySourceKind::kHgBmsState:
           bms_ = std::make_shared<unitree::robot::ChannelSubscriber<
               unitree_hg::msg::dds_::BmsState_>>(source.topic);
@@ -70,16 +83,24 @@ bool UnitreeDataSource::Start(const std::string& network_interface,
           break;
 
         case TelemetrySourceKind::kGo2SportModeState:
+          {
+          const bool supplies_control_state = source.supplies_control_state;
           odometry_ = std::make_shared<unitree::robot::ChannelSubscriber<
               unitree_go::msg::dds_::SportModeState_>>(source.topic);
           odometry_->InitChannel(
-              [this](const void* data) {
-                store_.UpdateOdometry(
+              [this, supplies_control_state](const void* data) {
+                const auto& message =
                     *static_cast<
-                        const unitree_go::msg::dds_::SportModeState_*>(data));
+                        const unitree_go::msg::dds_::SportModeState_*>(data);
+                if (supplies_control_state) {
+                  store_.UpdateGo2SportMode(message);
+                } else {
+                  store_.UpdateOdometry(message);
+                }
               },
               1);
           break;
+          }
 
         case TelemetrySourceKind::kHgSportModeState:
           sport_mode_ = std::make_shared<unitree::robot::ChannelSubscriber<
@@ -89,6 +110,19 @@ bool UnitreeDataSource::Start(const std::string& network_interface,
                 store_.UpdateSportMode(
                     *static_cast<
                         const unitree_hg::msg::dds_::SportModeState_*>(data));
+              },
+              1);
+          break;
+
+        case TelemetrySourceKind::kGo2ErrorList:
+          go2_error_list_ =
+              std::make_shared<unitree::robot::ChannelSubscriber<
+                  std_msgs::msg::dds_::String_>>(source.topic);
+          go2_error_list_->InitChannel(
+              [this](const void* data) {
+                store_.UpdateGo2FaultList(
+                    static_cast<const std_msgs::msg::dds_::String_*>(data)
+                        ->data());
               },
               1);
           break;
@@ -110,6 +144,10 @@ bool UnitreeDataSource::Start(const std::string& network_interface,
 }
 
 void UnitreeDataSource::Stop() {
+  if (go2_error_list_) {
+    go2_error_list_->CloseChannel();
+    go2_error_list_.reset();
+  }
   if (sport_mode_) {
     sport_mode_->CloseChannel();
     sport_mode_.reset();
@@ -129,6 +167,10 @@ void UnitreeDataSource::Stop() {
   if (bms_) {
     bms_->CloseChannel();
     bms_.reset();
+  }
+  if (go2_low_state_) {
+    go2_low_state_->CloseChannel();
+    go2_low_state_.reset();
   }
   if (low_state_) {
     low_state_->CloseChannel();

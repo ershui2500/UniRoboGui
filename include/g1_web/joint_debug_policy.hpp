@@ -11,7 +11,7 @@
 
 namespace g1_web {
 
-enum class JointDebugTransport { kArmSdk, kLowCmd };
+enum class JointDebugTransport { kArmSdk, kLowCmd, kGo2LowCmd };
 
 struct JointDebugGain {
   float kp{0.0F};
@@ -27,6 +27,7 @@ class IJointDebugPolicy {
   virtual std::vector<std::string> GroupsForMode(
       const std::string& mode) const = 0;
   virtual std::vector<std::string> TeachGroups() const = 0;
+  virtual std::string TeachMode() const { return "upper_body"; }
   virtual JointDebugTransport TransportForMode(
       const std::string& mode) const = 0;
   virtual std::optional<std::size_t> ArmSdkWeightMotorSlot() const = 0;
@@ -44,6 +45,14 @@ class IJointDebugPolicy {
   virtual bool UpperBodyActiveFsmAllowed(std::uint32_t fsm_id) const {
     return UpperBodyFsmAllowed(fsm_id);
   }
+  virtual std::vector<std::string> LowCmdBlockingServices() const {
+    return {"ai_sport"};
+  }
+  virtual bool UsesMotionSwitcherForLowCmd() const { return false; }
+  virtual bool LowLevelEntryPoseReached(
+      const std::vector<float>&) const { return false; }
+  virtual bool HighLevelRecoveryPoseReached(
+      const std::vector<float>&) const { return true; }
   virtual const RobotModelVariant* ResolveModelVariant(
       std::uint32_t mode_machine) const = 0;
   virtual bool LegacyTeachActionCompatible(std::uint32_t mode_machine,
@@ -57,6 +66,7 @@ class IJointDebugPolicy {
   virtual float ArmSdkPeriodSeconds() const { return 0.02F; }
   virtual float ArmSdkWeightRatePerSecond() const { return 0.5F; }
   virtual bool SupportsTeachRemoteControl() const { return true; }
+  virtual std::string TeachRemoteSecondaryKeyLabel() const { return "F3"; }
   virtual bool SupportsArmActions() const { return false; }
   virtual bool SupportsCustomArmActions() const { return false; }
   virtual bool SupportsArmActionInterrupts() const { return false; }

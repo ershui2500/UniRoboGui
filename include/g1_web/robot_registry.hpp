@@ -20,15 +20,18 @@ enum class TelemetrySourceKey {
   kMainBoard,
   kOdometry,
   kSportMode,
+  kFaults,
 };
 
 enum class TelemetrySourceKind {
   kHgLowState,
+  kGo2LowState,
   kHgBmsState,
   kHgMainBoardState,
   kHgImuState,
   kGo2SportModeState,
   kHgSportModeState,
+  kGo2ErrorList,
 };
 
 struct TelemetrySourceSpec {
@@ -36,6 +39,7 @@ struct TelemetrySourceSpec {
   TelemetrySourceKind kind;
   std::string topic;
   bool required_for_health{false};
+  bool supplies_control_state{false};
 };
 
 struct TelemetrySubscriptionPlan {
@@ -46,6 +50,7 @@ const char* TelemetrySourceKeyName(TelemetrySourceKey key);
 
 struct RuntimeOptions {
   bool mock{false};
+  bool read_only{false};
   std::string network_interface{"eth0"};
   std::string web_root{"/home/unitree/UniRoboGui/web"};
   bool enable_navigation{false};

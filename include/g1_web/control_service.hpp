@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -77,6 +78,8 @@ class ControlService {
       const std::vector<std::pair<std::size_t, float>>& targets,
       bool confirmed);
   JointDebugSubmitResult StopJointDebug(bool confirmed);
+  JointDebugSubmitResult SwitchJointDebugMode(bool enter_low_level,
+                                              bool confirmed);
   JointDebugSubmitResult HeartbeatJointDebug();
   JointDebugSubmitResult StartJointTeachRecording(
       const std::string& name, bool confirmed);
@@ -90,6 +93,7 @@ class ControlService {
       const std::string& name, const std::string& binding);
   JointDebugTestStats GetJointDebugTestStats() const;
   void SetMockJointDebugAiSport(bool ai_sport_active);
+  void SetMockJointDebugServiceDelay(std::chrono::milliseconds delay);
   void SetMockJointDebugRemoteKeys(std::uint16_t keys);
 
   bool IsKnownCommand(const std::string& category,

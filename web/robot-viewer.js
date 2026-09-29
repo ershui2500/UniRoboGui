@@ -28,9 +28,8 @@ let selectedMeshes = [];
 let loadGeneration = 0;
 let sceneReady = false;
 let debugJointValues = null;
+const meshCache = new Map();
 const modelBounds = new THREE.Box3();
-const modelFocus = new THREE.Vector3();
-const focusShift = new THREE.Vector3();
 
 function setModelStatus(text, state = "pending") {
   modelState.textContent = text;
@@ -160,23 +159,6 @@ function prepareMaterials(root) {
   });
 }
 
-function currentModelFocus() {
-  if (!modelMount) return null;
-  modelBounds.setFromObject(modelMount);
-  if (modelBounds.isEmpty()) return null;
-  return modelBounds.getCenter(modelFocus);
-}
-
-function anchorViewToRobot() {
-  const center = currentModelFocus();
-  if (!center || !controls || !camera) return;
-  focusShift.copy(center).sub(controls.target);
-  if (focusShift.lengthSq() < 1e-10) return;
-  controls.target.copy(center);
-  camera.position.add(focusShift);
-  controls.update();
-}
-
 function fitView() {
   if (!modelMount) return;
   modelBounds.setFromObject(modelMount);
@@ -245,6 +227,41 @@ function createUrdfLoader(manager, selection) {
   const loader = new URDFLoader(manager);
   loader.packages = { [selection.packageName]: selection.assetRoot };
   loader.fetchOptions = { cache: "reload" };
+  const loadMesh = loader.loadMeshCb;
+  loader.loadMeshCb = (path, meshManager, material, done) => {
+    const cacheable = /\.dae$/i.test(path) ||
+      (selection.packageName === "go2_description" && /\.stl$/i.test(path));
+    if (!cacheable) {
+      loadMesh(path, meshManager, material, done);
+      return;
+    }
+    let pending = meshCache.get(path);
+    if (!pending) {
+      pending = new Promise((resolve, reject) => {
+        loadMesh(path, THREE.DefaultLoadingManager, material, (object, error) => {
+          if (error || !object) reject(error || new Error(`Unable to load ${path}`));
+          else resolve(object);
+        });
+      }).catch((error) => {
+        meshCache.delete(path);
+        throw error;
+      });
+      meshCache.set(path, pending);
+    }
+    meshManager.itemStart(path);
+    pending.then((source) => {
+      const clone = source.clone(true);
+      clone.traverse((object) => {
+        if (object.isMesh && object.geometry) object.geometry = object.geometry.clone();
+      });
+      done(clone);
+      meshManager.itemEnd(path);
+    }).catch((error) => {
+      done(null, error);
+      meshManager.itemError(path);
+      meshManager.itemEnd(path);
+    });
+  };
   return loader;
 }
 
@@ -259,20 +276,23 @@ function loadRobotUrdfInstance(robotInfo, joints, onLoad, onError) {
   }
 
   const manager = new THREE.LoadingManager();
+  let candidate = null;
   manager.onError = (url) => onError?.(new Error(`模型资源加载失败：${url.split("/").pop() || url}`));
+  manager.onLoad = () => {
+    if (!candidate) return;
+    try {
+      validateJoints(candidate, joints);
+      candidate.quaternion.copy(ROS_TO_THREE);
+      prepareMaterials(candidate);
+      onLoad?.(candidate, selection);
+    } catch (error) {
+      onError?.(error);
+    }
+  };
   const loader = createUrdfLoader(manager, selection);
   loader.load(
     `${selection.assetRoot}/${selection.file}`,
-    (candidate) => {
-      try {
-        validateJoints(candidate, joints);
-        candidate.quaternion.copy(ROS_TO_THREE);
-        prepareMaterials(candidate);
-        onLoad?.(candidate, selection);
-      } catch (error) {
-        onError?.(error);
-      }
-    },
+    (loaded) => { candidate = loaded; },
     undefined,
     (error) => onError?.(error instanceof Error ? error : new Error(String(error))),
   );
@@ -327,45 +347,38 @@ function loadModel(robotInfo) {
   modelFile.textContent = `${selection.name} · 本地 URDF ${file}`;
 
   const manager = new THREE.LoadingManager();
+  let candidate = null;
   manager.onError = (url) => {
     if (generation !== loadGeneration) return;
     setModelStatus("资源加载失败", "error");
     setLoading("模型资源加载失败", url.split("/").pop() || url);
   };
+  manager.onLoad = () => {
+    if (!candidate || generation !== loadGeneration || !sceneReady || !scene) return;
+    try {
+      validateJoints(candidate);
+      robot = candidate;
+      robot.quaternion.copy(ROS_TO_THREE);
+      modelMount = new THREE.Group();
+      modelMount.name = "hip_imu_pose";
+      modelMount.add(robot);
+      prepareMaterials(robot);
+      scene.add(modelMount);
+      applyJointValues();
+      fitView();
+      window.dispatchEvent(new CustomEvent("g1:robot-model-ready", {
+        detail: getRobotJointMetadata(),
+      }));
+    } catch (error) {
+      disposeRobot();
+      setModelStatus("模型挂载失败", "error");
+      setLoading("三维模型挂载失败", error?.message || file);
+    }
+  };
   const loader = createUrdfLoader(manager, selection);
   loader.load(
     `${selection.assetRoot}/${file}`,
-    (candidate) => {
-      if (generation !== loadGeneration) return;
-      if (!sceneReady || !scene) return;
-      try {
-        validateJoints(candidate);
-      } catch (error) {
-        setModelStatus("模型校验失败", "error");
-        setLoading("URDF 关节校验失败", error.message);
-        return;
-      }
-      try {
-        robot = candidate;
-        robot.quaternion.copy(ROS_TO_THREE);
-        modelMount = new THREE.Group();
-        modelMount.name = "hip_imu_pose";
-        modelMount.add(robot);
-        prepareMaterials(robot);
-        scene.add(modelMount);
-        applyJointValues();
-        loading.hidden = true;
-        setModelStatus(`M${machineId} 已识别`, "ready");
-        fitView();
-        window.dispatchEvent(new CustomEvent("g1:robot-model-ready", {
-          detail: getRobotJointMetadata(),
-        }));
-      } catch (error) {
-        disposeRobot();
-        setModelStatus("模型挂载失败", "error");
-        setLoading("三维模型挂载失败", error?.message || file);
-      }
-    },
+    (loaded) => { candidate = loaded; },
     undefined,
     (error) => {
       if (generation !== loadGeneration) return;
@@ -390,7 +403,21 @@ function applyHipOrientation() {
 }
 
 function applyJointValues() {
-  if (!robot || !latestData?.joints) return;
+  if (!robot || !latestData?.joints) return false;
+  const lowStateStatus = latestData?.sources?.low_state?.status;
+  if (debugJointValues === null &&
+      lowStateStatus !== "online" && lowStateStatus !== "delayed") {
+    setModelStatus(viewerText("关节数据离线", "Joint data offline"), "error");
+    setLoading(
+      viewerText("无法同步实时姿态", "Unable to synchronize live pose"),
+      viewerText(
+        "等待 GO2 rt/lowstate 恢复；不使用默认零位冒充机器人当前姿态。",
+        "Waiting for GO2 rt/lowstate; the default zero pose is not presented as the robot's current pose.",
+      ),
+    );
+    renderScene();
+    return false;
+  }
   if (debugJointValues === null) {
     applyRobotJointValues(robot, latestData.joints);
   } else {
@@ -403,8 +430,11 @@ function applyJointValues() {
   }
   if (debugJointValues === null) applyHipOrientation();
   else modelMount?.quaternion.identity();
-  anchorViewToRobot();
+  loading.hidden = true;
+  const machineId = Number(latestData?.robot?.mode_machine_raw);
+  if (Number.isFinite(machineId)) setModelStatus(`M${machineId} 已识别`, "ready");
   renderScene();
+  return true;
 }
 
 function jointFromObject(object) {

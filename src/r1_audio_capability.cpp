@@ -14,7 +14,7 @@ class R1AudioCapability final : public IAudioCapability {
   explicit R1AudioCapability(bool mock) : mock_(mock) {}
 
   AudioCapabilityFeatures Features() const override {
-    return {true, true, true, true};
+    return {true, true, true, true, true, true, true};
   }
 
   bool Start(std::string& error) override {

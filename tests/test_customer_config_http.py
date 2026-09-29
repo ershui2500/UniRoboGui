@@ -503,7 +503,11 @@ def main():
             products = request_json(
                 f"http://127.0.0.1:{explicit_port}/api/robot/products")
             assert products["active_product_id"] == "g1"
-            assert [item["product_id"] for item in products["products"]] == ["g1", "r1"]
+            assert [item["product_id"] for item in products["products"]] == [
+                "g1",
+                "r1",
+                "go2",
+            ]
 
             websocket = open_websocket(explicit_port)
             switched = request_json(

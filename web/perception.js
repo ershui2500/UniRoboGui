@@ -193,6 +193,7 @@ let lastFrameSequence = -1;
 let lastGlobalSequence = -1;
 let latestStatus = null;
 let latestCameraStatus = null;
+let lastRgbFrameAt = 0;
 let latestFrame = null;
 let initialPoseSelected = false;
 let goalSelected = false;
@@ -1676,8 +1677,35 @@ function syncCameraAspect(stream) {
 function initializeCameraViewports() {
   ["rgb", "depth"].forEach((stream) => {
     const elements = cameraElements(stream);
-    elements.image.addEventListener("load", () => syncCameraAspect(stream));
+    elements.image.addEventListener("load", () => {
+      syncCameraAspect(stream);
+      if (stream === "rgb") {
+        lastRgbFrameAt = performance.now();
+        renderRgbFrameFreshness();
+      }
+    });
   });
+}
+
+function renderRgbFrameFreshness() {
+  const state = latestCameraStatus?.rgb;
+  const age = lastRgbFrameAt ? Math.max(0, performance.now() - lastRgbFrameAt) : 0;
+  const frozen = Boolean(lastRgbFrameAt && state?.configured && (!state.online || age > 2000));
+  const warning = document.getElementById("rgbCameraFrozen");
+  const ageLabel = document.getElementById("rgbCameraFrameAge");
+  warning.hidden = !frozen;
+  warning.textContent = cameraText("画面已冻结", "Video frozen");
+  ageLabel.hidden = !lastRgbFrameAt;
+  if (lastRgbFrameAt) ageLabel.textContent = cameraText(
+    `最后显示帧：${(age / 1000).toFixed(1)} 秒前`,
+    `Last displayed frame: ${(age / 1000).toFixed(1)} s ago`,
+  );
+  const status = document.getElementById("rgbCameraStatus");
+  status.classList.toggle("frozen", frozen);
+  if (frozen) {
+    status.querySelector("strong").textContent = cameraText("画面已冻结", "Video frozen");
+    document.getElementById("rgbCameraEmpty").hidden = true;
+  }
 }
 
 function updateCameraStatus(stream, state) {
@@ -1700,6 +1728,7 @@ function updateCameraStatus(stream, state) {
       : "留空自动检测";
   }
   elements.empty.hidden = Boolean(state.online);
+  if (stream === "rgb") renderRgbFrameFreshness();
 }
 
 function updateCameraServiceStatus(status) {
@@ -1715,6 +1744,9 @@ function updateCameraServiceStatus(status) {
   });
 
   if (fixedPolicy) {
+    const cameraName = status.device?.model ||
+      window.robotManifest?.identity?.display_name ||
+      cameraText("机器人摄像头", "Robot camera");
     const versionNote = status.service_version_status === "external_check_required"
       ? cameraText(
           "软件版本无法通过稳定只读接口确认，需在 APP/运维侧外部核验。",
@@ -1754,8 +1786,14 @@ function updateCameraServiceStatus(status) {
     const disabled = !status.mock && status.backend === "unavailable";
     startV4l2Camera.disabled = disabled;
     startRealSenseCamera.disabled = disabled;
-    startV4l2Camera.title = cameraText("启动 R1 固定 RGB 接收", "Start fixed R1 RGB reception");
-    startRealSenseCamera.title = cameraText("启动 R1 固定深度接收", "Start fixed R1 depth reception");
+    startV4l2Camera.title = cameraText(
+      `启动 ${cameraName} 固定 RGB 接收`,
+      `Start fixed RGB reception for ${cameraName}`,
+    );
+    startRealSenseCamera.title = cameraText(
+      `启动 ${cameraName} 固定深度接收`,
+      `Start fixed depth reception for ${cameraName}`,
+    );
     stopRgbCamera.disabled = !(status.rgb?.configured || status.rgb?.online);
     stopDepthCamera.disabled = !(status.depth?.configured || status.depth?.online);
     stopRgbCamera.title = cameraText("仅停止 RGB 画面", "Stop only the RGB stream");
@@ -1796,7 +1834,11 @@ async function pollCameraStatus() {
       updateCameraStatus("rgb", status.rgb || {});
       updateCameraStatus("depth", status.depth || {});
     } catch (error) {
-      ["rgb", "depth"].forEach((stream) => updateCameraStatus(stream, { configured: true, error: error.message }));
+      latestCameraStatus = { ...latestCameraStatus };
+      ["rgb", "depth"].forEach((stream) => {
+        latestCameraStatus[stream] = { configured: true, error: error.message };
+        updateCameraStatus(stream, latestCameraStatus[stream]);
+      });
     }
   }
   setTimeout(pollCameraStatus, 1800);
@@ -1826,6 +1868,7 @@ async function loadCameraFrame(stream) {
 
 function pollCameraFrames() {
   Promise.all([loadCameraFrame("rgb"), loadCameraFrame("depth")]).finally(() => {
+    renderRgbFrameFreshness();
     const intervalMs = latestCameraStatus?.fixed_policy === true ? 120 : 420;
     setTimeout(pollCameraFrames, intervalMs);
   });
@@ -1963,6 +2006,12 @@ function stageCommand(command, uiAction = "") {
 
 function stageCameraCommand(command) {
   const fixedPolicy = latestCameraStatus?.fixed_policy === true;
+  const cameraName = latestCameraStatus?.device?.model ||
+    window.robotManifest?.identity?.display_name ||
+    cameraText("机器人摄像头", "Robot camera");
+  const hasFixedDepth = latestCameraStatus?.device?.streams?.some(
+    (stream) => stream?.role === "depth",
+  ) === true;
   const streamStop = command === "stop_rgb" || command === "stop_depth";
   const backendCommand = command === "stop_camera" || (streamStop && !fixedPolicy)
     ? "stop"
@@ -1990,24 +2039,29 @@ function stageCameraCommand(command) {
   const fixedRgbPort = latestCameraStatus?.rgb?.port || "--";
   confirmTitle.textContent = fixedPolicy && !stopping
     ? command === "start_realsense"
-      ? cameraText("启动 R1 深度", "Start R1 Depth")
-      : cameraText("启动 R1 RGB", "Start R1 RGB")
+      ? cameraText(`启动 ${cameraName} 深度`, `Start ${cameraName} Depth`)
+      : cameraText(`启动 ${cameraName} RGB`, `Start ${cameraName} RGB`)
     : title;
   confirmWarning.textContent = fixedPolicy && !stopping
     ? command === "start_realsense"
       ? cameraText(
-          "将启动 R1 深度接收；若 RGB 已开启会继续保留。该操作不会改变机器人模式或运动状态。",
-          "Start R1 depth reception while keeping an active RGB stream. This does not change robot mode or motion state.",
+          `将启动 ${cameraName} 深度接收；若 RGB 已开启会继续保留。该操作不会改变机器人模式或运动状态。`,
+          `Start ${cameraName} depth reception while keeping an active RGB stream. This does not change robot mode or motion state.`,
         )
-      : cameraText(
-          `将启动固定右目 UDP ${fixedRgbPort} RGB 接收；若深度已开启会继续保留。该操作不会改变机器人模式或运动状态。`,
-          `Start fixed right-eye UDP ${fixedRgbPort} RGB reception; an active depth stream will be kept. This does not change robot mode or motion state.`,
-        )
+      : hasFixedDepth
+        ? cameraText(
+            `将启动固定右目 UDP ${fixedRgbPort} RGB 接收；若深度已开启会继续保留。该操作不会改变机器人模式或运动状态。`,
+            `Start fixed right-eye UDP ${fixedRgbPort} RGB reception; an active depth stream will be kept. This does not change robot mode or motion state.`,
+          )
+        : cameraText(
+            `将启动 ${cameraName} 固定 RTP/H264 UDP ${fixedRgbPort} RGB 接收。该操作不会改变机器人模式或运动状态。`,
+            `Start fixed RTP/H264 UDP ${fixedRgbPort} RGB reception for ${cameraName}. This does not change robot mode or motion state.`,
+          )
     : warning;
   confirmSafetyTitle.textContent = fixedPolicy
     ? stopping
       ? cameraText("仅停止所选画面", "Stop selected stream only")
-      : cameraText("R1 相机固定数据源", "Fixed R1 camera source")
+      : cameraText(`${cameraName} 固定数据源`, `Fixed source for ${cameraName}`)
     : "Web 取流会临时独占当前 D435i";
   const fixedDepthSource =
     latestCameraStatus?.depth?.fixed_source ||
@@ -2029,10 +2083,15 @@ function stageCameraCommand(command) {
               `深度固定读取 ${fixedDepthSource} 544×448@10Hz raw16，并按 Unitree 文档的 1%/99% 分位归一化 + JET 伪彩显示；读不到完整帧时不会复用旧帧。`,
               `Depth reads fixed ${fixedDepthSource} 544×448@10Hz raw16 and follows Unitree's documented 1%/99% percentile normalization plus JET pseudocolor. Incomplete reads never reuse stale frames.`,
             )
-          : cameraText(
-              `RGB 固定监听右目 RTP/H264 UDP ${fixedRgbPort}，可与左目深度同时在线。`,
-              `RGB listens on fixed right-eye RTP/H264 UDP ${fixedRgbPort} and can remain online with left-eye depth.`,
-            )
+          : hasFixedDepth
+            ? cameraText(
+                `RGB 固定监听右目 RTP/H264 UDP ${fixedRgbPort}，可与左目深度同时在线。`,
+                `RGB listens on fixed right-eye RTP/H264 UDP ${fixedRgbPort} and can remain online with left-eye depth.`,
+              )
+            : cameraText(
+                `RGB 固定监听 RTP/H264 UDP ${fixedRgbPort}。`,
+                `RGB listens on fixed RTP/H264 UDP ${fixedRgbPort}.`,
+              )
     : "启动时会暂停占用 D435i 的 master_service / teleimager.service，再自动识别当前 RGB 与 Z16 深度设备；停止后仅恢复本页实际暂停的服务。";
   dialogFeedback.textContent = "";
   submitCommand.disabled = false;

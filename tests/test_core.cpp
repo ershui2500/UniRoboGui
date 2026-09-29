@@ -78,7 +78,7 @@ Json::Value Parse(const std::string& text) {
 class UnavailableAudioCapability final : public g1_web::IAudioCapability {
  public:
   g1_web::AudioCapabilityFeatures Features() const override {
-    return {true, true, true, true};
+    return {true, true, true, true, true, true, true};
   }
   bool Start(std::string& error) override {
     error = "mock_audio_unavailable";
@@ -440,6 +440,7 @@ void TestR1RobotProfile() {
 void TestRobotRegistry() {
   const auto* g1 = g1_web::RobotRegistry::Find("g1");
   const auto* r1 = g1_web::RobotRegistry::Find("r1");
+  const auto* go2 = g1_web::RobotRegistry::Find("go2");
   Require(g1 != nullptr && g1->identity.product_id == "g1" &&
               g1->identity.display_name == "Unitree G1",
           "registry must resolve the registered G1 profile");
@@ -450,12 +451,17 @@ void TestRobotRegistry() {
   Require(r1 != nullptr && r1->identity.product_id == "r1" &&
               r1->joint_schema.joints.size() == 26,
           "registry must resolve the task-13 R1 profile");
+  Require(go2 != nullptr && go2->identity.product_id == "go2" &&
+              go2->joint_schema.joints.size() == 12,
+          "registry must resolve the task-28 Go2 profile");
   const auto products = g1_web::RobotRegistry::All();
-  Require(products.size() == 2 && products[0] == g1 && products[1] == r1,
-          "registry product listing must expose G1/R1 without a frontend product table");
+  Require(products.size() == 3 && products[0] == g1 && products[1] == r1 &&
+              products[2] == go2,
+          "registry product listing must expose G1/R1/Go2 without a frontend product table");
   Require(g1_web::RobotRegistry::Find("auto") == nullptr &&
               g1_web::RobotRegistry::Find("G1") == nullptr &&
-              g1_web::RobotRegistry::Find("R1") == nullptr,
+              g1_web::RobotRegistry::Find("R1") == nullptr &&
+              g1_web::RobotRegistry::Find("GO2") == nullptr,
           "registry must reject every unregistered spelling without guessing");
 }
 
@@ -475,11 +481,14 @@ void TestTask22RuntimeAssemblyBoundary() {
               main_cpp.find("r1_runtime") == std::string::npos &&
               main_cpp.find("CreateG1LocomotionAdapter") == std::string::npos &&
               main_cpp.find("CreateR1LocomotionAdapter") == std::string::npos &&
+              main_cpp.find("CreateGo2LocomotionAdapter") == std::string::npos &&
               main_cpp.find("CreateG1AudioCapability") == std::string::npos &&
               main_cpp.find("CreateR1AudioCapability") == std::string::npos &&
               main_cpp.find("CreateG1JointDebugPolicy") == std::string::npos &&
               main_cpp.find("CreateR1JointDebugPolicy") == std::string::npos &&
               main_cpp.find("CreateG1DeviceCapabilityPolicy") ==
+                  std::string::npos &&
+              main_cpp.find("CreateGo2DeviceCapabilityPolicy") ==
                   std::string::npos &&
               main_cpp.find("--device") != std::string::npos &&
               main_cpp.find("enabled_devices.insert(value)") !=
@@ -503,8 +512,9 @@ void TestTask22RuntimeAssemblyBoundary() {
         const std::string text((std::istreambuf_iterator<char>(stream)),
                                std::istreambuf_iterator<char>());
         Require(text.find("unitree/robot/g1/") == std::string::npos &&
-                    text.find("unitree/robot/r1/") == std::string::npos,
-                "task-22 shared Core must not include G1/R1 product clients");
+                    text.find("unitree/robot/r1/") == std::string::npos &&
+                    text.find("unitree/robot/go2/") == std::string::npos,
+                "shared Core must not include G1/R1/Go2 product clients");
       };
   for (const auto& entry :
        std::filesystem::recursive_directory_iterator(project_root / "include" /
@@ -517,7 +527,8 @@ void TestTask22RuntimeAssemblyBoundary() {
        std::filesystem::directory_iterator(project_root / "src")) {
     if (!entry.is_regular_file() || entry.path().extension() != ".cpp") continue;
     const auto filename = entry.path().filename().string();
-    if (filename.rfind("g1_", 0) == 0 || filename.rfind("r1_", 0) == 0) {
+    if (filename.rfind("g1_", 0) == 0 || filename.rfind("r1_", 0) == 0 ||
+        filename.rfind("go2_", 0) == 0) {
       continue;
     }
     require_no_product_client_include(entry.path());

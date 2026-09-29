@@ -11,6 +11,9 @@ struct AudioCapabilityFeatures {
   bool tts{false};
   bool volume{false};
   bool asr{false};
+  bool builtin_llm{false};
+  bool incremental_play_stream{true};
+  bool play_state_events{true};
 };
 
 class IAudioCapability {

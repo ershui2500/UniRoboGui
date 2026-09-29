@@ -3,15 +3,19 @@ import { getRobotJointMetadata, setDebugJointValues } from "/robot-viewer.js";
 const $ = (id) => document.getElementById(id);
 const RAD_TO_DEG = 180 / Math.PI;
 const groupLabels = {
-  left_leg: "左腿",
-  right_leg: "右腿",
-  waist: "腰部",
-  left_arm: "左臂",
-  right_arm: "右臂",
-  head: "头部",
+  left_leg: ["左腿", "Left Leg"],
+  right_leg: ["右腿", "Right Leg"],
+  waist: ["腰部", "Waist"],
+  left_arm: ["左臂", "Left Arm"],
+  right_arm: ["右臂", "Right Arm"],
+  head: ["头部", "Head"],
+  front_right_leg: ["右前腿", "Front Right Leg"],
+  front_left_leg: ["左前腿", "Front Left Leg"],
+  rear_right_leg: ["右后腿", "Rear Right Leg"],
+  rear_left_leg: ["左后腿", "Rear Left Leg"],
 };
 const errorLabels = {
-  debug_mode_required: "全身 rt/lowcmd 需要先停止 ai_sport，并进入当前产品要求的低层调试状态。",
+  debug_mode_required: "全身 rt/lowcmd 需要先停止当前产品的高层运动服务，并进入低层调试状态。",
   joint_out_of_range: "关节目标超出 URDF limit，后端已拒绝。",
   lowstate_unavailable: "LowState 不可用或已超时。",
   control_busy: "其他控制任务正在执行。",
@@ -31,9 +35,22 @@ const errorLabels = {
   joint_teach_model_mismatch: "该动作由另一种 G1 机型录制，已禁止播放。",
   joint_teach_store_failed: "本地示教文件保存失败。",
   joint_teach_duration_limit: "录制已达到 120 秒上限，请停止并保存。",
-  joint_teach_remote_binding_not_allowed: "该按键组合不允许用于自定义动作；只能选择 F1 / F3 组合键。",
+  joint_teach_remote_binding_not_allowed: uiText(
+    "该按键组合不允许用于自定义动作；只能选择页面列出的组合键。",
+    "This key combination cannot trigger a custom action; choose one listed on the page.",
+  ),
   joint_teach_remote_binding_in_use: "该遥控器组合键已经绑定到其他示教动作。",
   joint_teach_remote_control_unsupported: "当前产品未开放示教动作的遥控器绑定。",
+  motion_service_busy: "高层运控正在切换，请稍后重试。",
+  motion_mode_not_supported: "当前固件不支持该高层运控模式。",
+  motion_service_switch_failed: "高层运控切换失败，后端已停止后续动作。",
+  motion_service_confirmation_timeout: "高层运控切换后未能及时确认状态，后端已停止后续动作。",
+  motion_mode_switch_unsupported: "当前产品未开放网页高低层模式切换。",
+  fsm_confirmation_timeout: "机器人未在预期时间内到达目标姿态，后端已停止后续动作。",
+  recovery_stand_confirmation_timeout: uiText(
+    "机器人未在预期时间内稳定站起，已停止切换到灵动模式。",
+    "The robot did not reach a stable standing pose in time; switching to Free Walk was stopped.",
+  ),
 };
 
 let status = null;
@@ -43,6 +60,11 @@ let currentWorkspace = location.hash.slice(1) || "console";
 let pendingAction = null;
 let statusTimer = null;
 let heartbeatTimer = null;
+let modeSwitchPending = false;
+
+function uiText(zh, en = zh) {
+  return window.UiI18n?.language === "en" ? en : zh;
+}
 
 function showActionFeedback(message, error = false) {
   const feedback = $("jointDebugActionFeedback");
@@ -52,7 +74,7 @@ function showActionFeedback(message, error = false) {
 }
 
 function selectedMode() {
-  return document.querySelector('[name="jointDebugMode"]:checked')?.value || "upper_body";
+  return document.querySelector('[name="jointDebugMode"]:checked')?.value || "full_body";
 }
 
 function selectedUnit() {
@@ -60,11 +82,21 @@ function selectedUnit() {
 }
 
 function renderControlTopics(next) {
-  document.querySelectorAll('[name="jointDebugMode"]').forEach((input) => {
-    const topic = next?.control_topics?.[input.value] || "--";
-    const topicLabel = input.closest("label")?.querySelector("small");
+  const inputs = [...document.querySelectorAll('[name="jointDebugMode"]')];
+  const supported = [];
+  inputs.forEach((input) => {
+    const topic = next?.control_topics?.[input.value];
+    const label = input.closest("label");
+    label.hidden = !topic;
+    if (topic) supported.push(input);
+    const topicLabel = label?.querySelector("small");
     if (topicLabel) topicLabel.textContent = topic;
   });
+  if (!supported.some((input) => input.checked) && supported.length) {
+    supported[0].checked = true;
+  }
+  const modeSwitch = document.querySelector(".joint-debug-mode-switch");
+  if (modeSwitch) modeSwitch.hidden = supported.length <= 1;
 }
 
 function unitValue(rad) {
@@ -88,6 +120,15 @@ function groupControls() {
   ));
   host.replaceChildren();
   const orderedGroups = [...new Set(metadata.map((joint) => joint.displayGroup).filter(Boolean))];
+  const visibleGroups = orderedGroups.filter((group) => metadata.some((joint) =>
+    joint.displayGroup === group && jointInMode(joint, mode)
+  ));
+  const quadrupedGroups = [
+    "front_left_leg", "front_right_leg", "rear_left_leg", "rear_right_leg",
+  ];
+  host.dataset.layout = quadrupedGroups.every((group) => visibleGroups.includes(group))
+    ? "quadruped"
+    : "default";
   orderedGroups.forEach((group) => {
     const groupJoints = metadata.filter((joint) => joint.displayGroup === group);
     if (!groupJoints.some((joint) => jointInMode(joint, mode))) return;
@@ -95,7 +136,8 @@ function groupControls() {
     section.className = "joint-debug-group";
     section.dataset.group = group;
     const heading = document.createElement("h3");
-    heading.textContent = groupLabels[group] || group.replaceAll("_", " ");
+    const label = groupLabels[group];
+    heading.textContent = label ? uiText(label[0], label[1]) : group.replaceAll("_", " ");
     section.append(heading);
     groupJoints.filter((joint) => jointInMode(joint, mode))
       .forEach((joint) => {
@@ -170,6 +212,21 @@ function updatePermission() {
   permission.textContent = canApply ? "允许下发" : "禁止下发";
   permission.className = `model-state ${canApply ? "ready" : "error"}`;
   $("jointDebugApply").disabled = !canApply;
+  const switchSupported = status?.motion_mode_switch_supported === true;
+  const serviceActive = status?.motion_service_active ?? status?.ai_sport_active;
+  const controlIdle = status?.dds_state === "idle";
+  $("jointDebugEnterLowLevel").hidden = !switchSupported;
+  $("jointDebugExitLowLevel").hidden = !switchSupported;
+  $("jointDebugEnterLowLevel").disabled = modeSwitchPending || !controlIdle || serviceActive !== true;
+  $("jointDebugExitLowLevel").disabled = modeSwitchPending || serviceActive !== false;
+  const gainHint = $("jointDebugGainHint");
+  const kp = Number(status?.position_kp);
+  const kd = Number(status?.position_kd);
+  gainHint.hidden = !switchSupported || !Number.isFinite(kp) || !Number.isFinite(kd);
+  if (!gainHint.hidden) gainHint.textContent = uiText(
+    `官方站立增益：KP ${kp} / KD ${kd}`,
+    `Official stand gains: KP ${kp} / KD ${kd}`
+  );
   $("jointDebugAllowed").textContent = canApply ? "是（仍需二次确认）" : "否";
   const warning = $("jointDebugWarning");
   const topic = status?.control_topics?.[selectedMode()];
@@ -179,7 +236,8 @@ function updatePermission() {
   } else if (topic === "rt/arm_sdk" && status?.upper_body_fsm_allowed !== true) {
     warning.textContent = errorLabels.upper_body_fsm_not_allowed;
     warning.className = "joint-debug-warning error";
-  } else if (topic === "rt/lowcmd" && status?.ai_sport_active !== false) {
+  } else if (topic === "rt/lowcmd" &&
+             (status?.motion_service_active ?? status?.ai_sport_active) !== false) {
     warning.textContent = errorLabels.debug_mode_required;
     warning.className = "joint-debug-warning error";
   } else if (!status?.lowstate_fresh) {
@@ -193,8 +251,11 @@ function updatePermission() {
 
 function renderTeach(next) {
   const panel = $("jointDebugTeach");
+  const teachMode = next?.teach_mode || "upper_body";
+  const teachTopic = next?.teach_control_topic || "rt/arm_sdk";
+  const secondaryKey = next?.remote_secondary_function_key || "F3";
   panel.hidden = panel.dataset.capabilityState !== "available" ||
-    selectedMode() !== "upper_body";
+    selectedMode() !== teachMode;
   if (panel.hidden) return;
   const select = $("jointTeachSelect");
   const selected = select.value;
@@ -247,26 +308,44 @@ function renderTeach(next) {
   $("jointTeachBindRemote").disabled = !controlIdle || !selectedAction;
   const remoteHint = $("jointTeachRemoteHint");
   remoteHint.textContent = !remoteSupported
-    ? "当前产品不使用遥控器示教绑定。"
+    ? uiText("当前产品不使用遥控器示教绑定。", "Remote taught-action binding is unavailable for this product.")
     : next?.remote_control_ready
-      ? "监听 rt/wirelesscontroller；遥控器物理键使用 F1 / F3，按下组合键沿触发一次；动作保持时可单击 START 或再次按该动作绑定键恢复控制权。"
-      : `遥控器监听当前不可用${next?.remote_control_error ? `：${next.remote_control_error}` : ""}；绑定仍可保存，监听恢复后生效。`;
+      ? uiText(
+        `监听 rt/wirelesscontroller；遥控器物理键使用 F1 / ${secondaryKey}，按下组合键沿触发一次；动作保持时可单击 START 或再次按该动作绑定键恢复控制权。`,
+        `Listening on rt/wirelesscontroller; use F1 / ${secondaryKey} combinations. Press START or the same binding again to release a held action.`,
+      )
+      : uiText(
+        `遥控器监听当前不可用${next?.remote_control_error ? `：${next.remote_control_error}` : ""}；绑定仍可保存，监听恢复后生效。`,
+        `Remote listening is unavailable${next?.remote_control_error ? `: ${next.remote_control_error}` : ""}; bindings remain saved and take effect after recovery.`,
+      );
 
   const hint = $("jointTeachHint");
   if (state === "releasing") {
-    hint.textContent = `正在平滑接管当前产品允许的 arm_sdk 关节；接管完成后进入手掰示教并开始录制“${next.teach_record_name}”。`;
+    hint.textContent = uiText(
+      `正在通过 ${teachTopic} 平滑接管示教关节；完成后开始录制“${next.teach_record_name}”。`,
+      `Taking over taught joints through ${teachTopic}; recording “${next.teach_record_name}” starts when ready.`,
+    );
     hint.className = "active";
   } else if (state === "recording") {
     hint.textContent = `正在录制“${next.teach_record_name}” · ${next.teach_recorded_frames || 0} 帧；后端按当前产品的示教增益保持阻尼并持续采样真实 LowState。`;
     hint.className = "active";
   } else if (state === "holding") {
-    hint.textContent = "当前动作已结束；arm_sdk weight=1，正在按正常上肢增益保持最后一帧。保持状态不会因页面心跳超时自动释放；点击“恢复控制权”、单击遥控器 START，或再次按当前动作的遥控绑定键都可主动归还，LowState/FSM 安全互锁失效时仍会自动释放。";
+    hint.textContent = uiText(
+      `动作已结束，正通过 ${teachTopic} 保持最后一帧。点击“恢复控制权”、单击遥控器 START，或再次按绑定键可归还控制；安全互锁失效时仍会自动释放。`,
+      `The final frame is held through ${teachTopic}. Click Release Control, press START, or press the binding again to release; safety interlock failures still release automatically.`,
+    );
     hint.className = "active";
   } else if (state === "playing") {
-    hint.textContent = "已直接接管 arm_sdk，正从当前真实姿态限速过渡到动作首帧并按原始 20 Hz 轨迹播放；不会先回默认姿态。";
+    hint.textContent = uiText(
+      `已通过 ${teachTopic} 接管，正从当前真实姿态限速过渡到动作首帧，并按 20 Hz 轨迹播放。`,
+      `Control is active through ${teachTopic}; transitioning from the live pose to the first frame and replaying at 20 Hz.`,
+    );
     hint.className = "active";
   } else {
-    hint.textContent = "点击开始录制后会按当前产品声明的 arm_sdk 关节集合进入手掰状态；录制、播放和释放均使用 LowState/FSM 安全互锁与限速插值。";
+    hint.textContent = uiText(
+      `开始录制后会按当前产品声明的 ${teachTopic} 关节集合进入手掰状态；录制、播放和释放均使用安全互锁与限速插值。`,
+      `Recording uses the product-declared ${teachTopic} joint set; recording, playback, and release retain safety interlocks and velocity limiting.`,
+    );
     hint.className = "";
   }
 }
@@ -298,7 +377,17 @@ function renderStatus(next) {
   $("jointDebugCurrentMode").textContent = `${modeLabels[mode] || mode} · ${next?.control_topics?.[mode] || "--"}`;
   const fsmNames = { 0: "零力矩", 1: "阻尼", 4: "锁定站立", 500: "常规运控", 501: "常规运控", 701: "躺起", 702: "姿态切换", 801: "走跑运控", 802: "走跑运控", 811: "主运控" };
   $("jointDebugFsmState").textContent = next.sport_state_fresh ? `${fsmNames[next.fsm_id] || "其他模式"} · FSM ${next.fsm_id}` : "状态不可用";
-  $("jointDebugSportService").textContent = next.ai_sport_found ? (next.ai_sport_active ? "未进入 / ai_sport 运行中" : "已检测 / ai_sport 已停止") : "无法检测";
+  const serviceFound = next.motion_service_found ?? next.ai_sport_found;
+  const serviceActive = next.motion_service_active ?? next.ai_sport_active;
+  const serviceNames = Array.isArray(next.motion_service_names)
+    ? next.motion_service_names.join(" / ")
+    : "ai_sport";
+  const activeService = next.active_motion_service || serviceNames;
+  $("jointDebugSportService").textContent = serviceFound
+    ? serviceActive
+      ? uiText(`未进入 / ${activeService} 运行中`, `Blocked / ${activeService} is active`)
+      : uiText("已检测 / 高层运动服务已停止", "Ready / high-level motion service stopped")
+    : uiText("无法检测", "Unavailable");
   $("jointDebugDdsState").textContent = next.dds_state || "--";
   $("jointDebugLowState").textContent = next.lowstate_fresh ? "新鲜" : "不可用";
   if (next.last_error) showActionFeedback(errorLabels[next.last_error] || next.last_error, true);
@@ -321,11 +410,19 @@ async function teachRequest(operation) {
     return;
   }
   const releaseControl = $("jointTeachFinishMode").value !== "hold";
+  const teachMode = status?.teach_mode || "upper_body";
+  const teachTopic = status?.teach_control_topic || "rt/arm_sdk";
+  const fullBodyWarning = teachMode === "full_body"
+    ? uiText("机器人必须可靠悬挂或支撑，", "The robot must be securely suspended or supported, ")
+    : "";
   const prompts = {
-    record: "确认机器人已平稳站立、周围无人员和障碍物，并由操作员手持遥控器急停。点击确认后会直接接管 arm_sdk 并进入手掰录制，不再先经过默认姿态；非示教关节仍按正常运动增益固定。",
+    record: uiText(
+      `确认${fullBodyWarning}周围无人员和障碍物，并由操作员手持遥控器急停。确认后会通过 ${teachTopic} 进入手掰录制，不先回默认姿态。`,
+      `${fullBodyWarning}clear people and obstacles, and keep the remote emergency stop ready. Confirm to enter hand-guided recording through ${teachTopic} without first returning to a default pose.`,
+    ),
     save: releaseControl
-      ? "停止录制并保存，然后平滑恢复机器人上肢控制权？同名动作会被覆盖。"
-      : "停止录制并保存，但继续保持 arm_sdk 控制权和最后一帧动作？之后需要点击“恢复控制权”才会主动归还。",
+      ? uiText("停止录制并保存，然后释放当前示教控制？同名动作会被覆盖。", "Stop and save, then release taught-action control? An action with the same name will be replaced.")
+      : uiText(`停止录制并保存，但继续通过 ${teachTopic} 保持最后一帧？之后需点击“恢复控制权”才会归还。`, `Stop and save, but keep the final frame through ${teachTopic}? Use “Release Control” afterward.`),
     play: `确认播放本地示教动作“${name}”？示教轨迹中的关节会实际运动，请预留安全空间并手持急停。${status?.teach_actions?.find((action) => action.name === name)?.hold_after_playback ? "该动作播放结束后会继续保持最后姿态，需点击“恢复控制权”才会归还。" : ""}`,
     delete: `确认删除本地示教动作“${name}”？`,
   };
@@ -342,7 +439,7 @@ async function teachRequest(operation) {
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || `HTTP ${response.status}`);
     const messages = {
-      record: "已直接接管上半身控制，可以立即开始手掰录制。",
+      record: uiText(`已通过 ${teachTopic} 接管示教关节，可开始手掰录制。`, `Taught joints are controlled through ${teachTopic}; hand-guided recording can begin.`),
       save: releaseControl ? "示教动作已保存并恢复控制权。" : "示教动作已保存，正在保持最后一帧动作。",
       play: "示教动作已开始播放。",
       delete: "本地示教动作已删除。",
@@ -361,6 +458,7 @@ async function bindTeachRemote() {
     return;
   }
   const binding = $("jointTeachRemoteBinding").value;
+  const bindingLabel = $("jointTeachRemoteBinding").selectedOptions[0]?.textContent || binding;
   try {
     const response = await fetch("/api/control/joint-debug/teach/bind", {
       method: "POST",
@@ -370,7 +468,7 @@ async function bindTeachRemote() {
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || `HTTP ${response.status}`);
     showActionFeedback(binding
-      ? `已将“${name}”绑定到遥控器 ${binding}。`
+      ? `已将“${name}”绑定到遥控器 ${bindingLabel}。`
       : `已取消“${name}”的遥控器绑定。`);
     await refreshStatus();
   } catch (error) {
@@ -399,18 +497,30 @@ function stage(action) {
     return;
   }
   pendingAction = action;
+  const enteringLowLevel = action === "enter-low-level";
+  const exitingLowLevel = action === "exit-low-level";
   const modeLabels = { upper_body: "上半身", full_body: "全身" };
   const selectedLabel = modeLabels[selectedMode()] || selectedMode();
   const restoringHold = action === "stop" && status?.teach_state === "holding";
   const activeMode = status?.mode || selectedMode();
   const activeTopic = status?.control_topics?.[activeMode];
   const selectedTopic = status?.control_topics?.[selectedMode()];
-  $("jointDebugConfirmTitle").textContent = action === "stop"
-    ? (restoringHold ? "确认恢复上肢控制权" : "确认停止 / 释放调试控制")
+  $("jointDebugConfirmTitle").textContent = enteringLowLevel
+    ? "确认进入底层模式"
+    : exitingLowLevel
+      ? "确认退出底层模式"
+      : action === "stop"
+    ? (restoringHold ? "确认恢复机器人控制权" : "确认停止 / 释放调试控制")
     : `确认应用${selectedLabel}关节目标`;
-  $("jointDebugConfirmWarning").textContent = action === "stop"
+  $("jointDebugConfirmWarning").textContent = enteringLowLevel
+    ? "机器人将先自动趴下并确认安全姿态，再关闭 MCF 高层运控。切换完成前请勿触碰机器人或发送其他控制指令。"
+    : exitingLowLevel
+      ? "后端将先停止 LowCmd，再启动 MCF，通过恢复站立动作起身，最后进入灵动模式。请清空周围人员和障碍物。"
+      : action === "stop"
     ? (restoringHold
-        ? "将平滑把 arm_sdk weight 从 1 降到 0，停止保持最后动作并归还机器人上肢控制权。"
+        ? activeTopic === "rt/lowcmd"
+          ? "将发送禁用/零增益帧，停止保持最后动作并释放 LowCmd 控制。"
+          : "将平滑降低 arm_sdk weight，停止保持最后动作并归还控制权。"
         : activeTopic === "rt/lowcmd"
           ? "将发送禁用/零增益帧并停止 rt/lowcmd，随后释放调试控制资源。"
           : activeTopic === "rt/arm_sdk"
@@ -429,7 +539,11 @@ async function executePending(event) {
   event.preventDefault();
   const action = pendingAction;
   if (!action) return;
-  const body = action === "stop" ? { confirmed: true } : {
+  const modeSwitch = action === "enter-low-level" || action === "exit-low-level";
+  const body = modeSwitch ? {
+    mode: action === "enter-low-level" ? "low_level" : "high_level",
+    confirmed: true,
+  } : action === "stop" ? { confirmed: true } : {
     mode: selectedMode(),
     confirmed: true,
     joints: metadata
@@ -437,9 +551,16 @@ async function executePending(event) {
       .map((joint) => ({ index: joint.index, q: draft.get(joint.name) })),
   };
   $("jointDebugConfirm").disabled = true;
-  $("jointDebugFeedback").textContent = action === "stop" ? "正在安全释放控制…" : "正在提交并等待后端接管…";
+  modeSwitchPending = modeSwitch;
+  updatePermission();
+  $("jointDebugFeedback").textContent = modeSwitch
+    ? (action === "enter-low-level"
+        ? "正在自动趴下并关闭 MCF…"
+        : "正在启动 MCF、恢复站立并进入灵动模式…")
+    : action === "stop" ? "正在安全释放控制…" : "正在提交并等待后端接管…";
   try {
-    const response = await fetch(`/api/control/joint-debug/${action}`, {
+    const endpoint = modeSwitch ? "mode" : action;
+    const response = await fetch(`/api/control/joint-debug/${endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -447,20 +568,31 @@ async function executePending(event) {
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || `HTTP ${response.status}`);
     $("jointDebugConfirmDialog").close();
-    showActionFeedback(action === "stop" ? "调试控制已安全释放。" : "目标已接受，后端 DDS 控制循环已启动。");
+    showActionFeedback(modeSwitch
+      ? (action === "enter-low-level"
+          ? "机器人已趴下，MCF 已关闭，可以开始底层调试。"
+          : "MCF 已恢复，机器人已站起并进入灵动模式。")
+      : action === "stop" ? "调试控制已安全释放。" : "目标已接受，后端 DDS 控制循环已启动。");
     await refreshStatus();
   } catch (error) {
     const message = errorLabels[error.message] || error.message;
     $("jointDebugFeedback").textContent = message;
     showActionFeedback(message, true);
   } finally {
+    modeSwitchPending = false;
     $("jointDebugConfirm").disabled = false;
+    updatePermission();
   }
 }
 
 window.addEventListener("g1:robot-model-ready", (event) => {
   metadata = event.detail;
   if (currentWorkspace === "joint-debug") resetPose(false);
+});
+window.addEventListener("ui-language-change", () => {
+  if (currentWorkspace !== "joint-debug") return;
+  groupControls();
+  if (status) renderStatus(status);
 });
 window.addEventListener("g1:workspace-change", (event) => {
   currentWorkspace = event.detail?.workspace;
@@ -486,6 +618,8 @@ $("jointDebugReset").addEventListener("click", () => resetPose(false));
 $("jointDebugLoadCurrent").addEventListener("click", () => resetPose(true));
 $("jointDebugApply").addEventListener("click", () => stage("apply"));
 $("jointDebugStop").addEventListener("click", () => stage("stop"));
+$("jointDebugEnterLowLevel").addEventListener("click", () => stage("enter-low-level"));
+$("jointDebugExitLowLevel").addEventListener("click", () => stage("exit-low-level"));
 $("jointTeachRecord").addEventListener("click", () => teachRequest("record"));
 $("jointTeachSave").addEventListener("click", () => teachRequest("save"));
 $("jointTeachPlay").addEventListener("click", () => teachRequest("play"));

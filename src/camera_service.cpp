@@ -12,6 +12,7 @@
 #include <mutex>
 #include <limits>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <fcntl.h>
@@ -59,7 +60,21 @@ std::string BuildFixedRtpH264UdpPipeline(const CameraStreamSpec& spec) {
       spec.port > 65535) {
     return {};
   }
-  return "udpsrc port=" + std::to_string(spec.port) +
+  std::string address;
+  constexpr std::string_view kUdpPrefix = "udp://";
+  if (spec.fixed_source.rfind(kUdpPrefix.data(), 0) == 0) {
+    const auto host_begin = kUdpPrefix.size();
+    const auto port_separator = spec.fixed_source.rfind(':');
+    if (port_separator > host_begin) {
+      address = spec.fixed_source.substr(host_begin,
+                                         port_separator - host_begin);
+    }
+  }
+  return "udpsrc " +
+         (address.empty() || address == "0.0.0.0"
+              ? std::string{}
+              : "address=" + address + " ") +
+         "port=" + std::to_string(spec.port) +
          " ! application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96"
          " ! watchdog timeout=2000"
          " ! rtph264depay ! avdec_h264 ! videoconvert ! video/x-raw,format=BGR"
@@ -720,7 +735,10 @@ class CameraService::Impl {
         });
       }
     }
-    if (!options_.mock) {
+    if (!options_.mock &&
+        (camera_policy.streams.empty() ||
+         camera_policy.manage_external_services ||
+         camera_policy.manage_privileged_receiver)) {
       capture_watchdog_thread_ = std::thread([this] { CaptureWatchdog(); });
     }
     error.clear();
@@ -801,7 +819,8 @@ class CameraService::Impl {
           FindCameraStream(camera_policy, CameraStreamRole::kRgb);
       const auto* depth_spec =
           FindCameraStream(camera_policy, CameraStreamRole::kDepth);
-      if (!rgb_spec || !depth_spec) {
+      if ((request.command == "start_v4l2" && !rgb_spec) ||
+          (request.command == "start_realsense" && !depth_spec)) {
         result.error = "camera_policy_incomplete";
         return result;
       }
@@ -809,13 +828,11 @@ class CameraService::Impl {
       next.teleimager_rgb = false;
       next.auto_detect = false;
       if (request.command == "start_v4l2") {
-        // R1 uses the right-eye RGB stream, so it can coexist with the
-        // left-eye depth receiver. Keep an already configured depth stream.
+        // Keep any independently configured fixed depth stream.
         next.rgb_enabled = true;
         next.rgb_source = rgb_spec->fixed_source;
       } else {
-        // Depth is additive for the fixed R1 policy. Keep an already
-        // configured right-eye RGB stream instead of switching it off.
+        // Keep any independently configured fixed RGB stream.
         next.depth_enabled = true;
         next.depth_source = depth_spec->fixed_source;
       }
@@ -1105,7 +1122,7 @@ class CameraService::Impl {
         depth_started_by_web_;
     root["notes"] =
         fixed_policy
-            ? "Web uses fixed RobotState service switching and a fixed privileged depth helper; no client-supplied service or command is executed."
+            ? "Web uses fixed profile camera sources; no client-supplied source or command is executed."
             : "Direct camera access is probed before the deployment helper is used for exclusive V4L2 fallback.";
     return JsonText(root);
   }
@@ -1150,7 +1167,10 @@ class CameraService::Impl {
             external_service_error_.rfind("depth_receiver_helper_unavailable", 0) == 0) {
           runtime.receiver_available = false;
         }
-        runtime.external_preparation_ready = options_.mock || fresh;
+        runtime.external_preparation_ready =
+            options_.mock || fresh ||
+            (!camera_policy.manage_external_services &&
+             !camera_policy.manage_privileged_receiver);
         if (!options_.mock && StreamSustainedFresh(stream)) {
           runtime.verification_level = VerificationLevel::kReadonlyVerified;
         }

@@ -247,6 +247,11 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
       HandleJointDebugStop();
       return;
     }
+    if (target == "/api/control/joint-debug/mode" &&
+        request_.method() == http::verb::post) {
+      HandleJointDebugMode();
+      return;
+    }
     if (target == "/api/control/joint-debug/heartbeat" &&
         request_.method() == http::verb::post) {
       const auto result = control_service_.HeartbeatJointDebug();
@@ -948,6 +953,36 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     response["accepted"] = result.accepted;
     response["error"] = result.error;
     Send(result.accepted ? http::status::ok : http::status::bad_request,
+         "application/json; charset=utf-8", JsonResponse(response));
+  }
+
+  void HandleJointDebugMode() {
+    Json::CharReaderBuilder builder;
+    Json::Value root;
+    std::string parse_errors;
+    std::istringstream stream(request_.body());
+    if (request_.body().size() > 1024 ||
+        !Json::parseFromStream(builder, stream, &root, &parse_errors) ||
+        !root.isObject() || !root["mode"].isString() ||
+        !root["confirmed"].isBool() ||
+        (root["mode"].asString() != "low_level" &&
+         root["mode"].asString() != "high_level")) {
+      Send(http::status::bad_request, "application/json; charset=utf-8",
+           R"({"accepted":false,"error":"invalid_json"})");
+      return;
+    }
+    const auto result = control_service_.SwitchJointDebugMode(
+        root["mode"].asString() == "low_level",
+        root["confirmed"].asBool());
+    Json::Value response(Json::objectValue);
+    response["accepted"] = result.accepted;
+    response["error"] = result.error;
+    const bool conflict = result.error == "control_busy" ||
+                          result.error == "sport_state_stale" ||
+                          result.error == "motion_service_busy";
+    Send(result.accepted ? http::status::ok
+                         : conflict ? http::status::conflict
+                                    : http::status::bad_request,
          "application/json; charset=utf-8", JsonResponse(response));
   }
 

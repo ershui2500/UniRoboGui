@@ -64,6 +64,33 @@ const motorStateFaults = [
   [0x80000000, "PC 端判读，电机断联超时"],
 ];
 
+const go2MotorFaults = [
+  [0x01, "过流"],
+  [0x02, "过压"],
+  [0x04, "驱动过热"],
+  [0x08, "母线欠压"],
+  [0x10, "绕组过热"],
+  [0x20, "编码器异常"],
+  [0x100, "电机通信中断"],
+];
+
+const go2FaultSources = {
+  100: ["底层通讯固件", [[0x01, "运动控制 DDS 消息超时（官方已废弃）"], [0x02, "配电开关异常"], [0x10, "电池通信异常"], [0x20, "遥控器通信异常（官方已废弃）"], [0x40, "MCU 通信异常"], [0x80, "电机通信异常"]]],
+  200: ["风扇（官方已废弃）", [[0x01, "左后方风扇堵转"], [0x02, "右后方风扇堵转"], [0x04, "前置风扇堵转"]]],
+  400: ["雷达", [[0x01, "电机转速异常"], [0x02, "点云数据异常"], [0x04, "串口数据异常"]]],
+  500: ["UWB", [[0x01, "UWB 串口打开异常"], [0x02, "机器人状态信息获取异常"]]],
+};
+
+const go2ComponentStateBits = [
+  [0x01, "运动控制 DDS 消息超时（官方已废弃）"],
+  [0x02, "板载电流异常"],
+  [0x04, "未处于自动充电"],
+  [0x10, "电池通信超时"],
+  [0x20, "遥控器通信超时（官方已废弃）"],
+  [0x40, "MCU 通信超时"],
+  [0x80, "电机通信超时"],
+];
+
 const appState = {
   socket: null,
   reconnectDelay: 1000,
@@ -143,7 +170,8 @@ function arrayText(values, digits = 3) {
 
 function setText(id, value) {
   const element = $(id);
-  if (element) element.textContent = value;
+  const text = String(value);
+  if (element && element.textContent !== text) element.textContent = text;
 }
 
 function manifestText(zh, en) {
@@ -183,6 +211,12 @@ function manifestCapabilityReason(descriptor, state, manifestError = "", compact
     );
   }
   const reason = typeof descriptor.reason === "string" ? descriptor.reason.trim() : "";
+  if (descriptor.key === "audio" && reason === "go2_audio_hardware_unverified") {
+    return manifestText(
+      "机器人麦克风和扬声器尚未通过真机验证，语音功能暂不可用。",
+      "The robot microphone and speaker have not passed hardware testing; voice is unavailable.",
+    );
+  }
   if (descriptor.key === "slam" && reason === "required_attachment_disabled") {
     if (compact) {
       return manifestText("需安装 Mid-360 雷达后才可使用", "Install a Mid-360 LiDAR to use");
@@ -296,6 +330,52 @@ function csvSet(value) {
   return new Set(typeof value === "string" ? value.split(",").map((item) => item.trim()).filter(Boolean) : []);
 }
 
+function profileCommandLabels(value) {
+  const labels = new Map();
+  for (const entry of String(value || "").split(";")) {
+    const split = entry.indexOf(":");
+    if (split < 1) continue;
+    const [zh, en = zh, detail = ""] = entry.slice(split + 1).split("|");
+    labels.set(entry.slice(0, split), {
+      label: manifestText(zh, en),
+      detail,
+    });
+  }
+  return labels;
+}
+
+function profileModeTargets(value) {
+  const targets = new Map();
+  for (const entry of csvSet(value)) {
+    const split = entry.lastIndexOf(":");
+    if (split <= 0) continue;
+    const target = Number(entry.slice(split + 1));
+    if (Number.isInteger(target)) targets.set(entry.slice(0, split), target);
+  }
+  return targets;
+}
+
+function createProfileControlButton(command, label, targetFsm, dangerous = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `control-command${dangerous ? " warning" : ""}`;
+  button.dataset.category = "mode";
+  button.dataset.command = command;
+  button.dataset.label = label?.label || command;
+  button.dataset.profileGenerated = "true";
+  if (dangerous) button.dataset.highDynamic = "true";
+  if (Number.isInteger(targetFsm)) button.dataset.fsmId = String(targetFsm);
+  button.disabled = true;
+
+  const title = document.createElement("strong");
+  title.textContent = label?.label || command;
+  const detail = document.createElement("span");
+  detail.textContent = label?.detail || command;
+  button.append(title, detail);
+  button.addEventListener("click", () => openControlConfirmation(button));
+  return button;
+}
+
 function modeTransitionAllowed(command, control) {
   const parameters = capabilityParameters("locomotion");
   if (!parameters.mode_sources) return Number(control.fsm_mode) === 0;
@@ -334,15 +414,25 @@ function applyTelemetrySourceVisibility() {
 function applyLocomotionPolicy(descriptor) {
   const parameters = descriptor?.parameters || {};
   const visibleCommands = csvSet(parameters.web_mode_commands);
-  const targets = new Map();
-  for (const entry of csvSet(parameters.mode_targets)) {
-    const split = entry.lastIndexOf(":");
-    if (split > 0) targets.set(entry.slice(0, split), Number(entry.slice(split + 1)));
-  }
-  document.querySelectorAll('.control-command[data-category="mode"]').forEach((button) => {
+  const labels = profileCommandLabels(parameters.web_mode_labels);
+  const targets = profileModeTargets(parameters.mode_targets);
+  const dangerousCommands = csvSet(parameters.dangerous_commands);
+  const profileGrid = $("profileModeActionGrid");
+  profileGrid?.replaceChildren();
+  const represented = new Set();
+  document.querySelectorAll('.control-command[data-category="mode"]:not([data-profile-generated="true"])').forEach((button) => {
     const command = button.dataset.command;
     const key = command === "set_fsm_id" ? `${command}:${button.dataset.argument}` : command;
     button.hidden = !visibleCommands.has(key);
+    if (!button.hidden) represented.add(key);
+    const label = labels.get(key);
+    if (label) {
+      button.dataset.label = label.label;
+      const title = button.querySelector("strong");
+      const detail = button.querySelector("span");
+      if (title) title.textContent = label.label;
+      if (detail) detail.textContent = label.detail;
+    }
     const target = targets.get(command);
     if (Number.isInteger(target)) {
       button.dataset.fsmId = String(target);
@@ -350,6 +440,28 @@ function applyLocomotionPolicy(descriptor) {
       if (detail) detail.textContent = `FSM ${target}`;
     }
   });
+  let generatedCount = 0;
+  if (profileGrid) {
+    for (const command of visibleCommands) {
+      if (represented.has(command)) continue;
+      profileGrid.append(createProfileControlButton(
+        command,
+        labels.get(command),
+        targets.get(command),
+        dangerousCommands.has(command),
+      ));
+      generatedCount += 1;
+    }
+  }
+  const profileSection = $("profileModeActionSection");
+  if (profileSection) profileSection.hidden = generatedCount === 0;
+  const motionStateGrid = $("motionStateActionGrid");
+  const hasMotionStateActions = motionStateGrid
+    ? [...motionStateGrid.querySelectorAll(".control-command")].some((button) => !button.hidden)
+    : false;
+  if (motionStateGrid) motionStateGrid.hidden = !hasMotionStateActions;
+  const motionStateHeading = $("motionStateActionHeading");
+  if (motionStateHeading) motionStateHeading.hidden = !hasMotionStateActions;
   const speedModes = csvSet(parameters.speed_modes);
   document.querySelectorAll(".motion-speed-button").forEach((button) => {
     button.hidden = !speedModes.has(button.dataset.speedMode);
@@ -389,17 +501,138 @@ function applyArmActionPolicy(descriptor) {
   document
     .querySelectorAll(".control-command[data-category=\"arm_action\"][data-command=\"execute\"]")
     .forEach((button) => {
-      const profileAllowed =
-        actionIds.size === 0 || actionIds.has(button.dataset.argument);
+      const profileAllowed = actionIds.has(button.dataset.argument);
       button.dataset.profileAllowed = profileAllowed ? "true" : "false";
       button.hidden = !profileAllowed;
     });
-  const firmwareTeach = parameters.firmware_teach_actions !== "false";
+  const firmwareTeach = parameters.firmware_teach_actions === "true";
   const firmwareSection = $("firmwareTeachSection");
   const localTeachNotice = $("localTeachNotice");
   if (firmwareSection) firmwareSection.hidden = !firmwareTeach;
   if (localTeachNotice) localTeachNotice.hidden = firmwareTeach;
   if (appState.controlData) renderArmPresetActions(appState.controlData);
+}
+
+function applyControlActionPolicy(byKey) {
+  const jointDebug = byKey.get("joint_debug");
+  const locomotion = byKey.get("locomotion");
+  const armParameters = jointDebug?.parameters || {};
+  const armAvailable =
+    manifestCapabilityState(jointDebug) === "available" &&
+    (csvSet(armParameters.arm_action_ids).size > 0 ||
+      armParameters.firmware_teach_actions === "true");
+  const interactionCommands = csvSet(
+    locomotion?.parameters?.interaction_action_commands,
+  );
+  const interactionAvailable =
+    manifestCapabilityState(locomotion) === "available" &&
+    interactionCommands.size > 0;
+  const available = armAvailable || interactionAvailable;
+
+  const tab = $("controlTabArm");
+  const panel = $("controlPanelArm");
+  if (tab) {
+    tab.hidden = !available;
+    tab.disabled = !available;
+    tab.inert = !available;
+    tab.dataset.capabilityState = available ? "available" : "unsupported";
+  }
+  if (panel) {
+    panel.dataset.capabilityState = available ? "available" : "unsupported";
+    panel.inert = !available;
+  }
+
+  const humanoidSection = $("humanoidActionSection");
+  if (humanoidSection) humanoidSection.hidden = !armAvailable;
+  const interactionSection = $("interactionActionSection");
+  if (interactionSection) interactionSection.hidden = !interactionAvailable;
+
+  const interactionOnly = interactionAvailable && !armAvailable;
+  const both = interactionAvailable && armAvailable;
+  setText(
+    "controlSafetyTitle",
+    interactionOnly
+      ? manifestText(
+          "危险：模式切换或机器狗高动态动作可能导致失衡、翻转或碰撞。",
+          "Danger: mode changes or high-dynamic quadruped actions can cause loss of balance, flips, or collisions.",
+        )
+      : manifestText(
+          "危险：模式切换或机器人动作可能导致失衡、倒地或碰撞。",
+          "Danger: mode switching or robot actions may cause loss of balance, falls, or collisions.",
+        ),
+  );
+  setText(
+    "controlSafetyDetail",
+    interactionOnly
+      ? manifestText(
+          "执行前清空周围人员和障碍物；阻尼不提供平衡控制，空翻、跳跃、倒立等动作只应在空旷防滑区域执行。",
+          "Clear people and obstacles before execution. Damping provides no balance control; flips, jumps, handstands, and similar actions should only run in a clear non-slip area.",
+        )
+      : manifestText(
+          "执行前清空周围人员和障碍物并可靠支撑机器人；阻尼和零力矩不提供平衡控制。",
+          "Clear people and obstacles and securely support the robot before execution; Damping and Zero Torque do not provide balance control.",
+        ),
+  );
+  setText("controlActionTabCode", interactionOnly || both ? "ACT" : "ARM");
+  setText(
+    "controlActionTabTitle",
+    interactionOnly
+      ? manifestText("互动动作", "Interaction Actions")
+      : both
+        ? manifestText("动作与互动", "Actions & Interaction")
+        : manifestText("上肢动作与示教", "Upper-body Actions & Teaching"),
+  );
+  setText(
+    "controlActionTabDetail",
+    interactionOnly
+      ? manifestText("招呼 · 舞蹈 · 特殊动作", "Greetings · dances · special actions")
+      : both
+        ? manifestText("预设动作 · 互动动作", "Preset · interaction actions")
+        : manifestText("预设动作 · 固件示教动作", "Preset · firmware-taught actions"),
+  );
+  setText("controlActionPanelCode", interactionOnly ? "INTERACTION" : "ARM");
+  setText(
+    "controlActionPanelTitle",
+    interactionOnly
+      ? manifestText("机器狗互动动作", "Quadruped Interaction Actions")
+      : both
+        ? manifestText("预设与互动动作", "Preset & Interaction Actions")
+        : manifestText("上肢预设动作", "Upper-body Preset Actions"),
+  );
+  setText(
+    "controlActionPanelTag",
+    interactionOnly
+      ? manifestText("SportClient · 需安全空间", "SportClient · clear area")
+      : manifestText("需安全空间", "Clear area required"),
+  );
+
+  const grid = $("interactionActionGrid");
+  if (grid) {
+    grid.replaceChildren();
+    if (interactionAvailable) {
+      const labels = profileCommandLabels(
+        locomotion?.parameters?.interaction_action_labels,
+      );
+      const targets = profileModeTargets(locomotion?.parameters?.mode_targets);
+      const dangerousCommands = csvSet(locomotion?.parameters?.dangerous_commands);
+      for (const command of interactionCommands) {
+        grid.append(createProfileControlButton(
+          command,
+          labels.get(command),
+          targets.get(command),
+          dangerousCommands.has(command),
+        ));
+      }
+      setText(
+        "interactionActionHint",
+        manifestText(
+          `已按当前产品高层接口开放 ${interactionCommands.size} 个互动动作；高动态动作会显示警示并再次确认。`,
+          `${interactionCommands.size} interaction actions are exposed by this product's high-level API; high-dynamic actions are warned and reconfirmed.`,
+        ),
+      );
+    }
+  }
+  if (!available && appState.controlTab === "arm") setControlTab("mode");
 }
 
 function applyManifestCapabilities(manifest, manifestError = "") {
@@ -412,6 +645,7 @@ function applyManifestCapabilities(manifest, manifestError = "") {
   );
   applyLocomotionPolicy(byKey.get("locomotion"));
   applyArmActionPolicy(byKey.get("joint_debug"));
+  applyControlActionPolicy(byKey);
 
   document.querySelectorAll("[data-capability]").forEach((element) => {
     const descriptor = byKey.get(element.dataset.capability);
@@ -908,30 +1142,27 @@ function render(data) {
     setText("ddsDetail", data.dds_error || "请检查网卡与 SDK2 环境");
   }
 
-  renderSources(sources);
+  const robotWorkspaceVisible = [...document.querySelectorAll('[data-workspace="robot"]')]
+    .some((element) => !element.hidden);
+  const diagnosticsVisible = [...document.querySelectorAll('[data-workspace="diagnostics"]')]
+    .some((element) => !element.hidden);
+  if (robotWorkspaceVisible) renderSources(sources);
   renderBattery(data.battery || {}, sources.bms);
-  renderOdometry(data.odometry || {}, sources.odometry);
-  renderVoice(data.voice || {});
+  if (robotWorkspaceVisible) renderOdometry(data.odometry || {}, sources.odometry);
+  if (!$('voice-interaction').hidden) renderVoice(data.voice || {});
   renderControl(data.control || {});
-  renderJoints(data.joints || []);
-  renderDiagnostics(data);
+  if (robotWorkspaceVisible) renderJoints(data.joints || []);
+  if (diagnosticsVisible) renderDiagnostics(data);
 
-  setText(
-    "reservedSlots",
-    JSON.stringify(data.reserved_motor_slots || [], null, 2),
-  );
-  setText(
-    "bmsRaw",
-    telemetrySourceFresh(sources, "bms")
-      ? JSON.stringify(data.battery || {}, null, 2)
-      : "--",
-  );
-  setText(
-    "mainboardRaw",
-    telemetrySourceFresh(sources, "mainboard")
-      ? JSON.stringify(data.mainboard || {}, null, 2)
-      : "--",
-  );
+  if (robotWorkspaceVisible) {
+    setText("reservedSlots", JSON.stringify(data.reserved_motor_slots || [], null, 2));
+  }
+  if (diagnosticsVisible) {
+    setText("bmsRaw", telemetrySourceFresh(sources, "bms")
+      ? JSON.stringify(data.battery || {}, null, 2) : "--");
+    setText("mainboardRaw", telemetrySourceFresh(sources, "mainboard")
+      ? JSON.stringify(data.mainboard || {}, null, 2) : "--");
+  }
   window.dispatchEvent(new CustomEvent("g1:telemetry", { detail: data }));
 }
 
@@ -962,7 +1193,15 @@ function setVoiceTab(tab, focus = false) {
 
 function setControlTab(tab, focus = false) {
   const tabs = ["mode", "motion", "arm"];
-  const nextTab = tabs.includes(tab) ? tab : "mode";
+  const availableTabs = tabs.filter((name) => {
+    const button = document.querySelector(`[data-control-tab="${name}"]`);
+    return button && !button.hidden && button.dataset.capabilityState !== "unsupported";
+  });
+  const nextTab = availableTabs.includes(tab)
+    ? tab
+    : availableTabs.includes("mode")
+      ? "mode"
+      : availableTabs[0] || "mode";
   const leavingMotion = appState.controlTab === "motion" && nextTab !== "motion";
   appState.controlTab = nextTab;
 
@@ -985,6 +1224,7 @@ function setControlTab(tab, focus = false) {
 }
 
 function latestAsrMessage() {
+  if (capabilityParameters("audio").asr === "false") return "";
   return String(appState.lastData?.voice?.asr?.text || "").trim();
 }
 
@@ -1004,7 +1244,8 @@ function activeLlmMessage() {
 }
 
 function setLlmInputMode(mode, focus = false) {
-  const nextMode = mode === "asr" ? "asr" : "text";
+  const asrSupported = capabilityParameters("audio").asr !== "false";
+  const nextMode = mode === "asr" && asrSupported ? "asr" : "text";
   appState.llmInputMode = nextMode;
   document.querySelectorAll("[data-llm-source]").forEach((button) => {
     const active = button.dataset.llmSource === nextMode;
@@ -1021,7 +1262,8 @@ function setLlmInputMode(mode, focus = false) {
 function updateLlmComposerState(voice = appState.lastData?.voice || {}) {
   const llm = voice.llm || {};
   const asr = voice.asr || {};
-  const asrText = String(asr.text || "").trim();
+  const asrSupported = capabilityParameters("audio").asr !== "false";
+  const asrText = asrSupported ? String(asr.text || "").trim() : "";
   const textDraft = $("llmMessage").value;
   setText("llmMessageCharCount", `${textDraft.length} / 4096`);
   const llmAsrPreview = $("llmAsrPreview");
@@ -1077,7 +1319,10 @@ function updateLlmComposerState(voice = appState.lastData?.voice || {}) {
     !asrText || appState.llmChatRequestInFlight || modeTransitionPending;
   $("sendLatestAsrToLlm").disabled = !asrText || modeTransitionPending;
   document.querySelectorAll("[data-llm-source]").forEach((button) => {
-    button.disabled = appState.llmChatRequestInFlight || modeTransitionPending;
+    button.disabled =
+      appState.llmChatRequestInFlight ||
+      modeTransitionPending ||
+      (button.dataset.llmSource === "asr" && !asrSupported);
   });
   $("speakLlmResponse").disabled = llm.mode !== "customer";
   $("speakLlmResponse").title = llm.mode === "customer"
@@ -1092,6 +1337,10 @@ function updateLlmComposerState(voice = appState.lastData?.voice || {}) {
 
 function renderVoice(voice) {
   const llm = voice.llm || {};
+  const audioParameters = capabilityParameters("audio");
+  const asrSupported = audioParameters.asr !== "false";
+  const nativeTtsSupported = audioParameters.tts !== "false";
+  const builtinLlmSupported = audioParameters.builtin_llm !== "false";
   const llmMode = llm.mode === "customer" ? "customer" : "builtin";
   const chatGoOk =
     llmMode === "builtin"
@@ -1099,14 +1348,18 @@ function renderVoice(voice) {
       : voice.chat_go_closed === true;
   setVoiceBadge(
     "chatGoBadge",
-    llmMode === "builtin"
+    !builtinLlmSupported
+      ? "当前产品不使用内置 chat_go"
+      : llmMode === "builtin"
       ? chatGoOk
         ? `${voice.chat_go_service_name || "chat_go"} 笨笨同学已启用`
         : "chat_go 未启用"
       : chatGoOk
         ? `${voice.chat_go_service_name || "chat_go"} 已为客户模型关闭`
         : "客户模式下 chat_go 仍在运行",
-    chatGoOk ? "ok" : voice.initialized ? "error" : "pending",
+    !builtinLlmSupported || chatGoOk
+      ? "ok"
+      : voice.initialized ? "error" : "pending",
   );
 
   const audioAvailable =
@@ -1123,9 +1376,20 @@ function renderVoice(voice) {
     voice.asr_subscribed ? "ok" : voice.initialized ? "error" : "pending",
   );
   $("enableAsr").disabled =
-    !voice.initialized || voice.asr_subscribed || appState.asrRequestInFlight;
+    !asrSupported || !voice.initialized || voice.asr_subscribed || appState.asrRequestInFlight;
   $("disableAsr").disabled =
-    !voice.initialized || !voice.asr_subscribed || appState.asrRequestInFlight;
+    !asrSupported || !voice.initialized || !voice.asr_subscribed || appState.asrRequestInFlight;
+  for (const selectId of ["ttsBackend", "customerTtsBackend"]) {
+    const select = $(selectId);
+    const unitree = select?.querySelector('option[value="unitree"]');
+    if (unitree) unitree.disabled = !nativeTtsSupported;
+    if (!nativeTtsSupported && select?.value === "unitree") {
+      select.value = "kokoro";
+    }
+  }
+  if ($("customerWakeWord")) $("customerWakeWord").disabled = !asrSupported;
+  if ($("customerWakeEnabled")) $("customerWakeEnabled").disabled = !asrSupported;
+  updateTtsBackendState();
   const asrFeedback = $("asrControlFeedback");
   if (voice.asr_control_error) {
     asrFeedback.textContent = `ASR 开关失败：${voice.asr_control_error}`;
@@ -1164,7 +1428,7 @@ function renderVoice(voice) {
   );
 
   const asr = voice.asr || {};
-  if (asr.received) {
+  if (asrSupported && asr.received) {
     $("asrText").dataset.i18nSkip = "true";
     setText("asrText", asr.text || "识别结果为空");
     setText("asrLanguage", asr.language || "--");
@@ -1248,7 +1512,12 @@ function renderLlm(voice, chatGoOk) {
   }
   const activeMode = appState.llmActiveMode || telemetryMode;
   const select = $("llmModeSelect");
+  const builtinOption = select.querySelector('option[value="builtin"]');
   const customerOption = select.querySelector('option[value="customer"]');
+  const builtinSupported = capabilityParameters("audio").builtin_llm !== "false";
+  if (builtinOption) {
+    builtinOption.disabled = !builtinSupported;
+  }
   if (customerOption) {
     customerOption.disabled = llm.customer_api_available === false;
   }
@@ -1329,7 +1598,9 @@ function renderLlm(voice, chatGoOk) {
       `笨笨同学已就绪：发送 ${llm.builtin_request_topic || "rt/api/gpt/request"}，接收 ${llm.builtin_response_topic || "rt/api/gpt/response"}。`;
     modeFeedback.classList.add("success");
   } else if (customerReady) {
-    modeFeedback.textContent = `chat_go 已关闭，客户 API 已接管：${llm.customer_model || "未命名模型"}`;
+    modeFeedback.textContent = builtinSupported
+      ? `chat_go 已关闭，客户 API 已接管：${llm.customer_model || "未命名模型"}`
+      : `客户 API 已接管：${llm.customer_model || "未命名模型"}`;
     modeFeedback.classList.add("success");
   } else if (activeMode === "customer" && llm.customer_api_available === false) {
     modeFeedback.textContent = "当前构建未包含 libcurl，无法使用客户 API 模式。";
@@ -2126,6 +2397,14 @@ const fsmNames = {
 };
 
 function fsmDisplayName(fsmId) {
+  const profileLabel = String(capabilityParameters("locomotion").state_labels || "")
+    .split(";")
+    .map((entry) => entry.split(":"))
+    .find(([id]) => Number(id) === Number(fsmId))?.slice(1).join(":");
+  if (profileLabel) {
+    const [zh, en = zh] = profileLabel.split("|");
+    return manifestText(zh, en);
+  }
   const visible = [...document.querySelectorAll(".control-command[data-fsm-id]")]
     .find((button) => !button.hidden && Number(button.dataset.fsmId) === Number(fsmId));
   return visible?.dataset.label || fsmNames[Number(fsmId)] || "未知或固件新增模式";
@@ -2165,6 +2444,11 @@ const controlErrorLabels = {
   teach_action_not_available_on_firmware: "当前固件动作列表中没有该示教动作",
   arm_action_not_supported_by_model: "当前机器人自由度配置不支持该动作",
   r1_velocity_api_rejected_127: "R1 运动服务拒绝速度请求（未公开错误码 127）",
+  go2_dds_timeout: "GO2 运控 DDS 请求超时",
+  go2_trajectory_point_error: "GO2 轨迹点数量无效",
+  go2_action_timeout: "GO2 动作未在预期时间内完成",
+  go2_state_machine_not_ready: "GO2 运动状态机尚未初始化完成",
+  go2_pose_not_suitable: "GO2 当前姿态不适合执行该互动动作",
   sdk_api_error: "SDK 控制接口返回错误",
   fsm_confirmation_timeout: "SDK 已响应，但未确认目标 FSM",
 };
@@ -2539,7 +2823,13 @@ function updateMotionControls() {
   badge.classList.remove("locked", "ready", "active", "error");
   if (!isLocomotionFsm()) {
     badge.classList.add("locked");
-    badge.textContent = "请先进入运控 FSM";
+    const control = appState.controlData || {};
+    badge.textContent = control.sport_state_received
+      ? manifestText(
+          `当前 ${fsmDisplayName(control.fsm_id)}（FSM ${integer(control.fsm_id)}），请先切换到可移动模式`,
+          `Current state: ${fsmDisplayName(control.fsm_id)} (FSM ${integer(control.fsm_id)}). Switch to a movable mode first.`,
+        )
+      : manifestText("等待运控状态", "Waiting for motion-control state");
   } else if (!presetReady) {
     badge.classList.add("locked");
     badge.textContent = "当前档位需要走跑 FSM";
@@ -2862,11 +3152,19 @@ function openControlConfirmation(button) {
   };
   setText("controlConfirmTitle", `确认执行：${appState.pendingControl.label}`);
   const targetFsm = Number(button.dataset.fsmId);
-  const noBalanceFsm = [0, 1, 2, 3, 4].includes(targetFsm);
+  const noBalanceFsm = [0, 1, 2, 3, 4, 1001, 1002, 1004, 1007, 2006].includes(targetFsm);
+  const highDynamic =
+    button.dataset.highDynamic === "true" ||
+    csvSet(capabilityParameters("locomotion").dangerous_commands).has(command);
   setText(
     "controlConfirmWarning",
     command === "execute_custom"
       ? `即将播放固件中已录制的示教动作“${actionName}”。该动作可能包含较大幅度或不可预期的上肢运动，请确认机器人可靠支撑且周围无人。`
+      : highDynamic
+        ? manifestText(
+            "该动作属于高动态或高负载动作，可能造成跳跃、翻转、快速位移或电机升温。仅可在空旷、防滑且无人区域执行，并确保随时可以安全急停。",
+            "This is a high-dynamic or high-load action that may jump, flip, move quickly, or heat the motors. Use it only in a clear, non-slip area with no people nearby and keep a safe emergency-stop path available.",
+          )
       : noBalanceFsm
         ? "该模式没有平衡控制，机器人可能立即失去支撑。确认机器人已经可靠固定。"
         : "该动作可能造成机器人移动、倒地或与周围物体碰撞。确认安全空间充足。",
@@ -2963,16 +3261,87 @@ function hex32(value) {
 function decodeMotorState(value) {
   const raw = Number(value) >>> 0;
   if (raw === 0) return [];
+  const encoding = capabilityParameters("telemetry").motor_fault_encoding;
+  if (encoding === "go2_reserve0") {
+    return decodeFaultBits(raw, go2MotorFaults);
+  }
+  if (encoding !== "hg_motorstate") {
+    return ["电机错误标志 raw " + hex32(raw)];
+  }
 
+  return decodeFaultBits(raw, motorStateFaults);
+}
+
+function decodeFaultBits(rawValue, definitions) {
+  const raw = Number(rawValue) >>> 0;
   let knownMask = 0;
   const labels = [];
-  motorStateFaults.forEach(([mask, label]) => {
+  definitions.forEach(([mask, label]) => {
     knownMask = (knownMask | mask) >>> 0;
     if ((raw & mask) !== 0) labels.push(label);
   });
   const unknown = (raw & ~knownMask) >>> 0;
   if (unknown !== 0) labels.push(`未知位 ${hex32(unknown)}`);
   return labels;
+}
+
+function decodeGo2Fault(sourceValue, codeValue) {
+  const source = Number(sourceValue) >>> 0;
+  const code = Number(codeValue) >>> 0;
+  if (source >= 300 && source < 320) {
+    return { source: `电机 ${source - 300}`, labels: decodeFaultBits(code, go2MotorFaults) };
+  }
+  const definition = go2FaultSources[source];
+  return definition
+    ? { source: definition[0], labels: decodeFaultBits(code, definition[1]) }
+    : { source: `未公开故障源 ${source}`, labels: [`raw ${hex32(code)}`] };
+}
+
+function renderGo2FaultService(data, issues) {
+  const service = data.fault_service || {};
+  const entries = Array.isArray(service.entries) ? service.entries : [];
+  const list = $("diagnosticFaultServiceList");
+  list.replaceChildren();
+  setText("diagnosticFaultServiceStatus", service.received ? "已接收" : "未收到数据");
+  setText("diagnosticFaultServiceCount", service.received && service.parse_valid ? String(entries.length) : "--");
+  setText("diagnosticFaultServiceAge", service.age_ms === null || service.age_ms === undefined ? "--" : `${integer(service.age_ms)} ms`);
+  setText("diagnosticFaultServiceParse", service.received ? (service.parse_valid ? "格式正常" : `解析失败：${service.parse_error || "unknown"}`) : "--");
+  setText("faultServiceRaw", service.raw_json || "--");
+
+  if (!service.received) {
+    const item = document.createElement("div");
+    item.className = "diagnostic-fault";
+    item.textContent = "等待 rt/errorlist；直接 LowState 故障检查仍然有效。";
+    list.append(item);
+    return;
+  }
+  if (!service.parse_valid) {
+    issues.push({ level: "warning", text: `故障集合格式异常：${service.parse_error || "unknown"}` });
+    return;
+  }
+  if (entries.length === 0) {
+    const item = document.createElement("div");
+    item.className = "diagnostic-fault ok";
+    item.textContent = "故障集合当前为空";
+    list.append(item);
+    return;
+  }
+  entries.forEach((entry) => {
+    const decoded = decodeGo2Fault(entry.source, entry.code);
+    const item = document.createElement("div");
+    item.className = "diagnostic-fault error";
+    const title = document.createElement("strong");
+    title.textContent = `${decoded.source} · ${hex32(entry.code)}`;
+    const detail = document.createElement("span");
+    detail.textContent = decoded.labels.join(" / ");
+    item.append(title, detail);
+    list.append(item);
+    const source = Number(entry.source) >>> 0;
+    if (source === 200 || source === 400 || source === 500 ||
+        (source !== 100 && (source < 300 || source >= 320))) {
+      issues.push({ level: "error", text: `${decoded.source}：${decoded.labels.join(" / ")}` });
+    }
+  });
 }
 
 function maxMotorTemperature(joints, index) {
@@ -3001,6 +3370,13 @@ function renderDiagnostics(data) {
   const odometry = odometryFresh ? data.odometry || {} : {};
   const control = data.control || {};
   const voice = data.voice || {};
+  const telemetryParameters = capabilityParameters("telemetry");
+  const motorFaultEncoding = telemetryParameters.motor_fault_encoding || "raw";
+  const motorTemperatureChannels = Number(
+    telemetryParameters.motor_temperature_channels || 1,
+  );
+  const batterySohSupported =
+    telemetryParameters.battery_soh_supported !== "false";
 
   const sourceEntries = Object.entries(sourceLabels)
     .filter(([key]) => telemetrySourceDeclared(key))
@@ -3022,14 +3398,25 @@ function renderDiagnostics(data) {
       ? "--"
       : `${integer(lowState.age_ms)} ms · ${statusLabels[lowState.status] || "未知"}`,
   );
-  setText("diagnosticOdomError", hex32(odometry.error_code));
+  const odometryCodeIsMotionState =
+    telemetryParameters.odometry_error_code_role === "motion_state_id";
+  setText("diagnosticOdomLabel", odometryCodeIsMotionState ? "运动状态机 raw" : "里程计 error_code");
+  setText("diagnosticOdomError", odometryCodeIsMotionState ? integer(odometry.error_code) : hex32(odometry.error_code));
+  const componentState = Number(data.robot?.low_state_component_state_raw) >>> 0;
+  setText(
+    "diagnosticComponentState",
+    motorFaultEncoding === "go2_reserve0"
+      ? `${hex32(componentState)} · ${decodeFaultBits(componentState, go2ComponentStateBits).join(" / ") || "正常"}`
+      : "--",
+  );
 
   const bodyFaults = joints.filter((joint) => (Number(joint.state_raw) >>> 0) !== 0);
   const reservedFaults = reserved.filter((motor) => (Number(motor.state_raw) >>> 0) !== 0);
   setText("diagnosticMotorFaultCount", String(bodyFaults.length));
 
   const shellTemp = maxMotorTemperature(joints, 0);
-  const windingTemp = maxMotorTemperature(joints, 1);
+  const windingTemp =
+    motorTemperatureChannels > 1 ? maxMotorTemperature(joints, 1) : null;
   setText(
     "diagnosticMotorShellTemp",
     shellTemp ? `${integer(shellTemp.value)} · ${shellTemp.name}` : "--",
@@ -3072,13 +3459,15 @@ function renderDiagnostics(data) {
   }
 
   const reservedHint = $("diagnosticReservedMotorHint");
-  const hasReservedTimeout = reservedFaults.some((motor) => {
-    const raw = Number(motor.state_raw) >>> 0;
-    return (raw & 0x40000000) !== 0 || (raw & 0x80000000) !== 0;
-  });
+  const hasReservedTimeout =
+    motorFaultEncoding === "hg_motorstate" &&
+    reservedFaults.some((motor) => {
+      const raw = Number(motor.state_raw) >>> 0;
+      return (raw & 0x40000000) !== 0 || (raw & 0x80000000) !== 0;
+    });
   reservedHint.hidden = !hasReservedTimeout;
   reservedHint.textContent = hasReservedTimeout
-    ? "扩展槽 29–34 出现 PC/电机断联超时时，若未安装灵巧手，请检查 App 外设配置中的灵巧手检测。"
+    ? "保留/扩展槽出现 PC/电机断联超时；若对应电机未安装，请核对外设配置。"
     : "";
 
   const batteryCells = Array.isArray(battery.cell_voltage_raw)
@@ -3090,7 +3479,9 @@ function renderDiagnostics(data) {
   setText(
     "diagnosticBatteryHealth",
     batteryFresh
-      ? `${integer(battery.soc_pct)}% / ${integer(battery.soh_pct)}%`
+      ? String(integer(battery.soc_pct)) +
+        "% / " +
+        (batterySohSupported ? String(integer(battery.soh_pct)) + "%" : "--")
       : "--",
   );
   setText(
@@ -3144,6 +3535,9 @@ function renderDiagnostics(data) {
   );
 
   const issues = [];
+  if (telemetryParameters.fault_service_topic) {
+    renderGo2FaultService(data, issues);
+  }
   if (!data.dds_initialized) {
     issues.push({ level: "error", text: `DDS 初始化失败：${data.dds_error || "请检查网卡与 SDK2 环境"}` });
   }
@@ -3169,12 +3563,22 @@ function renderDiagnostics(data) {
     });
   }
   if (reservedFaults.length) {
+    const reservedSlots = reservedFaults
+      .map((motor) => integer(motor.index))
+      .join(", ");
     issues.push({
       level: "warning",
-      text: `扩展槽 29–34 有 ${reservedFaults.length} 个 state_raw 非零`,
+      text: `保留/扩展槽 ${reservedSlots} 有 ${reservedFaults.length} 个 state_raw 非零`,
     });
   }
-  if ((Number(odometry.error_code) >>> 0) !== 0) {
+  const componentFault = componentState & 0xD2;
+  if (componentFault !== 0 && motorFaultEncoding === "go2_reserve0") {
+    issues.push({
+      level: "error",
+      text: `底层组件异常：${decodeFaultBits(componentFault, go2ComponentStateBits).join(" / ")}`,
+    });
+  }
+  if (!odometryCodeIsMotionState && (Number(odometry.error_code) >>> 0) !== 0) {
     issues.push({
       level: "warning",
       text: `里程计 error_code 非零：${hex32(odometry.error_code)}`,
@@ -3292,8 +3696,13 @@ function renderJoints(joints) {
       );
       cells.forEach((cell) => row.append(cell));
       cells[1].className = "joint-name";
+      const zh = document.createElement("strong");
+      const en = document.createElement("small");
+      const state = document.createElement("span");
+      cells[1].append(zh, en);
+      cells[8].append(state);
       tbody.append(row);
-      record = { row, cells, joint: null };
+      record = { row, cells, zh, en, state, joint: null };
       appState.jointRows.set(index, record);
     }
 
@@ -3305,24 +3714,17 @@ function renderJoints(joints) {
 
     const cells = record.cells;
     cells[0].textContent = String(joint.index);
-    cells[1].replaceChildren();
-    const zh = document.createElement("strong");
-    zh.textContent = joint.name_zh || "--";
-    const en = document.createElement("small");
-    en.textContent = joint.name || "--";
-    cells[1].append(zh, en);
+    record.zh.textContent = joint.name_zh || "--";
+    record.en.textContent = joint.name || "--";
     cells[2].textContent = integer(joint.mode_raw);
     cells[3].textContent = number(joint.q_rad);
     cells[4].textContent = number(joint.dq_rad_s);
     cells[5].textContent = number(joint.tau_est_nm);
     cells[6].textContent = arrayText(joint.temperature_raw, 0);
     cells[7].textContent = number(joint.voltage_v, 2);
-    cells[8].replaceChildren();
-    const state = document.createElement("span");
     const isZero = Number(joint.state_raw) === 0;
-    state.className = `state-chip ${isZero ? "zero" : "nonzero"}`;
-    state.textContent = integer(joint.state_raw);
-    cells[8].append(state);
+    record.state.className = `state-chip ${isZero ? "zero" : "nonzero"}`;
+    record.state.textContent = integer(joint.state_raw);
   });
 
   for (const [index, record] of appState.jointRows) {

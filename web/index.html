@@ -230,7 +230,7 @@
           <dl class="inspector-grid">
             <div><dt>当前模式</dt><dd id="jointDebugCurrentMode">--</dd></div>
             <div><dt>机器人运控</dt><dd id="jointDebugFsmState">--</dd></div>
-            <div><dt>调试模式 / ai_sport</dt><dd id="jointDebugSportService">--</dd></div>
+            <div><dt>高层运控 / MCF</dt><dd id="jointDebugSportService">--</dd></div>
             <div><dt>DDS 控制</dt><dd id="jointDebugDdsState">--</dd></div>
             <div><dt>LowState</dt><dd id="jointDebugLowState">--</dd></div>
             <div><dt>允许下发</dt><dd id="jointDebugAllowed">--</dd></div>
@@ -245,9 +245,12 @@
                 <div class="joint-debug-actions">
                   <button type="button" class="secondary" id="jointDebugReset">恢复默认零位</button>
                   <button type="button" class="secondary" id="jointDebugLoadCurrent">从当前机器人姿态加载</button>
+                  <button type="button" class="danger-outline" id="jointDebugEnterLowLevel" hidden>进入底层模式</button>
+                  <button type="button" class="secondary" id="jointDebugExitLowLevel" hidden>退出底层模式</button>
                   <button type="button" id="jointDebugApply" disabled>应用到机器人</button>
                   <button type="button" class="danger-outline" id="jointDebugStop">停止 / 释放控制</button>
                 </div>
+                <small id="jointDebugGainHint" hidden>官方站立增益：KP 60 / KD 5</small>
               </div>
               <div class="joint-debug-mode-row" aria-label="调试台模式与单位">
                 <fieldset class="joint-debug-switch joint-debug-mode-switch"><legend>控制模式</legend>
@@ -637,7 +640,7 @@
                       <option value="kokoro">Kokoro 本地低延迟（推荐）</option>
                       <option value="unitree">Unitree 原生 TTS</option>
                     </select>
-                    <small>Kokoro 支持中英文混合，并使用流式低延迟播放。</small>
+                    <small>Kokoro 支持中英文混合，播放方式由当前机器人音频能力决定。</small>
                   </label>
                   <label>
                     <span class="field-label">发音语言</span>
@@ -699,14 +702,29 @@
             <div><dt>DDS 状态</dt><dd id="diagnosticDdsState">--</dd></div>
             <div><dt>数据源在线</dt><dd id="diagnosticSourceHealth">--</dd></div>
             <div><dt>LowState 延迟</dt><dd id="diagnosticLowStateAge">--</dd></div>
-            <div><dt>里程计 error_code</dt><dd id="diagnosticOdomError">--</dd></div>
+            <div><dt id="diagnosticOdomLabel">里程计 error_code</dt><dd id="diagnosticOdomError">--</dd></div>
+            <div><dt>LowState 组件状态</dt><dd id="diagnosticComponentState">--</dd></div>
           </dl>
+        </article>
+
+        <article class="panel diagnostic-live-card diagnostic-motor-card" data-telemetry-source="faults">
+          <div class="card-heading">
+            <div><p class="eyebrow">FAULT SERVICE</p><h3>GO2 故障集合</h3></div>
+            <span class="tag">rt/errorlist</span>
+          </div>
+          <dl class="kv-grid compact">
+            <div><dt>接口状态</dt><dd id="diagnosticFaultServiceStatus">--</dd></div>
+            <div><dt>当前故障数</dt><dd id="diagnosticFaultServiceCount">--</dd></div>
+            <div><dt>最后数据年龄</dt><dd id="diagnosticFaultServiceAge">--</dd></div>
+            <div><dt>解析状态</dt><dd id="diagnosticFaultServiceParse">--</dd></div>
+          </dl>
+          <div class="diagnostic-fault-list" id="diagnosticFaultServiceList"></div>
         </article>
 
         <article class="panel diagnostic-live-card diagnostic-motor-card">
           <div class="card-heading">
             <div><p class="eyebrow">MOTOR</p><h3>电机诊断</h3></div>
-            <span class="tag">motorstate</span>
+            <span class="tag">state_raw</span>
           </div>
           <dl class="kv-grid compact">
             <div><dt>机身故障电机</dt><dd id="diagnosticMotorFaultCount">--</dd></div>
@@ -721,7 +739,7 @@
         <article class="panel diagnostic-live-card">
           <div class="card-heading">
             <div><p class="eyebrow">POWER</p><h3>电池诊断</h3></div>
-            <span class="tag">rt/lf/bmsstate</span>
+            <span class="tag">BMS</span>
           </div>
           <dl class="kv-grid compact">
             <div><dt>SOC / SOH</dt><dd id="diagnosticBatteryHealth">--</dd></div>
@@ -769,6 +787,13 @@
           </summary>
           <pre id="mainboardRaw">等待数据…</pre>
         </details>
+        <details class="panel raw-details diagnostic-card" data-telemetry-source="faults">
+          <summary>
+            <span><small>FAULT SERVICE RAW DATA</small>故障集合原始数据</span>
+            <span class="chevron">⌄</span>
+          </summary>
+          <pre id="faultServiceRaw">等待数据…</pre>
+        </details>
       </section>
 
       <section class="workspace-contents">
@@ -785,8 +810,8 @@
           </div>
 
           <div class="control-warning">
-            <strong>危险：模式切换或上肢动作可能导致失衡、倒地或碰撞。</strong>
-            <span>执行前清空周围人员和障碍物并可靠支撑机器人；阻尼和零力矩不提供平衡控制。</span>
+            <strong id="controlSafetyTitle">危险：模式切换或机器人动作可能导致失衡、倒地或碰撞。</strong>
+            <span id="controlSafetyDetail">执行前清空周围人员和障碍物并可靠支撑机器人；阻尼和零力矩不提供平衡控制。</span>
           </div>
 
           <div class="control-status-grid" hidden>
@@ -801,7 +826,7 @@
               <small id="controlFsmModeHint">--</small>
             </div>
             <div>
-              <span>上肢任务</span>
+              <span>动作任务</span>
               <strong id="controlTaskId">--</strong>
               <small id="controlTaskTime">--</small>
             </div>
@@ -835,7 +860,7 @@
             </button>
             <button type="button" class="control-tab" id="controlTabArm" role="tab"
                     aria-selected="false" aria-controls="controlPanelArm" data-control-tab="arm">
-              <span>ARM</span><strong>上肢动作与示教</strong><small>预设动作 · 固件示教动作</small>
+              <span id="controlActionTabCode">ARM</span><strong id="controlActionTabTitle">上肢动作与示教</strong><small id="controlActionTabDetail">预设动作 · 固件示教动作</small>
             </button>
           </div>
 
@@ -922,8 +947,8 @@
                 </button>
               </div>
 
-              <h4 class="control-subheading" hidden>移动状态操作</h4>
-              <div class="control-button-grid compact" hidden>
+              <h4 class="control-subheading" id="motionStateActionHeading" hidden>移动状态操作</h4>
+              <div class="control-button-grid compact" id="motionStateActionGrid" hidden>
                 <button class="control-command" type="button"
                         data-category="mode" data-command="balance_stand"
                         data-label="平衡站立" disabled>
@@ -934,6 +959,18 @@
                         data-label="停止移动指令" disabled>
                   <strong>停止移动</strong><span>StopMove · 速度指令归零</span>
                 </button>
+              </div>
+
+              <div id="profileModeActionSection" hidden>
+                <div class="control-subsection-divider" aria-hidden="true"></div>
+                <div class="control-group-heading control-subsection-heading">
+                  <div>
+                    <p class="metric-label">PROFILE</p>
+                    <h3>产品运动模式</h3>
+                  </div>
+                  <span class="tag">SportClient</span>
+                </div>
+                <div class="control-button-grid compact" id="profileModeActionGrid"></div>
               </div>
 
             </section>
@@ -1035,11 +1072,12 @@
                      role="tabpanel" aria-labelledby="controlTabArm" data-control-panel="arm" hidden>
               <div class="control-group-heading">
                 <div>
-                  <p class="metric-label">ARM</p>
-                  <h3>上肢预设动作</h3>
+                  <p class="metric-label" id="controlActionPanelCode">ARM</p>
+                  <h3 id="controlActionPanelTitle">上肢预设动作</h3>
                 </div>
-                <span class="tag">需安全空间</span>
+                <span class="tag" id="controlActionPanelTag">需安全空间</span>
               </div>
+              <div id="humanoidActionSection">
               <div class="arm-action-grid" id="armPresetActionGrid">
                 <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="11" data-label="双手飞吻" disabled>双手飞吻</button>
                 <button class="control-command" type="button" data-category="arm_action" data-command="execute" data-argument="12" data-label="左手飞吻" disabled>左手飞吻</button>
@@ -1101,6 +1139,11 @@
               <p class="control-limit-note">连续速度、调试模式、全身 LowCmd 和灵巧手原始位置/力矩接口保持关闭，避免持续运动误触。</p>
               </div>
               <p class="control-limit-note" id="localTeachNotice" hidden>当前产品使用“机器人调试”里的本地手掰示教；录制、播放与释放控制均经过独立安全确认。</p>
+              </div>
+              <div id="interactionActionSection" hidden>
+                <div class="arm-action-grid" id="interactionActionGrid"></div>
+                <p class="control-limit-note" id="interactionActionHint">互动动作通过当前产品声明的高层 SportClient 接口触发；高动态动作会使用更强的二次安全确认。</p>
+              </div>
             </section>
           </div>
 
@@ -1245,8 +1288,8 @@
                     <button type="button" class="icon-button camera-fullscreen" data-camera-fullscreen="rgbCameraViewport" aria-label="全屏">⛶</button>
                   </div>
                 </div>
-                <div class="camera-viewport" id="rgbCameraViewport"><img id="rgbCameraImage" alt="机器人 RGB 摄像头画面" /><div class="camera-empty" id="rgbCameraEmpty"><div class="camera-reticle"></div><strong>等待 RGB 画面</strong><span>V4L2 · MJPEG/JPEG</span></div></div>
-                <div class="camera-status" id="rgbCameraStatus" hidden><span class="status-dot muted-dot"></span><strong>未配置</strong><small>等待自动检测</small></div>
+                <div class="camera-viewport" id="rgbCameraViewport"><img id="rgbCameraImage" alt="机器人 RGB 摄像头画面" /><div class="camera-empty" id="rgbCameraEmpty"><div class="camera-reticle"></div><strong>等待 RGB 画面</strong><span>V4L2 · MJPEG/JPEG</span></div><strong class="camera-frozen" id="rgbCameraFrozen" role="alert" hidden>画面已冻结</strong></div>
+                <div class="camera-status" id="rgbCameraStatus" hidden><span class="status-dot muted-dot"></span><strong>未配置</strong><small>等待自动检测</small><span class="camera-frame-age" id="rgbCameraFrameAge" hidden></span></div>
               </section>
               <section class="panel camera-panel" id="depthCameraPanel" data-capability="camera_depth">
                 <div class="card-heading camera-integrated-heading">

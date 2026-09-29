@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <unitree/robot/channel/channel_subscriber.hpp>
+#include <unitree/idl/ros2/String_.hpp>
 
 #include "g1_web/robot_profile.hpp"
 #include "g1_web/snapshot_store.hpp"
@@ -31,6 +32,9 @@ class UnitreeDataSource {
       unitree_hg::msg::dds_::LowState_>>
       low_state_;
   std::shared_ptr<unitree::robot::ChannelSubscriber<
+      unitree_go::msg::dds_::LowState_>>
+      go2_low_state_;
+  std::shared_ptr<unitree::robot::ChannelSubscriber<
       unitree_hg::msg::dds_::BmsState_>>
       bms_;
   std::shared_ptr<unitree::robot::ChannelSubscriber<
@@ -45,6 +49,9 @@ class UnitreeDataSource {
   std::shared_ptr<unitree::robot::ChannelSubscriber<
       unitree_hg::msg::dds_::SportModeState_>>
       sport_mode_;
+  std::shared_ptr<unitree::robot::ChannelSubscriber<
+      std_msgs::msg::dds_::String_>>
+      go2_error_list_;
 };
 
 class MockDataSource {

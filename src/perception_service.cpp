@@ -738,7 +738,10 @@ class PerceptionService::Impl {
         running_.store(true);
         mock_thread_ = std::thread([this] { MockLoop(); });
       } else {
-        if (!client_) {
+        const auto& deployment = device_policy_.Perception();
+        const bool slam_configured =
+            !deployment.dependencies.empty() && !deployment.slam_service.empty();
+        if (slam_configured && !client_) {
           client_ = std::make_unique<SlamClient>();
           client_->Init();
         }
@@ -752,16 +755,20 @@ class PerceptionService::Impl {
         SubscribeLocked();
         // Dependency startup is policy-driven. External dependencies are
         // readiness prerequisites and are never started or stopped by Web.
-        if (!PrepareDependenciesLocked(startup_dependencies)) {
-          throw std::runtime_error(state_.service_error.empty()
-                                       ? "slam_dependency_unavailable"
-                                       : state_.service_error);
+        if (slam_configured) {
+          if (!PrepareDependenciesLocked(startup_dependencies)) {
+            throw std::runtime_error(state_.service_error.empty()
+                                         ? "slam_dependency_unavailable"
+                                         : state_.service_error);
+          }
         }
         if (!WaitForLidarInputsLocked()) {
           throw std::runtime_error("slam_raw_input_timeout");
         }
-        if (!EnsureSlamRpcReadyLocked()) {
-          throw std::runtime_error(state_.service_error);
+        if (slam_configured) {
+          if (!EnsureSlamRpcReadyLocked()) {
+            throw std::runtime_error(state_.service_error);
+          }
         }
         // Mapping/localization streams are task-scoped. G1's separate raw
         // preview remains policy-driven and does not require this gate.
@@ -1420,7 +1427,8 @@ class PerceptionService::Impl {
     lidar.key = CapabilityKey::kLidar;
     lidar.hardware_presence = lidar_presence;
     lidar.service_available =
-        state_.mock || service_known(state_.lidar_driver_status_raw);
+        state_.mock || deployment.lidar_service.empty() ||
+        service_known(state_.lidar_driver_status_raw);
     lidar.deployment_enabled = !deployment.raw_lidar_points_topic.empty();
     if (!lidar.deployment_enabled) {
       lidar.reason = "raw_lidar_topic_unverified";
@@ -1453,6 +1461,9 @@ class PerceptionService::Impl {
     slam.hardware_presence = slam_presence;
     slam.service_available =
         state_.mock || (dependencies_ready && state_.slam_rpc_ready);
+    slam.service_version_status = deployment.service_version_status;
+    slam.service_compatible =
+        state_.mock || deployment.service_version_status == "compatible";
     slam.deployment_enabled = !deployment.dependencies.empty() &&
                               !deployment.slam_service.empty() &&
                               !deployment.mapping_points_topic.empty() &&
@@ -1469,6 +1480,8 @@ class PerceptionService::Impl {
       slam.reason = "slam_dependency_unavailable";
     } else if (!state_.slam_rpc_ready && !state_.mock) {
       slam.reason = "slam_rpc_unavailable";
+    } else if (!slam.service_compatible) {
+      slam.reason = "firmware_version_unverified";
     } else if (slam.hardware_presence == HardwarePresence::kAbsent) {
       slam.reason = "lidar_hardware_not_detected";
     }

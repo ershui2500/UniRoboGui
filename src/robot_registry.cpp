@@ -8,6 +8,10 @@
 #include "g1_web/g1_device_capability.hpp"
 #include "g1_web/g1_joint_debug_policy.hpp"
 #include "g1_web/g1_locomotion_adapter.hpp"
+#include "g1_web/go2_audio_capability.hpp"
+#include "g1_web/go2_device_capability.hpp"
+#include "g1_web/go2_joint_debug_policy.hpp"
+#include "g1_web/go2_locomotion_adapter.hpp"
 #include "g1_web/r1_audio_capability.hpp"
 #include "g1_web/r1_device_capability.hpp"
 #include "g1_web/r1_joint_debug_policy.hpp"
@@ -29,6 +33,8 @@ const char* TelemetrySourceKeyName(TelemetrySourceKey key) {
       return "odometry";
     case TelemetrySourceKey::kSportMode:
       return "sport_mode";
+    case TelemetrySourceKey::kFaults:
+      return "faults";
   }
   return "unknown";
 }
@@ -64,6 +70,18 @@ TelemetrySubscriptionPlan R1TelemetryPlan() {
        "rt/lf/secondary_imu", false},
       {TelemetrySourceKey::kOdometry,
        TelemetrySourceKind::kGo2SportModeState, "rt/odommodestate", false},
+  }};
+}
+
+TelemetrySubscriptionPlan Go2TelemetryPlan() {
+  return {{
+      {TelemetrySourceKey::kLowState, TelemetrySourceKind::kGo2LowState,
+       "rt/lowstate", true},
+      {TelemetrySourceKey::kOdometry,
+       TelemetrySourceKind::kGo2SportModeState, "rt/sportmodestate", true,
+       true},
+      {TelemetrySourceKey::kFaults, TelemetrySourceKind::kGo2ErrorList,
+       "rt/errorlist", false},
   }};
 }
 
@@ -129,7 +147,11 @@ const RobotProfile& G1Profile() {
     result.capabilities = {
         {CapabilityKey::kTelemetry, true, true,
          VerificationLevel::kReadonlyVerified,
-         {{"joint_count", "29"}, {"websocket", "/ws/telemetry"}}, ""},
+         {{"joint_count", "29"},
+          {"motor_fault_encoding", "hg_motorstate"},
+          {"motor_temperature_channels", "2"},
+          {"websocket", "/ws/telemetry"}},
+         ""},
         {CapabilityKey::kLocomotion, true, true,
          VerificationLevel::kControlVerified,
          {{"speed_modes", "0,1,3"},
@@ -236,6 +258,8 @@ const RobotProfile& R1Profile() {
           {"lowstate_type", "unitree_hg::msg::dds_::LowState_"},
           {"declared_sources", "low_state,bms,mainboard,secondary_imu,odometry"},
           {"required_sources", "low_state"},
+          {"motor_fault_encoding", "hg_motorstate"},
+          {"motor_temperature_channels", "2"},
           {"websocket", "/ws/telemetry"}},
          ""},
         {CapabilityKey::kLocomotion, true, true,
@@ -334,6 +358,257 @@ const RobotProfile& R1Profile() {
   return profile;
 }
 
+const RobotProfile& Go2Profile() {
+  static const RobotProfile profile = [] {
+    RobotProfile result;
+    result.identity = {"unitree", "go2", "go2", "go2_edu",
+                       "Unitree Go2 EDU", "quadruped"};
+    result.idl_family = "unitree_sdk2_go2";
+    result.control_api_family = "unitree_sdk2_go2_v2_sport";
+    result.model_asset_root = "/assets/unitree/go2_description";
+    result.model_package = "go2_description";
+    result.joint_schema.motor_slot_count = 20;
+    result.joint_schema.joints = {
+        {"front_right_hip", "右前髋", "FR_hip_joint", 0, "front_right_leg"},
+        {"front_right_thigh", "右前大腿", "FR_thigh_joint", 1,
+         "front_right_leg"},
+        {"front_right_calf", "右前小腿", "FR_calf_joint", 2,
+         "front_right_leg"},
+        {"front_left_hip", "左前髋", "FL_hip_joint", 3, "front_left_leg"},
+        {"front_left_thigh", "左前大腿", "FL_thigh_joint", 4,
+         "front_left_leg"},
+        {"front_left_calf", "左前小腿", "FL_calf_joint", 5,
+         "front_left_leg"},
+        {"rear_right_hip", "右后髋", "RR_hip_joint", 6, "rear_right_leg"},
+        {"rear_right_thigh", "右后大腿", "RR_thigh_joint", 7,
+         "rear_right_leg"},
+        {"rear_right_calf", "右后小腿", "RR_calf_joint", 8,
+         "rear_right_leg"},
+        {"rear_left_hip", "左后髋", "RL_hip_joint", 9, "rear_left_leg"},
+        {"rear_left_thigh", "左后大腿", "RL_thigh_joint", 10,
+         "rear_left_leg"},
+        {"rear_left_calf", "左后小腿", "RL_calf_joint", 11,
+         "rear_left_leg"},
+    };
+    result.model_variants = {
+        {0, "Go2 EDU", "go2_description.urdf"},
+    };
+    result.static_constraints = {
+        {"motor_slot_count", "20"},
+        {"reserved_motor_slots", "12-19"},
+        {"mode_machine_role", "fixed_profile_selector"},
+        {"lowstate_topic", "rt/lowstate"},
+        {"lowstate_type", "unitree_go::msg::dds_::LowState_"},
+        {"sport_state_topic", "rt/sportmodestate"},
+        {"sport_state_type", "unitree_go::msg::dds_::SportModeState_"},
+        {"bms_source", "embedded_in_lowstate"},
+        {"minimum_software_version", "1.1.6"},
+        {"model_source",
+         "unitree_ros@ccfc6fd8430a17ba3dacef9a1e2faf64ff3b0aee"},
+        {"model_asset_kind", "official_urdf_and_meshes"},
+    };
+    result.capabilities = {
+        {CapabilityKey::kTelemetry, true, true,
+         VerificationLevel::kMockVerified,
+         {{"joint_count", "12"},
+          {"lowstate_topic", "rt/lowstate"},
+          {"lowstate_type", "unitree_go::msg::dds_::LowState_"},
+          {"sport_state_topic", "rt/sportmodestate"},
+          {"sport_state_type", "unitree_go::msg::dds_::SportModeState_"},
+          {"declared_sources", "low_state,bms,odometry,faults"},
+          {"motor_fault_encoding", "go2_reserve0"},
+          {"fault_service_topic", "rt/errorlist"},
+          {"fault_service_encoding", "unitree_errorlist_v1"},
+          {"odometry_error_code_role", "motion_state_id"},
+          {"motor_temperature_channels", "1"},
+          {"battery_soh_supported", "false"},
+          {"websocket", "/ws/telemetry"}},
+         "go2_readonly_runtime_not_verified"},
+        {CapabilityKey::kLocomotion, true, true,
+         VerificationLevel::kMockVerified,
+         {{"minimum_software_version", "1.1.6"},
+          {"control_client", "go2_v2_sport_client"},
+          {"speed_modes", "0,1,3"},
+          {"speed_presets",
+           "0:0.20:0.12:0.25,1:0.35:0.20:0.40,3:0.50:0.30:0.60"},
+          {"allowed_fsm",
+           "100,1013,1015,1016,1017,2007,2008,2009,2010,2011,2016,2017"},
+          {"state_labels",
+           "100:灵动|Free walk;1001:阻尼|Damping;"
+           "1002:站立锁定|Locked stand;1004:蹲下|Crouch;"
+           "1006:互动动作|Interaction action;1007:坐下|Sit;"
+           "1008:前跳|Front jump;1009:前扑|Front pounce;"
+           "1013:平衡站立|Balance stand;1015:常规行走|Static walk;"
+           "1016:常规跑步|Trot run;1017:常规续航|Economic gait;"
+           "1091:摆姿势|Pose;2006:蹲下|Crouch;"
+           "2007:闪避|Free avoid;2008:并腿跑|Free bound;"
+           "2009:跳跃跑|Free jump;2010:经典步态|Classic walk;"
+           "2011:倒立|Hand stand;2012:前空翻|Front flip;"
+           "2013:后空翻|Back flip;2014:左空翻|Left flip;"
+           "2016:交叉步|Cross step;2017:后腿直立|Upright;"
+           "2019:牵引|Traction"},
+          {"real_control_policy", "operator_validation"},
+          {"mode_commands",
+           "damp,balance_stand,stop_move,stand_up,stand_down,recovery_stand,"
+           "sit,rise_sit,free_walk,static_walk,trot_run,economic_gait,"
+           "classic_walk_on,classic_walk_off,free_avoid_on,free_avoid_off,"
+           "free_bound_on,free_bound_off,free_jump_on,free_jump_off,"
+           "hand_stand_on,hand_stand_off,walk_upright_on,walk_upright_off,"
+           "cross_step_on,cross_step_off,pose_on,pose_off,hello,stretch,"
+           "content,heart,scrape,dance1,dance2,front_jump,front_pounce,"
+           "front_flip,left_flip,back_flip"},
+          {"web_mode_commands",
+           "damp,stand_up,stand_down,recovery_stand,balance_stand,stop_move,"
+           "sit,rise_sit,free_walk,static_walk,trot_run,economic_gait,"
+           "classic_walk_on,classic_walk_off,free_avoid_on,free_avoid_off,"
+           "free_bound_on,free_bound_off,free_jump_on,free_jump_off,"
+           "hand_stand_on,hand_stand_off,walk_upright_on,walk_upright_off,"
+           "cross_step_on,cross_step_off,pose_on,pose_off"},
+          {"web_mode_labels",
+           "damp:阻尼模式|Damping|Damp;stand_up:起立|Stand up|StandUp;"
+           "balance_stand:平衡站立|Balance stand|BalanceStand;"
+           "stop_move:停止移动|Stop move|StopMove;"
+           "stand_down:趴下|Lie down|StandDown;"
+           "recovery_stand:恢复站立|Recovery stand|RecoveryStand;"
+           "sit:坐下|Sit|Sit;rise_sit:坐下后起身|Rise from sit|RiseSit;"
+           "free_walk:灵动模式|Free walk|FreeWalk · FSM 100;"
+           "static_walk:常规行走|Static walk|StaticWalk · FSM 1015;"
+           "trot_run:常规跑步|Trot run|TrotRun · FSM 1016;"
+           "economic_gait:续航模式|Economic gait|EconomicGait · FSM 1017;"
+           "classic_walk_on:经典步态|Classic walk|ClassicWalk · FSM 2010;"
+           "classic_walk_off:退出经典步态|Exit classic walk|ClassicWalk(false) · → FSM 100;"
+           "free_avoid_on:闪避模式|Free avoid|FreeAvoid · FSM 2007;"
+           "free_avoid_off:退出闪避模式|Exit free avoid|FreeAvoid(false) · → FSM 100;"
+           "free_bound_on:并腿跑|Free bound|FreeBound · FSM 2008;"
+           "free_bound_off:退出并腿跑|Exit free bound|FreeBound(false) · → FSM 100;"
+           "free_jump_on:跳跃跑|Free jump|FreeJump · FSM 2009;"
+           "free_jump_off:退出跳跃跑|Exit free jump|FreeJump(false) · → FSM 100;"
+           "hand_stand_on:倒立行走|Hand stand|HandStand · FSM 2011;"
+           "hand_stand_off:退出倒立|Exit hand stand|HandStand(false) · → FSM 100;"
+           "walk_upright_on:后腿直立|Upright walk|WalkUpright · FSM 2017;"
+           "walk_upright_off:退出后腿直立|Exit upright walk|WalkUpright(false) · → FSM 100;"
+           "cross_step_on:交叉步|Cross step|CrossStep · FSM 2016;"
+           "cross_step_off:退出交叉步|Exit cross step|CrossStep(false) · → FSM 100;"
+           "pose_on:摆姿势|Pose|Pose(true) · FSM 1091;"
+           "pose_off:退出摆姿势|Exit pose|Pose(false)"},
+          {"mode_targets",
+           "damp:1001,stand_up:1002,balance_stand:1013,"
+           "recovery_stand:1013,sit:1007,rise_sit:1013,free_walk:100,"
+           "static_walk:1015,trot_run:1016,economic_gait:1017,"
+           "classic_walk_on:2010,free_avoid_on:2007,free_bound_on:2008,"
+           "free_jump_on:2009,hand_stand_on:2011,walk_upright_on:2017,"
+           "cross_step_on:2016,pose_on:1091"},
+          {"interaction_action_commands",
+           "hello,stretch,content,heart,scrape,dance1,dance2,front_jump,"
+           "front_pounce,front_flip,left_flip,back_flip"},
+          {"interaction_action_labels",
+           "hello:打招呼|Hello|Hello;stretch:伸懒腰|Stretch|Stretch;"
+           "content:开心|Happy|Content;heart:比心|Heart|Heart;"
+           "scrape:拜年作揖|Greeting bow|Scrape;"
+           "dance1:舞蹈 1|Dance 1|Dance1;dance2:舞蹈 2|Dance 2|Dance2;"
+           "front_jump:前跳|Front jump|FrontJump;"
+           "front_pounce:前扑|Front pounce|FrontPounce;"
+           "front_flip:前空翻|Front flip|FrontFlip;"
+           "left_flip:左空翻|Left flip|LeftFlip;"
+           "back_flip:后空翻|Back flip|BackFlip"},
+          {"dangerous_commands",
+           "trot_run,free_bound_on,free_jump_on,hand_stand_on,"
+           "walk_upright_on,cross_step_on,front_jump,front_pounce,"
+           "front_flip,left_flip,back_flip"},
+          {"mode_sources",
+           "stand_up:100|1001|1002|1004|1007|1013|2006;"
+           "stand_down:100|1001|1002|1004|1013|1015|1016|1017|2006|2010;"
+           "recovery_stand:100|1001|1002|1004|1007|1013|2006;"
+           "balance_stand:100|1002|1004|1007|1013|1015|1016|1017|2006|2007|2008|2009|2010|2011|2016|2017;"
+           "sit:100|1002|1013;rise_sit:1007;"
+           "free_walk:100|1013|1015|1016|1017|1091|2007|2008|2009|2010|2011|2016|2017;"
+           "static_walk:100|1013|1015|1016|1017|2007|2008|2009|2010|2011|2016|2017;"
+           "trot_run:100|1013|1015|1016|1017|2010;"
+           "economic_gait:100|1013|1015|1016|1017|2010;"
+           "classic_walk_on:100|1013|1015|1016|1017|2010;"
+           "classic_walk_off:2010;"
+           "free_avoid_on:100|1013|2010;free_avoid_off:2007;"
+           "free_bound_on:100|1013|2010;free_bound_off:2008;"
+           "free_jump_on:100|1013|2010;free_jump_off:2009;"
+           "hand_stand_on:100|1013;hand_stand_off:2011;"
+           "walk_upright_on:100|1013;walk_upright_off:2017;"
+           "cross_step_on:100|1013;cross_step_off:2016;"
+           "pose_on:100|1013;pose_off:1091;"
+           "hello:100|1002|1013;stretch:100|1002|1013;"
+           "content:100|1002|1013;heart:100|1002|1013;"
+           "scrape:100|1002|1013;dance1:100|1002|1013;"
+           "dance2:100|1002|1013;front_jump:100|1002|1013;"
+           "front_pounce:100|1002|1013;front_flip:100|1002|1013;"
+           "left_flip:100|1002|1013;back_flip:100|1002|1013"},
+          {"forward_hard_limit_mps", "0.5"},
+          {"lateral_hard_limit_mps", "0.3"},
+          {"yaw_hard_limit_radps", "0.6"},
+          {"velocity_lease_seconds", "1.0"}},
+         "go2_real_control_requires_operator_validation"},
+        {CapabilityKey::kJointDebug, true, true,
+         VerificationLevel::kMockVerified,
+         {{"control_modes", "full_body"},
+          {"control_topic", "rt/lowcmd"},
+          {"real_control_policy", "operator_validation"}},
+         "go2_real_joint_debug_requires_operator_validation"},
+        {CapabilityKey::kJointTeach, true, true,
+         VerificationLevel::kMockVerified,
+         {{"control_mode", "full_body"},
+          {"control_topic", "rt/lowcmd"},
+          {"remote_binding", "true"},
+          {"real_control_policy", "operator_validation"}},
+         "go2_joint_teach_requires_operator_validation"},
+        {CapabilityKey::kAudio, true, true,
+         VerificationLevel::kMockVerified,
+         {{"tts_backends", "kokoro"},
+          {"play_stream", "true"},
+          {"tts", "false"},
+          {"volume", "true"},
+          {"asr", "false"},
+          {"builtin_llm", "false"},
+          {"real_control_policy", "operator_validation"},
+          {"play_stream_transport", "audiohub_file_player"},
+          {"audio_format", "wav_pcm_s16le_16000_mono"}},
+         "go2_audio_hardware_unverified"},
+        {CapabilityKey::kCameraRgb, true, true,
+         VerificationLevel::kMockVerified,
+         {{"stream_role", "rgb"},
+          {"transport", "rtp_h264_udp"},
+          {"fixed_source", "udp://230.1.1.1:1720"},
+          {"port", "1720"},
+          {"width", "1280"},
+          {"height", "720"},
+          {"fps", "15"},
+          {"allow_client_source_override", "false"}},
+         "go2_rgb_readonly_not_verified"},
+        {CapabilityKey::kCameraDepth, false, false,
+         VerificationLevel::kUnsupported, {}, "go2_depth_unsupported"},
+        {CapabilityKey::kLidar, true, true,
+         VerificationLevel::kMockVerified,
+         {{"raw_points_topic", "rt/utlidar/cloud"},
+          {"raw_points_frame", "utlidar_lidar"},
+          {"deskewed_points_topic", "rt/utlidar/cloud_deskewed"},
+          {"deskewed_points_frame", "odom"},
+          {"height_map_topic", "rt/utlidar/height_map_array"},
+          {"range_info_topic", "rt/utlidar/range_info"}},
+         "go2_lidar_readonly_not_verified"},
+        {CapabilityKey::kSlam, true, true,
+         VerificationLevel::kMockVerified,
+         {{"required_devices", "dock"},
+          {"required_device_any", "mid360,xt16"},
+          {"required_firmware_version", "1.1.7"},
+          {"service_name", "slam_operate"},
+          {"service_version", "1.0.0.1"},
+          {"map_whitelist", "test1.pcd..test10.pcd"}},
+         "go2_slam_runtime_conditions_unverified"},
+        {CapabilityKey::kHeadControl, false, false,
+         VerificationLevel::kUnsupported, {}, "go2_head_control_unsupported"},
+    };
+    return result;
+  }();
+  return profile;
+}
+
 bool CapabilityAvailable(const RobotProfile& profile,
                          CapabilityKey key) {
   const auto capability = std::find_if(
@@ -348,21 +623,36 @@ bool CapabilityAvailable(const RobotProfile& profile,
 bool RequiredDevicesEnabled(const CapabilityDescriptor& capability,
                             const RuntimeOptions& options) {
   const auto required = capability.parameters.find("required_devices");
-  if (required == capability.parameters.end() || required->second.empty()) {
+  if (required != capability.parameters.end() && !required->second.empty()) {
+    std::size_t start = 0;
+    while (start < required->second.size()) {
+      const auto end = required->second.find(',', start);
+      const auto device = required->second.substr(
+          start, end == std::string::npos ? std::string::npos : end - start);
+      if (!device.empty() && options.enabled_devices.count(device) == 0) {
+        return false;
+      }
+      if (end == std::string::npos) break;
+      start = end + 1;
+    }
+  }
+  const auto required_any = capability.parameters.find("required_device_any");
+  if (required_any == capability.parameters.end() ||
+      required_any->second.empty()) {
     return true;
   }
   std::size_t start = 0;
-  while (start < required->second.size()) {
-    const auto end = required->second.find(',', start);
-    const auto device = required->second.substr(
+  while (start < required_any->second.size()) {
+    const auto end = required_any->second.find(',', start);
+    const auto device = required_any->second.substr(
         start, end == std::string::npos ? std::string::npos : end - start);
-    if (!device.empty() && options.enabled_devices.count(device) == 0) {
-      return false;
+    if (!device.empty() && options.enabled_devices.count(device) != 0) {
+      return true;
     }
     if (end == std::string::npos) break;
     start = end + 1;
   }
-  return true;
+  return false;
 }
 
 void ApplyRuntimeCapabilityPolicy(RobotProfile& profile,
@@ -374,6 +664,16 @@ void ApplyRuntimeCapabilityPolicy(RobotProfile& profile,
 
     capability.available = capability.implemented && capability.available;
     if (!capability.available) continue;
+
+    if (options.read_only &&
+        (capability.key == CapabilityKey::kLocomotion ||
+         capability.key == CapabilityKey::kJointDebug ||
+         capability.key == CapabilityKey::kJointTeach ||
+         capability.key == CapabilityKey::kHeadControl)) {
+      capability.available = false;
+      capability.reason = "readonly_runtime";
+      continue;
+    }
 
     if (!RequiredDevicesEnabled(capability, options)) {
       capability.available = false;
@@ -419,22 +719,25 @@ void ValidateProfile(const RobotProfile& profile) {
   }
 }
 
-TelemetrySourceKind ExpectedSourceKind(TelemetrySourceKey key) {
+bool SourceKindMatches(TelemetrySourceKey key, TelemetrySourceKind kind) {
   switch (key) {
     case TelemetrySourceKey::kLowState:
-      return TelemetrySourceKind::kHgLowState;
+      return kind == TelemetrySourceKind::kHgLowState ||
+             kind == TelemetrySourceKind::kGo2LowState;
     case TelemetrySourceKey::kBms:
-      return TelemetrySourceKind::kHgBmsState;
+      return kind == TelemetrySourceKind::kHgBmsState;
     case TelemetrySourceKey::kSecondaryImu:
-      return TelemetrySourceKind::kHgImuState;
+      return kind == TelemetrySourceKind::kHgImuState;
     case TelemetrySourceKey::kMainBoard:
-      return TelemetrySourceKind::kHgMainBoardState;
+      return kind == TelemetrySourceKind::kHgMainBoardState;
     case TelemetrySourceKey::kOdometry:
-      return TelemetrySourceKind::kGo2SportModeState;
+      return kind == TelemetrySourceKind::kGo2SportModeState;
     case TelemetrySourceKey::kSportMode:
-      return TelemetrySourceKind::kHgSportModeState;
+      return kind == TelemetrySourceKind::kHgSportModeState;
+    case TelemetrySourceKey::kFaults:
+      return kind == TelemetrySourceKind::kGo2ErrorList;
   }
-  throw std::runtime_error("runtime_telemetry_source_unknown");
+  return false;
 }
 
 void ApplyTelemetryCapabilityParameters(
@@ -473,7 +776,7 @@ void ValidateTelemetryPlan(const TelemetrySubscriptionPlan& plan) {
   std::set<TelemetrySourceKey> keys;
   for (const auto& source : plan.sources) {
     if (source.topic.empty() || !keys.insert(source.key).second ||
-        source.kind != ExpectedSourceKind(source.key)) {
+        !SourceKindMatches(source.key, source.kind)) {
       throw std::runtime_error("runtime_telemetry_plan_invalid");
     }
   }
@@ -511,11 +814,12 @@ void ValidateBundle(const RobotRuntimeBundle& bundle) {
 const RobotProfile* RobotRegistry::Find(const std::string& product_id) {
   if (product_id == "g1") return &G1Profile();
   if (product_id == "r1") return &R1Profile();
+  if (product_id == "go2") return &Go2Profile();
   return nullptr;
 }
 
 std::vector<const RobotProfile*> RobotRegistry::All() {
-  return {&G1Profile(), &R1Profile()};
+  return {&G1Profile(), &R1Profile(), &Go2Profile()};
 }
 
 RobotRuntimeBundle RobotRegistry::CreateRuntime(
@@ -546,6 +850,18 @@ RobotRuntimeBundle RobotRegistry::CreateRuntime(
       bundle.joint_debug = CreateR1JointDebugPolicy(R1Profile());
     }
     bundle.devices = CreateR1DeviceCapabilityPolicy(options.enabled_devices);
+  } else if (product_id == "go2") {
+    bundle.profile = Go2Profile();
+    ValidateProfile(bundle.profile);
+    bundle.telemetry = Go2TelemetryPlan();
+    ApplyTelemetryCapabilityParameters(bundle.profile, bundle.telemetry);
+    ApplyRuntimeCapabilityPolicy(bundle.profile, options);
+    bundle.locomotion = CreateGo2LocomotionAdapter(options.mock);
+    bundle.audio = CreateGo2AudioCapability(options.mock);
+    if (CapabilityAvailable(bundle.profile, CapabilityKey::kJointDebug)) {
+      bundle.joint_debug = CreateGo2JointDebugPolicy(Go2Profile());
+    }
+    bundle.devices = CreateGo2DeviceCapabilityPolicy(options.enabled_devices);
   } else {
     throw std::invalid_argument("unregistered_robot_product");
   }

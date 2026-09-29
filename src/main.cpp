@@ -59,6 +59,7 @@ void PrintUsage(const char* program) {
       << "；缺省为 g1\n"
       << "  --device <附件>      声明已确认安装的附件，可重复；如 mid360\n"
       << "  --mock               使用模拟数据，不初始化 DDS\n"
+      << "  --read-only          只读运行；禁用实体控制能力\n"
       << "  --enable-navigation  允许 Web 调用真实 SLAM 位姿导航（默认禁用）\n"
       << "  --realsense          使用 librealsense2 同时获取 D435i RGB/深度\n"
       << "  --rgb-camera <设备>  RGB V4L2 设备，如 /dev/video0\n"
@@ -129,6 +130,10 @@ bool ParseOptions(int argc, char** argv, Options& options) {
     }
     if (argument == "--mock") {
       options.runtime.mock = true;
+      continue;
+    }
+    if (argument == "--read-only") {
+      options.runtime.read_only = true;
       continue;
     }
     if (argument == "--enable-navigation") {
@@ -256,8 +261,15 @@ int main(int argc, char** argv) {
     }
   }
 
-  g1_web::ApplyEffectiveDeviceCapabilities(
-      active_profile, perception_service.ProbeDeviceCapabilities());
+  const auto& perception_policy = runtime.devices->Perception();
+  const bool passive_raw_lidar_probe =
+      !perception_policy.raw_lidar_points_topic.empty() &&
+      perception_policy.dependencies.empty() &&
+      perception_policy.slam_service.empty();
+  if (!passive_raw_lidar_probe) {
+    g1_web::ApplyEffectiveDeviceCapabilities(
+        active_profile, perception_service.ProbeDeviceCapabilities());
+  }
   if (runtime.devices->Camera().streams.empty()) {
     g1_web::ApplyEffectiveDeviceCapabilities(
         active_profile, camera_service.DeviceCapabilities());
@@ -270,7 +282,7 @@ int main(int argc, char** argv) {
     if (!voice_service.Start(voice_error)) {
       std::cerr << "[WARN] 语音服务处于降级状态: " << voice_error << '\n';
     } else {
-      std::cout << "[INFO] ASR/TTS 已启动，默认启用 chat_go 笨笨同学；客户大模型可按需切换\n";
+      std::cout << "[INFO] 语音服务已启动\n";
     }
   } else {
     std::cout << "[INFO] 当前产品语音能力保持禁用\n";
@@ -294,7 +306,8 @@ int main(int argc, char** argv) {
 
   const bool perception_enabled =
       CapabilityAvailable(active_profile, g1_web::CapabilityKey::kLidar) ||
-      CapabilityAvailable(active_profile, g1_web::CapabilityKey::kSlam);
+      CapabilityAvailable(active_profile, g1_web::CapabilityKey::kSlam) ||
+      passive_raw_lidar_probe;
   if (perception_enabled) {
     std::string perception_error;
     if (!perception_service.Start(perception_error)) {
