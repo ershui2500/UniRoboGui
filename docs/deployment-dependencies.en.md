@@ -1,8 +1,16 @@
-# UniRoboGui G1 / R1 Deployment and Troubleshooting Guide
+# UniRoboGui G1 / R1 / GO2 Deployment and Troubleshooting Guide
 
 [简体中文](deployment-dependencies.md) | **English**
 
-This guide covers both Unitree G1 and R1. They share one deployment entry point, build flow, and safety checks. Product-specific differences such as network interfaces, SDK paths, services, cameras, TTS, and optional attachments are kept in controlled product profiles instead of duplicated deployment guides.
+This guide covers Unitree G1, R1 and GO2. They share one deployment entry point, build flow, and safety checks. Product-specific differences such as network interfaces, SDK paths, services, cameras, TTS, and optional attachments are kept in controlled product profiles instead of duplicated deployment guides.
+
+### GO2: capabilities and FP32 deployment
+
+GO2 uses the shared Registry/Web, 12-joint pose, RGB, diagnostics, guarded full-body debug/teach, motion allowlists and local TTS. Physical motion needs operator acceptance; ASR/native TTS/built-in LLM are not integrated. Depth and optional SLAM must not be reported available without evidence.
+
+With updated source, `bash scripts/deploy.sh install --product go2` or PC-side `bash scripts/deploy.sh from-pc --product go2 --host unirobo-go2` prepares **Kokoro FP32** and installs `go2-local-tts.service`. Use `bash scripts/deploy.sh check --product go2` for preflight. Old GitHub revisions do not include unpublished local changes. G1 keeps its previous Kokoro policy; R1 defaults to native TTS.
+
+See the [GO2 deployment/Web guide](go2-guide.en.md) for feature boundaries, proxy setup, upgrades, model verification and listening acceptance.
 
 ## 1. Recommended entry point
 
@@ -19,9 +27,11 @@ bash scripts/deploy.sh check --product g1 --lang en
 bash scripts/deploy.sh check --product r1 --lang en
 ~~~
 
-`--product` is required and currently accepts only `g1` or `r1`, as registered by the project. `--host` is valid only with `from-pc`. Legacy `deploy_g1_*` and `install_g1*` entry scripts remain for one compatibility cycle; they print a deprecation notice and forward to `--product g1`. The legacy `--robot USER@HOST` option is translated to `--host`.
+`--product` is required and currently accepts only `g1`, `r1`, or `go2`, as registered by the project. `--host` is valid only with `from-pc`. Legacy `deploy_g1_*` and `install_g1*` entry scripts remain for one compatibility cycle; they print a deprecation notice and forward to `--product g1`. The legacy `--robot USER@HOST` option is translated to `--host`.
 
 ## 2. Product matrix
+
+G1/R1 comparison follows; see the GO2 guide above for its configuration.
 
 | Item | G1 | R1 |
 | --- | --- | --- |
@@ -40,7 +50,7 @@ Both products use the same source tree and the same historical `g1_web_server` b
 
 ## 3. Shared deployment flow
 
-The deployment scripts follow the same sequence for both products:
+The deployment scripts follow the same sequence for all three products:
 
 1. Validate Ubuntu 20.04 AArch64, the `unitree` user, the selected DDS interface, and the absence of ROS/RMW/CycloneDDS environment contamination.
 2. Check the source tree for local modifications. Stop instead of overwriting uncommitted project code.
@@ -50,7 +60,7 @@ The deployment scripts follow the same sequence for both products:
 6. Before replacing a running Web service, read the Manifest and `/api/control/status`.
 7. Stop or replace the service only when the product identity matches, `motion.active=false`, `state=stopped`, and `vx/vy/vyaw` are all zero.
 8. If the other product's service is active, stop the deployment instead of shutting it down or switching products automatically.
-9. Install the exact system-level or user-level unit plus the selected product's controlled camera helper/sudoers files.
+9. Install the exact system/user units and only the camera helper/sudoers files declared by the product; GO2 has no privileged helper.
 10. After startup, perform read-only acceptance checks: a single listener on port 8080, health, Manifest, required DDS sources, zero-motion state, MainPID arguments, process environment, and helper status.
 
 Automated acceptance never calls real `SetVelocity`, `StopMove`, `Start`, `StandUp`, `SetFsmId`, joint, head, mode-switching, or navigation commands. Real motion acceptance is performed manually by an on-site operator through the Web interface.
@@ -156,4 +166,4 @@ On G1, check librealsense, D435i USB enumeration, and `g1-web-first-person-servi
 
 ## 10. Adding another product
 
-The initial generic deployment flow intentionally registers only `g1` and `r1`. Add future products by extending the controlled product-profile branch, system/user service definitions, helper/dependency declarations, and acceptance checks. Do not clone the whole deployment stack or introduce YAML, plugin frameworks, or new deployment dependencies unless the current Bash `case` model can no longer express the required behavior.
+The initial generic deployment flow intentionally registers `g1`, `r1` and `go2`. Add future products by extending the controlled product-profile branch, system/user service definitions, helper/dependency declarations, and acceptance checks. Do not clone the whole deployment stack or introduce YAML, plugin frameworks, or new deployment dependencies unless the current Bash `case` model can no longer express the required behavior.

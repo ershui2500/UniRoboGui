@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -19,7 +20,7 @@ namespace {
 constexpr std::int32_t kEnterMegaphoneApi = 4001;
 constexpr std::int32_t kExitMegaphoneApi = 4002;
 constexpr std::int32_t kUploadMegaphoneApi = 4003;
-constexpr std::size_t kBase64ChunkChars = 4096;
+constexpr std::size_t kBase64ChunkChars = 32768;
 
 class AudioHubClient final : public unitree::robot::Client {
  public:
@@ -94,7 +95,8 @@ std::string Base64(const std::vector<std::uint8_t>& input) {
 
 class Go2AudioCapability final : public IAudioCapability {
  public:
-  explicit Go2AudioCapability(bool mock) : mock_(mock) {}
+  explicit Go2AudioCapability(bool mock, Go2AudioRequest request = {})
+      : mock_(mock), test_request_(std::move(request)) {}
 
   AudioCapabilityFeatures Features() const override {
     return {true, false, true, false, false, false, false};
@@ -169,11 +171,14 @@ class Go2AudioCapability final : public IAudioCapability {
 
   std::int32_t PlayStream(std::string, std::string,
                           std::vector<std::uint8_t> pcm_data) override {
+    playback_error_.clear();
     if (!available_ || pcm_data.empty() || (pcm_data.size() % 2) != 0) {
+      playback_error_ = "local_tts_invalid_pcm";
       return -1;
     }
-    if (mock_) return 0;
-    if (!audiohub_ || pcm_data.size() > 0xffffffffULL - 36ULL) return -1;
+    if (mock_ && !test_request_) return 0;
+    if ((!audiohub_ && !test_request_) ||
+        pcm_data.size() > 0xffffffffULL - 36ULL) return -1;
 
     std::size_t first_sound = 0;
     while (first_sound < pcm_data.size()) {
@@ -184,7 +189,10 @@ class Go2AudioCapability final : public IAudioCapability {
       if (sample > 100 || sample < -100) break;
       first_sound += 2;
     }
-    if (first_sound == pcm_data.size()) return -1;
+    if (first_sound == pcm_data.size()) {
+      playback_error_ = "local_tts_silent_pcm";
+      return -1;
+    }
     if (first_sound > 0) {
       pcm_data.erase(pcm_data.begin(),
                      pcm_data.begin() + static_cast<std::ptrdiff_t>(first_sound));
@@ -196,8 +204,13 @@ class Go2AudioCapability final : public IAudioCapability {
         (encoded.size() + kBase64ChunkChars - 1) / kBase64ChunkChars;
     std::string response;
     const Json::Value empty(Json::objectValue);
-    std::int32_t result = audiohub_->Request(kEnterMegaphoneApi, empty, response);
-    if (result != 0) return result;
+    const auto upload_started = std::chrono::steady_clock::now();
+    std::int32_t result = Request(kEnterMegaphoneApi, empty, response);
+    if (result != 0) {
+      playback_error_ = "local_tts_audiohub_enter_failed";
+      std::clog << "[go2-audio] enter_result=" << result << '\n';
+      return result;
+    }
     for (std::size_t index = 0; index < total_blocks; ++index) {
       const std::string block = encoded.substr(index * kBase64ChunkChars,
                                                kBase64ChunkChars);
@@ -209,19 +222,34 @@ class Go2AudioCapability final : public IAudioCapability {
           static_cast<Json::UInt64>(index + 1);
       parameter["total_block_number"] =
           static_cast<Json::UInt64>(total_blocks);
-      result = audiohub_->Request(kUploadMegaphoneApi, parameter, response);
-      if (result != 0) break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      result = Request(kUploadMegaphoneApi, parameter, response);
+      if (result != 0) {
+        playback_error_ = "local_tts_audiohub_upload_failed_block_" +
+                          std::to_string(index + 1);
+        break;
+      }
+      // Each synchronous request already waits for the receiver's response.
     }
-    if (result == 0) {
+    const auto upload_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - upload_started).count();
+    if (result == 0 && !mock_) {
       const auto playback_ms = (pcm_data.size() + 31) / 32;
       std::this_thread::sleep_for(
           std::chrono::milliseconds(playback_ms + 5000));
     }
     const std::int32_t exit_result =
-        audiohub_->Request(kExitMegaphoneApi, empty, response);
+        Request(kExitMegaphoneApi, empty, response);
+    if (result == 0 && exit_result != 0) {
+      playback_error_ = "local_tts_audiohub_exit_failed";
+    }
+    std::clog << "[go2-audio] pcm_bytes=" << pcm_data.size()
+              << " blocks=" << total_blocks << " upload_ms=" << upload_ms
+              << " upload_result=" << result << " exit_result=" << exit_result
+              << '\n';
     return result != 0 ? result : exit_result;
   }
+
+  std::string PlaybackError() const override { return playback_error_; }
 
   std::int32_t PlayStop(std::string) override {
     if (!available_) return -1;
@@ -230,9 +258,17 @@ class Go2AudioCapability final : public IAudioCapability {
   }
 
  private:
+  std::int32_t Request(std::int32_t api, const Json::Value& parameter,
+                       std::string& response) {
+    return test_request_ ? test_request_(api, parameter)
+                         : audiohub_->Request(api, parameter, response);
+  }
+
   bool mock_{false};
+  Go2AudioRequest test_request_;
   bool available_{false};
   std::uint8_t mock_volume_{90};
+  std::string playback_error_;
   std::unique_ptr<unitree::robot::go2::VuiClient> vui_;
   std::unique_ptr<AudioHubClient> audiohub_;
 };
@@ -241,6 +277,11 @@ class Go2AudioCapability final : public IAudioCapability {
 
 std::unique_ptr<IAudioCapability> CreateGo2AudioCapability(bool mock) {
   return std::make_unique<Go2AudioCapability>(mock);
+}
+
+std::unique_ptr<IAudioCapability> CreateGo2AudioCapabilityForTesting(
+    Go2AudioRequest request) {
+  return std::make_unique<Go2AudioCapability>(true, std::move(request));
 }
 
 }  // namespace g1_web

@@ -29,14 +29,14 @@ SYSTEM_PACKAGES=(
 usage() {
   if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
     cat <<'EOF'
-Usage: bash scripts/install.sh --product g1|r1 [options]
+Usage: bash scripts/install.sh --product g1|r1|go2 [options]
 
 Options:
   --sdk2-source DIR     Install a transferred SDK2 source tree when SDK2 is missing
   --realsense-source DIR
                         Build and install librealsense2 from a transferred source tree
   --without-realsense   Do not install native D435i support
-  --without-kokoro      Skip local Kokoro TTS (Unitree TTS fallback remains available)
+  --without-kokoro      Skip local TTS (GO2 has no native fallback)
   --with-wifi-watchdog  Install the optional wlan0 recovery timer (system install only)
   --user-install        Force user-local SDK2 + systemctl --user services (requires Linger=yes)
   --system-install      Force system-level systemd services (requires sudo)
@@ -45,14 +45,14 @@ Options:
 EOF
   else
     cat <<'EOF'
-用法：bash scripts/install.sh --product g1|r1 [选项]
+用法：bash scripts/install.sh --product g1|r1|go2 [选项]
 
 选项：
   --sdk2-source DIR     SDK2 缺失时，从已传入的 SDK2 源码目录安装
   --realsense-source DIR
                         从已传入源码编译并安装 librealsense2
   --without-realsense   不安装原生 D435i 支持
-  --without-kokoro      跳过本地 Kokoro TTS（仍可使用 Unitree TTS）
+  --without-kokoro      跳过本地 TTS（GO2 没有原生回退）
   --with-wifi-watchdog  安装可选的 wlan0 恢复定时器（仅系统级安装）
   --user-install        强制用户级 SDK2 + systemctl --user 服务（要求 Linger=yes）
   --system-install      强制系统级 systemd 服务（要求 sudo）
@@ -65,7 +65,7 @@ EOF
 while (($#)); do
   case "$1" in
     --product)
-      (($# >= 2)) || { ui_err "错误：--product 需要 g1 或 r1" "ERROR: --product requires g1 or r1"; exit 2; }
+      (($# >= 2)) || { ui_err "错误：--product 需要 g1、r1 或 go2" "ERROR: --product requires g1, r1 or go2"; exit 2; }
       product="$2"; shift ;;
     --sdk2-source)
       (($# >= 2)) || { ui_err "错误：--sdk2-source 需要目录参数" "ERROR: --sdk2-source requires a directory"; exit 2; }
@@ -85,7 +85,7 @@ while (($#)); do
   shift
 done
 
-[[ -n "${product}" ]] || { ui_err "错误：必须显式指定 --product g1|r1" "ERROR: --product g1|r1 is required"; exit 2; }
+[[ -n "${product}" ]] || { ui_err "错误：必须显式指定 --product g1|r1|go2" "ERROR: --product g1|r1|go2 is required"; exit 2; }
 load_product_profile "${product}"
 ${NEEDS_REALSENSE} || without_realsense=true
 ${NEEDS_KOKORO} || without_kokoro=true
@@ -131,23 +131,23 @@ EOF
 
 github_help() {
   if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
-    cat >&2 <<'EOF'
+    cat >&2 <<EOF
 [TIP] A working Wi-Fi link does not guarantee GitHub access. Do not retry indefinitely.
 Download on a computer that can access GitHub, then transfer over the 192.168.123.164 Ethernet link:
   - project -> /home/unitree/UniRoboGui
   - latest unitree_sdk2 source -> /home/unitree/unitree_sdk2
   - librealsense source (only if the robot lacks usable librealsense2) -> /home/unitree/librealsense
-  - kokoro-int8-multi-lang-v1_1.tar.bz2 -> /home/unitree/UniRoboGui/tts_models/
+  - ${TTS_MODEL_NAME}.tar.bz2 -> /home/unitree/UniRoboGui/tts_models/
 See docs/deployment-dependencies.en.md for copy-ready offline transfer commands.
 EOF
   else
-    cat >&2 <<'EOF'
+    cat >&2 <<EOF
 [提示] Wi-Fi 连上不等于能访问 GitHub，国内网络经常会超时。不要反复重试。
 请在一台能访问 GitHub 的电脑下载，再通过 192.168.123.164 有线传到机器人：
   - 项目目录 -> /home/unitree/UniRoboGui
   - unitree_sdk2 最新源码 -> /home/unitree/unitree_sdk2
   - librealsense 源码（仅机器人缺少可用 librealsense2 时需要）-> /home/unitree/librealsense
-  - kokoro-int8-multi-lang-v1_1.tar.bz2 -> /home/unitree/UniRoboGui/tts_models/
+  - ${TTS_MODEL_NAME}.tar.bz2 -> /home/unitree/UniRoboGui/tts_models/
 docs/deployment-dependencies.md 给出了可直接复制的离线传包命令。
 EOF
   fi
@@ -269,14 +269,21 @@ install_sdk2() {
   local config="${sdk_prefix}/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake"
   if [[ "${SDK_POLICY}" == "verify_existing" ]]; then
     [[ -f "${config}" ]] ||
-      fail "R1 要求复用 ${sdk_prefix} 的现有 SDK2；未找到 ${config}，不会自动覆盖安装。" "R1 reuses the existing SDK2 under ${sdk_prefix}; ${config} is missing and will not be installed automatically."
-    [[ -f "${sdk_prefix}/include/unitree/robot/r1/audio/audio_client.hpp" &&
-       -f "${sdk_prefix}/include/unitree/robot/r1/loco/r1_loco_client.hpp" ]] ||
-      fail "${sdk_prefix} 的 SDK2 缺少 R1 Audio/Loco 头文件；请先按机器人固件/ABI要求安装兼容 SDK。" "SDK2 under ${sdk_prefix} lacks the R1 Audio/Loco headers. Install a firmware/ABI-compatible SDK first."
+      fail "${PRODUCT_NAME} 要求复用 ${sdk_prefix} 的现有 SDK2；未找到 ${config}，不会自动覆盖安装。" "${PRODUCT_NAME} reuses the existing SDK2 under ${sdk_prefix}; ${config} is missing and will not be installed automatically."
+    if [[ "$PRODUCT_ID" == r1 ]]; then
+      [[ -f "${sdk_prefix}/include/unitree/robot/r1/audio/audio_client.hpp" &&
+         -f "${sdk_prefix}/include/unitree/robot/r1/loco/r1_loco_client.hpp" ]] ||
+        fail "${sdk_prefix} 的 SDK2 缺少共享二进制需要的 R1 Audio/Loco 头文件；请安装兼容 SDK。" "SDK2 under ${sdk_prefix} lacks the R1 Audio/Loco headers required by the shared binary. Install a firmware/ABI-compatible SDK first."
+    fi
+    if [[ "$PRODUCT_ID" == go2 ]]; then
+      [[ -f "${sdk_prefix}/include/unitree/robot/go2/vui/vui_client.hpp" &&
+         -f "${sdk_prefix}/include/unitree/robot/go2/sport/sport_client.hpp" ]] ||
+        fail "SDK2 缺少 GO2 VUI/Sport 头文件。" "SDK2 is missing GO2 VUI/Sport headers."
+    fi
     compgen -G "${sdk_prefix}/lib/libddsc.so*" >/dev/null &&
       compgen -G "${sdk_prefix}/lib/libddscxx.so*" >/dev/null ||
-      fail "${sdk_prefix}/lib 缺少 R1 SDK2 所需的 CycloneDDS 动态库；不会自动覆盖 /usr/local。" "Required CycloneDDS shared libraries are missing under ${sdk_prefix}/lib; /usr/local will not be overwritten automatically."
-    ui_line "[OK] 已验证并复用 R1 现有 SDK2：${sdk_prefix}" "[OK] Reusing the verified existing R1 SDK2: ${sdk_prefix}"
+      fail "${sdk_prefix}/lib 缺少 SDK2 所需的 CycloneDDS 动态库；不会自动覆盖 /usr/local。" "Required CycloneDDS shared libraries are missing under ${sdk_prefix}/lib; /usr/local will not be overwritten automatically."
+    ui_line "[OK] 已验证并复用 ${PRODUCT_NAME} 现有 SDK2：${sdk_prefix}" "[OK] Reusing the verified existing ${PRODUCT_NAME} SDK2: ${sdk_prefix}"
     return 0
   fi
   [[ ! -f "${config}" ]] || {
@@ -394,10 +401,13 @@ PY
 }
 
 assert_no_other_product_service() {
-  if systemctl is-active --quiet "${OTHER_WEB_SERVICE}" 2>/dev/null ||
-     systemctl --user is-active --quiet "${OTHER_WEB_SERVICE}" 2>/dev/null; then
-    fail "检测到另一产品服务 ${OTHER_WEB_SERVICE} 正在运行；不会自动停止或切换产品。" "Another product service (${OTHER_WEB_SERVICE}) is active; it will not be stopped or switched automatically."
-  fi
+  local other_service
+  for other_service in ${OTHER_WEB_SERVICE}; do
+    if systemctl is-active --quiet "${other_service}" 2>/dev/null ||
+       systemctl --user is-active --quiet "${other_service}" 2>/dev/null; then
+      fail "另一产品服务 ${other_service} 正在运行；拒绝自动切换。" "Another product service (${other_service}) is active; refusing automatic switching."
+    fi
+  done
 }
 
 verify_running_service() {
@@ -454,7 +464,9 @@ PY
   [[ "$(ss -ltnH 'sport = :8080' | wc -l)" -eq 1 ]] ||
     fail "8080 必须只有一个监听项；请检查 ss -ltnp 'sport = :8080'。" "Port 8080 must have exactly one listener; check ss -ltnp 'sport = :8080'."
 
-  if [[ -x "/usr/local/sbin/${CAMERA_HELPER}" &&
+  if [[ -z "${CAMERA_HELPER}" ]]; then
+    : # This product has no privileged camera helper.
+  elif [[ -x "/usr/local/sbin/${CAMERA_HELPER}" &&
         -f "/etc/sudoers.d/${CAMERA_SUDOERS%.sudoers}" ]]; then
     local helper_action=is-active
     [[ "${PRODUCT_ID}" == r1 ]] && helper_action=depth-is-active
@@ -479,13 +491,13 @@ stop_current_user_services() {
       fail "禁用现有用户级 ${WEB_SERVICE} 失败。" "Failed to disable existing user service ${WEB_SERVICE}."
   fi
 
-  if ${NEEDS_KOKORO} && systemctl --user is-active --quiet g1-local-tts.service 2>/dev/null; then
-    systemctl --user stop g1-local-tts.service ||
-      fail "停止现有用户级 g1-local-tts.service 失败。" "Failed to stop existing user g1-local-tts.service."
+  if ${NEEDS_KOKORO} && systemctl --user is-active --quiet "${TTS_SERVICE}" 2>/dev/null; then
+    systemctl --user stop "${TTS_SERVICE}" ||
+      fail "停止现有用户级 ${TTS_SERVICE} 失败。" "Failed to stop existing user ${TTS_SERVICE}."
   fi
-  if ${NEEDS_KOKORO} && systemctl --user is-enabled --quiet g1-local-tts.service 2>/dev/null; then
-    systemctl --user disable g1-local-tts.service ||
-      fail "禁用现有用户级 g1-local-tts.service 失败。" "Failed to disable existing user g1-local-tts.service."
+  if ${NEEDS_KOKORO} && systemctl --user is-enabled --quiet "${TTS_SERVICE}" 2>/dev/null; then
+    systemctl --user disable "${TTS_SERVICE}" ||
+      fail "禁用现有用户级 ${TTS_SERVICE} 失败。" "Failed to disable existing user ${TTS_SERVICE}."
   fi
 
   sleep 1
@@ -548,11 +560,13 @@ if ${check_only}; then
     ui_line "[OK] 已存在持久用户级 ${WEB_SERVICE}；无交互 sudo 时自动模式可复用/更新它。" "[OK] Persistent user service ${WEB_SERVICE} is present. Auto mode may reuse/update it when interactive sudo is unavailable."
   fi
   if ${NEEDS_KOKORO} &&
-     (systemctl --user is-active --quiet g1-local-tts.service 2>/dev/null ||
-      systemctl --user is-enabled --quiet g1-local-tts.service 2>/dev/null); then
-    ui_line "[OK] 已存在持久用户级 g1-local-tts.service。" "[OK] Persistent user g1-local-tts.service is present."
+     (systemctl --user is-active --quiet "${TTS_SERVICE}" 2>/dev/null ||
+      systemctl --user is-enabled --quiet "${TTS_SERVICE}" 2>/dev/null); then
+    ui_line "[OK] 已存在持久用户级 ${TTS_SERVICE}。" "[OK] Persistent user ${TTS_SERVICE} is present."
   fi
-  if [[ -x "/usr/local/sbin/${CAMERA_HELPER}" &&
+  if [[ -z "${CAMERA_HELPER}" ]]; then
+    : # This product has no privileged camera helper.
+  elif [[ -x "/usr/local/sbin/${CAMERA_HELPER}" &&
         -f "/etc/sudoers.d/${CAMERA_SUDOERS%.sudoers}" ]]; then
     ui_line "[OK] 相机占用服务 helper 和 sudoers 已安装。" "[OK] Camera owner-service helper and sudoers are installed."
   else
@@ -624,9 +638,13 @@ fi
 
 if ! ${without_kokoro}; then
   UNIROBOGUI_ROOT=/home/unitree/UniRoboGui \
-    bash "${project_dir}/scripts/install_kokoro_tts.sh"
+    bash "${project_dir}/scripts/install_kokoro_tts.sh" --product "${PRODUCT_ID}"
 else
-  warn "已跳过 Kokoro 安装；Web 语音仍可回退使用 Unitree 原生 TTS。" "Kokoro installation skipped; Web voice can still fall back to Unitree native TTS."
+  if [[ "$PRODUCT_ID" == go2 ]]; then
+    warn "已跳过本地 TTS；GO2 没有原生 TTS 回退，文本播报不可用。" "Local TTS skipped; GO2 has no native TTS fallback and text-to-speech is unavailable."
+  else
+    warn "已跳过 Kokoro 安装；仍可使用 Unitree TTS。" "Kokoro installation skipped; Unitree TTS remains available."
+  fi
 fi
 
 mkdir -p "${project_dir}/config"
@@ -651,23 +669,25 @@ if [[ "${install_scope}" == "system" ]]; then
 
   stop_current_user_services
 
-  sudo install -m 0755 "${project_dir}/scripts/${CAMERA_HELPER}" \
-    "/usr/local/sbin/${CAMERA_HELPER}"
-  sudo visudo -cf "${project_dir}/scripts/${CAMERA_SUDOERS}"
-  sudo install -m 0440 "${project_dir}/scripts/${CAMERA_SUDOERS}" \
-    "/etc/sudoers.d/${CAMERA_SUDOERS%.sudoers}"
-  helper_rc=0
-  helper_action=is-active
-  [[ "${PRODUCT_ID}" == r1 ]] && helper_action=depth-is-active
-  sudo -n "/usr/local/sbin/${CAMERA_HELPER}" "${helper_action}" >/dev/null 2>&1 || helper_rc=$?
-  if ((helper_rc != 0 && helper_rc != 3)); then
-    fail "相机 helper 的 sudoers 验证失败（退出码 ${helper_rc}）。" "Camera helper sudoers verification failed (exit ${helper_rc})."
+  if [[ -n "${CAMERA_HELPER}" ]]; then
+    sudo install -m 0755 "${project_dir}/scripts/${CAMERA_HELPER}" \
+      "/usr/local/sbin/${CAMERA_HELPER}"
+    sudo visudo -cf "${project_dir}/scripts/${CAMERA_SUDOERS}"
+    sudo install -m 0440 "${project_dir}/scripts/${CAMERA_SUDOERS}" \
+      "/etc/sudoers.d/${CAMERA_SUDOERS%.sudoers}"
+    helper_rc=0
+    helper_action=is-active
+    [[ "${PRODUCT_ID}" == r1 ]] && helper_action=depth-is-active
+    sudo -n "/usr/local/sbin/${CAMERA_HELPER}" "${helper_action}" >/dev/null 2>&1 || helper_rc=$?
+    if ((helper_rc != 0 && helper_rc != 3)); then
+      fail "相机 helper 的 sudoers 验证失败（退出码 ${helper_rc}）。" "Camera helper sudoers verification failed (exit ${helper_rc})."
+    fi
+    ui_line "[OK] 相机 helper 和免密 sudo 规则验证通过。" "[OK] Camera helper and passwordless sudo rule verified."
   fi
-  ui_line "[OK] 相机 helper 和免密 sudo 规则验证通过。" "[OK] Camera helper and passwordless sudo rule verified."
 
   if ${NEEDS_KOKORO}; then
-    sudo install -m 0644 "${project_dir}/deploy/g1-local-tts.service" \
-      /etc/systemd/system/g1-local-tts.service
+    sudo install -m 0644 "${project_dir}/${TTS_SYSTEM_UNIT}" \
+      "/etc/systemd/system/${TTS_SERVICE}"
   fi
   sudo install -m 0644 "${project_dir}/${WEB_SYSTEM_UNIT}" \
     "/etc/systemd/system/${WEB_SERVICE}"
@@ -682,22 +702,22 @@ if [[ "${install_scope}" == "system" ]]; then
 
   sudo systemctl daemon-reload
   if ! ${without_kokoro}; then
-    sudo systemctl enable g1-local-tts.service
-    sudo systemctl restart g1-local-tts.service
+    sudo systemctl enable "${TTS_SERVICE}"
+    sudo systemctl restart "${TTS_SERVICE}"
   fi
   sudo systemctl enable --now "${WEB_SERVICE}"
   if ${with_wifi_watchdog}; then
     sudo systemctl enable --now g1-wifi-connect.timer
   fi
 
-  ${without_kokoro} || systemctl is-active --quiet g1-local-tts.service
+  ${without_kokoro} || systemctl is-active --quiet "${TTS_SERVICE}"
   systemctl is-active --quiet "${WEB_SERVICE}"
 else
   assert_no_other_product_service
   if systemctl is-active --quiet "${WEB_SERVICE}" 2>/dev/null ||
      systemctl is-enabled --quiet "${WEB_SERVICE}" 2>/dev/null ||
-     { ${NEEDS_KOKORO} && { systemctl is-active --quiet g1-local-tts.service 2>/dev/null ||
-       systemctl is-enabled --quiet g1-local-tts.service 2>/dev/null; }; }; then
+     { ${NEEDS_KOKORO} && { systemctl is-active --quiet "${TTS_SERVICE}" 2>/dev/null ||
+       systemctl is-enabled --quiet "${TTS_SERVICE}" 2>/dev/null; }; }; then
     fail "系统级 UniRoboGui 服务已存在。用户级安装不会与其争抢端口；请在交互终端重新执行系统级安装。" "System-level UniRoboGui services already exist. User-local install will not compete for ports; rerun interactively for system install."
   fi
 
@@ -706,18 +726,19 @@ else
   install -m 0644 "${project_dir}/${WEB_USER_UNIT}" \
     "/home/unitree/.config/systemd/user/${WEB_SERVICE}"
   if ${NEEDS_KOKORO}; then
-    install -m 0644 "${project_dir}/deploy/g1-local-tts.user.service" \
-      /home/unitree/.config/systemd/user/g1-local-tts.service
+    install -m 0644 "${project_dir}/${TTS_USER_UNIT}" \
+      "/home/unitree/.config/systemd/user/${TTS_SERVICE}"
   fi
   systemctl --user daemon-reload
   if ! ${without_kokoro}; then
-    systemctl --user enable g1-local-tts.service
-    systemctl --user restart g1-local-tts.service
+    systemctl --user enable "${TTS_SERVICE}"
+    systemctl --user restart "${TTS_SERVICE}"
   fi
   systemctl --user enable --now "${WEB_SERVICE}"
-  ${without_kokoro} || systemctl --user is-active --quiet g1-local-tts.service
+  ${without_kokoro} || systemctl --user is-active --quiet "${TTS_SERVICE}"
   systemctl --user is-active --quiet "${WEB_SERVICE}"
-  if [[ ! -x "/usr/local/sbin/${CAMERA_HELPER}" ||
+  if [[ -n "${CAMERA_HELPER}" ]] &&
+     [[ ! -x "/usr/local/sbin/${CAMERA_HELPER}" ||
         ! -f "/etc/sudoers.d/${CAMERA_SUDOERS%.sudoers}" ]]; then
     ui_line "[信息] 用户级安装没有 ${PRODUCT_NAME} 特权相机 helper；相关相机能力会按运行时证据降级。" "[INFO] User installation has no privileged ${PRODUCT_NAME} camera helper; related camera capabilities will degrade based on runtime evidence."
   fi
@@ -736,5 +757,5 @@ ui_line "访问：http://${robot_ip}:8080" "Open: http://${robot_ip}:8080"
 if [[ "${PRODUCT_ID}" == g1 ]]; then
   ui_line "g1-web-control.service 保持现有导航默认值；Web 安全确认与 10 m 目标距离限制仍然生效。" "g1-web-control.service keeps its existing navigation default; Web safety confirmation and the 10 m goal limit still apply."
 else
-  ui_line "r1-web-control.service 默认不声明 Mid-360，也不启用真实导航。" "r1-web-control.service does not declare Mid-360 or enable real navigation by default."
+  ui_line "${WEB_SERVICE} 默认不声明 Mid-360，也不启用真实导航。" "${WEB_SERVICE} does not declare Mid-360 or enable real navigation by default."
 fi

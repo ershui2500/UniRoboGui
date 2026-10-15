@@ -4,11 +4,36 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${script_dir}/deploy_i18n.sh"
 
+source "${script_dir}/deploy_product.sh"
+product=g1
+show_help=false
+while (($#)); do
+  case "$1" in
+    --product)
+      (($# >= 2)) || { ui_err '--product 需要 g1 或 go2' '--product requires g1 or go2'; exit 2; }
+      product="$2"; shift ;;
+    -h|--help) show_help=true ;;
+    *) ui_err "未知选项：$1" "Unknown option: $1"; exit 2 ;;
+  esac
+  shift
+done
+load_product_profile "$product"
+if ! ${NEEDS_KOKORO}; then
+  ui_err "${PRODUCT_NAME} 默认不安装 Kokoro。" "${PRODUCT_NAME} does not install Kokoro by default."
+  exit 2
+fi
+if ${show_help}; then
+  ui_line '用法：bash scripts/install_kokoro_tts.sh [--product g1|go2]' 'Usage: bash scripts/install_kokoro_tts.sh [--product g1|go2]'
+  printf '%s: %s / %s\n' "$PRODUCT_ID" "$TTS_MODEL_NAME" "$TTS_MODEL_FILE"
+  exit 0
+fi
+
 ROOT="${UNIROBOGUI_ROOT:-/home/unitree/UniRoboGui}"
 PYTHON="${PYTHON:-python3}"
 VENV="${KOKORO_VENV:-${ROOT}/tts_kokoro}"
 MODEL_ROOT="${KOKORO_MODEL_ROOT:-${ROOT}/tts_models}"
-MODEL_NAME="kokoro-int8-multi-lang-v1_1"
+MODEL_NAME="${TTS_MODEL_NAME}"
+MODEL_FILE="${TTS_MODEL_FILE}"
 MODEL_DIR="${MODEL_ROOT}/${MODEL_NAME}"
 SHERPA_VERSION="${SHERPA_ONNX_VERSION:-1.13.4}"
 MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/${MODEL_NAME}.tar.bz2"
@@ -45,7 +70,7 @@ EOF
 }
 
 if [[ "$(uname -m)" != "aarch64" ]]; then
-  ui_err "[警告] 此安装器针对 G1 Jetson/aarch64 调优；当前架构为 $(uname -m)，继续执行。" "[WARN] This installer is tuned for the G1 Jetson/aarch64 target; continuing on $(uname -m)."
+  ui_err "[警告] 此安装器针对 Jetson/aarch64 调优；当前架构为 $(uname -m)，继续执行。" "[WARN] This installer is tuned for Jetson/aarch64 target; continuing on $(uname -m)."
 fi
 
 "${PYTHON}" - <<'PY'
@@ -91,9 +116,9 @@ else
 fi
 
 mkdir -p "${MODEL_ROOT}"
-if [[ ! -f "${MODEL_DIR}/model.int8.onnx" ]]; then
+if [[ ! -f "${MODEL_DIR}/${MODEL_FILE}" ]]; then
   if [[ ! -s "${ARCHIVE}" ]]; then
-    curl --noproxy '*' -fL --retry 2 --retry-delay 2 --connect-timeout 8 \
+    curl -fL --retry 2 --retry-delay 2 --connect-timeout 8 \
       --continue-at - -o "${ARCHIVE}" "${MODEL_URL}" || {
       if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
         cat >&2 <<EOF
@@ -119,8 +144,12 @@ EOF
   tar -xjf "${ARCHIVE}" -C "${MODEL_ROOT}"
 fi
 
+if [[ "$PRODUCT_ID" == go2 && -f "${MODEL_DIR}/model.int8.onnx" ]]; then
+  fail "GO2 FP32 模型目录混入 INT8 文件；请使用独立的官方 FP32 目录。" "GO2 FP32 model directory contains an INT8 file; use the separate official FP32 directory."
+fi
+
 for required in \
-  model.int8.onnx voices.bin tokens.txt lexicon-us-en.txt lexicon-zh.txt \
+  "${MODEL_FILE}" voices.bin tokens.txt lexicon-us-en.txt lexicon-zh.txt \
   phone-zh.fst date-zh.fst number-zh.fst; do
   test -f "${MODEL_DIR}/${required}" || {
     ui_err "缺少 Kokoro 资源：${MODEL_DIR}/${required}" "Missing Kokoro asset: ${MODEL_DIR}/${required}"
@@ -128,14 +157,15 @@ for required in \
   }
 done
 
-KOKORO_MODEL_DIR="${MODEL_DIR}" "${VENV}/bin/python" - <<'PY'
+KOKORO_MODEL_DIR="${MODEL_DIR}" KOKORO_MODEL_FILE="${MODEL_FILE}" \
+  "${VENV}/bin/python" - <<'PY'
 import os
 import sherpa_onnx
 root = os.environ['KOKORO_MODEL_DIR']
 config = sherpa_onnx.OfflineTtsConfig(
     model=sherpa_onnx.OfflineTtsModelConfig(
         kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
-            model=os.path.join(root, 'model.int8.onnx'),
+            model=os.path.join(root, os.environ['KOKORO_MODEL_FILE']),
             voices=os.path.join(root, 'voices.bin'),
             tokens=os.path.join(root, 'tokens.txt'),
             data_dir=os.path.join(root, 'espeak-ng-data'),
@@ -159,11 +189,20 @@ if not config.validate():
     if os.environ.get('UNIROBOGUI_LANG') == 'en':
         raise SystemExit('Kokoro sherpa-onnx config validation failed')
     raise SystemExit('Kokoro sherpa-onnx 配置验证失败')
-sherpa_onnx.OfflineTts(config)
+tts = sherpa_onnx.OfflineTts(config)
+if os.environ['KOKORO_MODEL_FILE'] == 'model.onnx':
+    import numpy as np
+    for text in ['你好。', '你好，机器人。请完整播放最后一句。']:
+        generation = sherpa_onnx.GenerationConfig()
+        generation.sid = 3
+        generation.speed = 1.2
+        audio = np.asarray(tts.generate(text, generation).samples)
+        if audio.size == 0 or not np.isfinite(audio).all() or np.max(np.abs(audio)) < 0.0001:
+            raise SystemExit('Kokoro FP32 synthesis validation failed')
 if os.environ.get('UNIROBOGUI_LANG') == 'en':
-    print('Kokoro zh-en INT8 model ready with sherpa-onnx')
+    print('Kokoro zh-en model ready:', os.environ['KOKORO_MODEL_FILE'])
 else:
-    print('Kokoro 中英双语 INT8 模型已通过 sherpa-onnx 验证')
+    print('Kokoro 中英双语模型已通过验证：', os.environ['KOKORO_MODEL_FILE'])
 PY
 
 if [[ "$UNIROBOGUI_LANG" == "en" ]]; then

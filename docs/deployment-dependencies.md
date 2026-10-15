@@ -1,8 +1,16 @@
-# UniRoboGui G1 / R1 通用部署与排障指南
+# UniRoboGui G1 / R1 / GO2 通用部署与排障指南
 
 **简体中文** | [English](deployment-dependencies.en.md)
 
-本文件同时覆盖 Unitree G1 与 R1。部署入口、公共构建流程和安全检查保持一致；网卡、SDK、service、相机、TTS 和附件差异集中在产品配置中，不维护两套重复教程。
+本文件同时覆盖 Unitree G1、R1 与 GO2。部署入口、公共构建流程和安全检查保持一致；网卡、SDK、service、相机、TTS 和附件差异集中在产品配置中，不维护两套重复教程。
+
+### GO2：当前能力与 FP32 部署
+
+GO2 已接入共享 Registry、Web 工作台、12关节姿态、RGB、诊断、受控全身调试/示教、运动白名单与本地TTS。真实运动仍需现场操作员验收；ASR/原生TTS/内置LLM尚未接入，深度与可选SLAM能力不能冒充可用。
+
+使用本次更新后的源码执行 `bash scripts/deploy.sh install --product go2`，或在联网电脑执行 `bash scripts/deploy.sh from-pc --product go2 --host unirobo-go2`，默认准备 **Kokoro FP32** 并安装 `go2-local-tts.service`。检查命令为 `bash scripts/deploy.sh check --product go2`。旧GitHub版本不会自动包含尚未发布的本地更改。G1保持原Kokoro策略，R1默认原生TTS。
+
+详见 [GO2部署与Web教程](go2-guide.md)，含功能边界、代理、升级、模型核验和听觉验收。
 
 ## 1. 唯一推荐入口
 
@@ -22,9 +30,11 @@ bash scripts/deploy.sh check --product r1
 bash scripts/deploy.sh install --product g1 --lang en
 ~~~
 
-`--product` 必填，只接受 Registry 当前支持的 `g1` 或 `r1`。`--host` 只用于 `from-pc`。旧 `deploy_g1_*` / `install_g1*` 中英文脚本仅保留一个兼容周期，打印弃用提示后转发到 `--product g1`；旧 `--robot USER@HOST` 会转换为 `--host`。
+`--product` 必填，接受当前部署配置支持的 `g1`、`r1` 或 `go2`。`--host` 只用于 `from-pc`。旧 `deploy_g1_*` / `install_g1*` 中英文脚本仅保留一个兼容周期，打印弃用提示后转发到 `--product g1`；旧 `--robot USER@HOST` 会转换为 `--host`。
 
 ## 2. 产品矩阵
+
+G1/R1对照如下；GO2配置见上方专用教程。
 
 | 项目 | G1 | R1 |
 | --- | --- | --- |
@@ -39,7 +49,7 @@ bash scripts/deploy.sh install --product g1 --lang en
 | Mid-360 / navigation | 保持现有 G1 配置与 service 默认值 | 默认不声明 Mid-360，不启用真实导航 |
 | 二进制 | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` |
 
-两种产品都使用同一代码库和同一个 `g1_web_server` 历史二进制名。产品身份由 `--robot`、`RobotRegistry`、Manifest 和 Capability 决定，不由二进制文件名决定。
+三种产品都使用同一代码库和同一个 `g1_web_server` 历史二进制名。产品身份由 `--robot`、`RobotRegistry`、Manifest 和 Capability 决定，不由二进制文件名决定。
 
 ## 3. 公共部署流程
 
@@ -53,7 +63,7 @@ bash scripts/deploy.sh install --product g1 --lang en
 6. 在替换正在运行的 Web service 前读取 Manifest 与 `/api/control/status`；
 7. 只有确认产品身份匹配、`motion.active=false`、`state=stopped` 且 `vx/vy/vyaw` 全零才允许停止或替换该 service；
 8. 如果发现另一产品 service 正在运行，直接停止部署，不自动关闭或切换；
-9. 安装精确的 system 或 user unit、产品相机 helper/sudoers；
+9. 安装精确的 system 或 user unit；仅对产品声明的相机安装 helper/sudoers，GO2不需要；
 10. 启动后只做只读验收：8080 唯一监听、health、Manifest、DDS 必需 source、零运动状态、MainPID 参数、进程环境和 helper 状态。
 
 自动验收不会调用真实 `SetVelocity`、`StopMove`、`Start`、`StandUp`、`SetFsmId`、关节、头部、模式切换或导航命令。真实运动验收由现场操作员通过 Web 执行。
@@ -86,8 +96,8 @@ R1 使用以下边界：
 `from-pc` 使用 rsync 传输项目时：
 
 - 不传 `.git`；
-- 不传 `AGENTS.md`、`*_AGENTS.md`、`.robot-workspace`、`.robot-backups`、`.robot-sync` 和本地 G1/R1 参考资料；
-- 保留机器人整个 `config/` 运行时配置目录和 `build/`；
+- 不传 `AGENTS.md`、`*_AGENTS.md`、`.robot-workspace`、`.robot-backups`、`.robot-sync` 和本地 G1/R1/GO2 参考资料；
+- 保留机器人整个 `config/`、`build/`、`tts_models/` 和 `tts_kokoro/` 运行目录；
 - 如果机器人项目 Git checkout 有未提交修改，停止部署；
 - 对脚本自己管理的非 Git 目录只在有管理标记时使用受控 `--delete`；
 - 不把 SSH、sudo、Wi-Fi、API 密钥或其他凭据写入项目、参数、日志或缓存。

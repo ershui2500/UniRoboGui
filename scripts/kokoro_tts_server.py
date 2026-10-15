@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Loopback-only Kokoro zh-en TTS service for UniRoboGui.
 
-Keeps a sherpa-onnx Kokoro INT8 model warm and synthesizes mixed Chinese/English
+Keeps a sherpa-onnx Kokoro model warm and synthesizes mixed Chinese/English
 speech into raw 16 kHz mono s16le PCM. The C++ web service fetches that PCM from
 POST /tts and sends it to the robot speaker through Unitree AudioClient::PlayStream.
 The service never uses PulseAudio for robot playback.
@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
@@ -144,10 +145,13 @@ class KokoroRuntime:
 
     @staticmethod
     def _make_config(model_dir: str, threads: int):
+        model_file = os.path.join(model_dir, "model.int8.onnx")
+        if not os.path.isfile(model_file):
+            model_file = os.path.join(model_dir, "model.onnx")
         config = sherpa_onnx.OfflineTtsConfig(
             model=sherpa_onnx.OfflineTtsModelConfig(
                 kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
-                    model=os.path.join(model_dir, "model.int8.onnx"),
+                    model=model_file,
                     voices=os.path.join(model_dir, "voices.bin"),
                     tokens=os.path.join(model_dir, "tokens.txt"),
                     data_dir=os.path.join(model_dir, "espeak-ng-data"),
@@ -179,6 +183,8 @@ class KokoroRuntime:
         samples = np.asarray(samples, dtype=np.float32)
         if samples.size == 0:
             return b""
+        if not np.isfinite(samples).all():
+            raise RuntimeError("kokoro_non_finite_audio")
 
         sample_rate = int(self.tts.sample_rate)
         if sample_rate <= 0:
@@ -241,7 +247,7 @@ class KokoroRuntime:
         segments = _split_leading_text(text)
         with self.lock:
             if len(segments) == 1 or not self.continuation_tts:
-                self.tts.generate(segments[0], generation, on_samples)
+                self.tts.generate(text, generation, on_samples)
             else:
                 lead, rest = segments[0], segments[1]
                 continuation_segments = _split_continuation_text(rest)
@@ -425,13 +431,19 @@ class Handler(BaseHTTPRequestHandler):
 
         self._start_pcm_stream()
         connection_ok = True
+        started = time.monotonic()
+        first_pcm = None
+        pcm_bytes = 0
 
         def write_chunk(pcm: bytes, progress: float) -> bool:
-            nonlocal connection_ok
+            nonlocal connection_ok, first_pcm, pcm_bytes
             if not connection_ok:
                 return False
             try:
                 self._write_http_chunk(pcm)
+                if first_pcm is None:
+                    first_pcm = time.monotonic() - started
+                pcm_bytes += len(pcm)
                 return True
             except (BrokenPipeError, ConnectionResetError):
                 connection_ok = False
@@ -441,13 +453,25 @@ class Handler(BaseHTTPRequestHandler):
             self.runtime.stream_pcm16k(text, write_chunk)
             if connection_ok:
                 self._finish_http_chunks()
+                print(
+                    "[kokoro] " + json.dumps({
+                        "first_pcm_s": first_pcm,
+                        "synthesis_s": time.monotonic() - started,
+                        "pcm_bytes": pcm_bytes,
+                        "audio_s": pcm_bytes / 32000,
+                    }), flush=True,
+                )
         except (BrokenPipeError, ConnectionResetError):
             return
         except Exception as exc:
             # Headers may already be on the wire, so do not attempt to replace
             # the response with JSON. Closing the chunked response causes curl
             # to report a transport failure and the C++ side can fall back.
-            print(f"[kokoro] streaming error: {type(exc).__name__}", flush=True)
+            error_code = ("kokoro_non_finite_audio"
+                          if str(exc) == "kokoro_non_finite_audio"
+                          else type(exc).__name__)
+            print(f"[kokoro] streaming error: {error_code}", flush=True)
+            self.close_connection = True
             return
 
 

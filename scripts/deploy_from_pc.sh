@@ -9,8 +9,6 @@ PRODUCT=""
 CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/unirobogui-deploy"
 SDK2_CACHE="$CACHE_ROOT/unitree_sdk2"
 REALSENSE_CACHE="$CACHE_ROOT/librealsense"
-MODEL_NAME="kokoro-int8-multi-lang-v1_1"
-MODEL_ARCHIVE="$CACHE_ROOT/${MODEL_NAME}.tar.bz2"
 WHEELHOUSE="$CACHE_ROOT/wheelhouse-aarch64-py38"
 SHERPA_VERSION="1.13.4"
 REMOTE_PROJECT_DIR="/home/unitree/UniRoboGui"
@@ -25,7 +23,7 @@ usage() {
   if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
     cat <<EOF
 Usage:
-  bash scripts/deploy_from_pc.sh --product g1|r1 [--host USER@HOST]
+  bash scripts/deploy_from_pc.sh --product g1|r1|go2 [--host USER@HOST]
 
 Default robot:
   $ROBOT
@@ -40,7 +38,7 @@ EOF
   else
     cat <<EOF
 用法：
-  bash scripts/deploy_from_pc.sh --product g1|r1 [--host USER@HOST]
+  bash scripts/deploy_from_pc.sh --product g1|r1|go2 [--host USER@HOST]
 
 默认机器人：
   $ROBOT
@@ -58,7 +56,7 @@ EOF
 while (($#)); do
   case "$1" in
     --product)
-      (($# >= 2)) || { ui_err "[错误] --product 缺少 g1|r1" "[ERROR] --product requires g1|r1"; exit 2; }
+      (($# >= 2)) || { ui_err "[错误] --product 缺少 g1|r1|go2" "[ERROR] --product requires g1|r1|go2"; exit 2; }
       PRODUCT="$2"
       shift
       ;;
@@ -73,8 +71,10 @@ while (($#)); do
   shift
 done
 
-[[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product g1|r1" "[ERROR] --product g1|r1 is required"; exit 2; }
+[[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product g1|r1|go2" "[ERROR] --product g1|r1|go2 is required"; exit 2; }
 load_product_profile "$PRODUCT"
+MODEL_NAME="$TTS_MODEL_NAME"
+MODEL_ARCHIVE="$CACHE_ROOT/${MODEL_NAME}.tar.bz2"
 [[ -n "$ROBOT" ]] || ROBOT="$DEFAULT_HOST"
 SSH_ARGS=(-o ConnectTimeout=8)
 RSYNC_RSH="ssh -o ConnectTimeout=8"
@@ -282,7 +282,7 @@ if ! ${NEEDS_KOKORO}; then
 elif [[ -s "$MODEL_ARCHIVE" ]] && tar -tjf "$MODEL_ARCHIVE" >/dev/null 2>&1; then
   ok "复用已下载且校验通过的 Kokoro 模型压缩包。" "Reusing the downloaded and validated Kokoro model archive."
 else
-  info "下载 Kokoro 中英多语言 INT8 模型..." "Downloading the Kokoro Chinese/English multilingual INT8 model..."
+  info "下载 Kokoro 模型 ${MODEL_NAME}..." "Downloading Kokoro model ${MODEL_NAME}..."
   help_customer "如果模型下载失败，请确认 GitHub Release 也能访问，而不仅是 github.com 首页。删除损坏的缓存文件后重试不会影响机器人。" "If the model download fails, verify that GitHub Releases are reachable, not only the github.com homepage. Removing a damaged cache file and retrying will not affect the robot."
   curl -fL --retry 2 --retry-delay 2 --continue-at - -o "$MODEL_ARCHIVE"     "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/${MODEL_NAME}.tar.bz2"
   tar -tjf "$MODEL_ARCHIVE" >/dev/null
@@ -290,7 +290,7 @@ else
 fi
 
 if ${NEEDS_KOKORO}; then
-  info "准备适用于 G1 aarch64 + CPython 3.8 的离线 Python wheels..." "Preparing offline Python wheels for G1 aarch64 + CPython 3.8..."
+  info "准备适用于 ${PRODUCT_NAME} aarch64 + CPython 3.8 的离线 Python wheels..." "Preparing offline Python wheels for ${PRODUCT_NAME} aarch64 + CPython 3.8..."
   help_customer "如果 pip 下载失败，先确认这台联网电脑能访问 PyPI；不要用 x86_64 wheel 代替。" "If pip download fails, verify PyPI access; do not substitute x86_64 wheels."
   python3 -m pip download --dest "$WHEELHOUSE" --only-binary=:all: \
     --platform manylinux2014_aarch64 --python-version 38 --implementation cp \
@@ -334,8 +334,11 @@ rsync -e "$RSYNC_RSH" -az "${project_delete_args[@]}" --info=progress2 \
   --exclude '/*_AGENTS.md' \
   --exclude '/G1参考资料/' \
   --exclude '/R1参考资料/' \
+  --exclude '/GO2参考资料/' \
   --exclude '/build/' \
   --exclude '/config/' \
+  --exclude '/tts_models/' \
+  --exclude '/tts_kokoro/' \
   "$PROJECT_DIR/" "$ROBOT:$REMOTE_PROJECT_DIR/"
 project_revision="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
 ssh "${SSH_ARGS[@]}" "$ROBOT" "printf '%s\\n' '$project_revision' > '$REMOTE_PROJECT_MARKER'"
@@ -353,7 +356,7 @@ fi
 if ${NEEDS_KOKORO}; then
   info "传输 Kokoro 模型..." "Transferring the Kokoro model..."
   rsync -e "$RSYNC_RSH" -az --info=progress2 "$MODEL_ARCHIVE" "$ROBOT:/home/unitree/UniRoboGui/tts_models/${MODEL_NAME}.tar.bz2"
-  info "传输 G1 AArch64/Python 3.8 wheelhouse..." "Transferring the G1 AArch64/Python 3.8 wheelhouse..."
+  info "传输 ${PRODUCT_NAME} AArch64/Python 3.8 wheelhouse..." "Transferring the ${PRODUCT_NAME} AArch64/Python 3.8 wheelhouse..."
   rsync -e "$RSYNC_RSH" -az --info=progress2 "$WHEELHOUSE/" "$ROBOT:/home/unitree/unirobogui-wheelhouse/"
 fi
 ok "项目与离线依赖已全部传入机器人。" "Project and offline dependencies have been transferred to the robot."

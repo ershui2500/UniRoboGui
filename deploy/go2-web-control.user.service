@@ -1,5 +1,5 @@
 [Unit]
-Description=UniRoboGui Go2 EDU Web workstation (user)
+Description=UniRoboGui GO2 Web workstation (user)
 After=default.target
 
 [Service]

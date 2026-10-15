@@ -88,18 +88,148 @@ std::vector<std::string> SplitCsv(const std::string& value) {
   return result;
 }
 
+void TestGo2AudioPacketAndFailureCleanup() {
+  for (int failure : {0, 4001, 4003, 4002}) {
+    std::vector<int> calls;
+    std::string encoded;
+    std::size_t block_index = 0;
+    std::size_t expected_blocks = 0;
+    auto audio = g1_web::CreateGo2AudioCapabilityForTesting(
+        [&](std::int32_t api, const Json::Value& parameter) {
+          calls.push_back(api);
+          if (api == 4003) {
+            ++block_index;
+            const auto content = parameter["block_content"].asString();
+            Require(parameter["current_block_index"].asUInt64() == block_index &&
+                        parameter["current_block_size"].asUInt64() == content.size() &&
+                        content.size() <= 32768,
+                    "audio upload blocks must preserve ordered bounded framing");
+            expected_blocks = parameter["total_block_number"].asUInt64();
+            encoded += content;
+          }
+          if (api == failure) return 731;
+          // A cleanup failure must not replace the original upload error.
+          if (failure == 4003 && api == 4002) return 732;
+          return 0;
+        });
+    std::string error;
+    Require(audio->Start(error), "protocol mock must start without DDS");
+    Require(audio->PlayStream("test", "bad", {0}) == -1 && calls.empty(),
+            "invalid PCM must not open the speaker");
+    Require(audio->PlayStream("test", "silent", {0, 0}) == -1 && calls.empty(),
+            "silent PCM must not open the speaker");
+    std::vector<std::uint8_t> pcm(100000);
+    for (std::size_t i = 0; i < pcm.size(); i += 2) pcm[i + 1] = 2;
+    const auto result = audio->PlayStream("test", "valid", pcm);
+    Require(result == (failure == 0 ? 0 : 731),
+            "original audio API return code must survive cleanup");
+    if (failure == 4001) {
+      Require(calls == std::vector<int>{4001} &&
+                  audio->PlaybackError() == "local_tts_audiohub_enter_failed",
+              "failed enter must not upload or exit an unowned session");
+    } else {
+      Require(calls.front() == 4001 && calls.back() == 4002,
+              "successful enter must always exit, including upload failure");
+      Require(audio->PlaybackError() ==
+                  (failure == 4003 ? "local_tts_audiohub_upload_failed_block_1" :
+                   failure == 4002 ? "local_tts_audiohub_exit_failed" : ""),
+              "audio failures must retain the exact failed stage");
+    }
+    if (failure == 0) {
+      Require(block_index == expected_blocks && block_index > 1,
+              "large PCM must upload every block exactly once");
+      const std::string alphabet =
+          "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      std::vector<std::uint8_t> wav;
+      std::uint32_t value = 0;
+      int bits = -8;
+      for (char ch : encoded) {
+        if (ch == '=') break;
+        const auto digit = alphabet.find(ch);
+        Require(digit != std::string::npos, "upload must contain valid base64");
+        value = (value << 6) | static_cast<std::uint32_t>(digit);
+        bits += 6;
+        if (bits >= 0) {
+          wav.push_back(static_cast<std::uint8_t>(value >> bits));
+          bits -= 8;
+        }
+      }
+      Require(wav.size() == pcm.size() + 44 &&
+                  std::string(wav.begin(), wav.begin() + 4) == "RIFF" &&
+                  wav[22] == 1 && wav[24] == 0x80 && wav[25] == 0x3e &&
+                  wav[34] == 16 &&
+                  std::vector<std::uint8_t>(wav.begin() + 44, wav.end()) == pcm,
+              "reassembled WAV must preserve every 16kHz mono s16 PCM sample");
+    }
+    audio->Stop();
+  }
+}
+
+class StartupAudio final : public g1_web::IAudioCapability {
+ public:
+  explicit StartupAudio(bool recover) : recover_(recover) {}
+  g1_web::AudioCapabilityFeatures Features() const override {
+    return {true, false, true, false, false, false, false};
+  }
+  bool Start(std::string&) override { return true; }
+  void Stop() override {}
+  bool Available() const override { return true; }
+  std::int32_t GetVolume(std::uint8_t& volume) override {
+    volume = 70;
+    return ++attempts == 1 || !recover_ ? 3104 : 0;
+  }
+  std::int32_t SetVolume(std::uint8_t) override { return 0; }
+  std::int32_t TtsMaker(const std::string&, std::int32_t) override { return -1; }
+  std::int32_t PlayStream(std::string, std::string,
+                          std::vector<std::uint8_t>) override { return 0; }
+  std::int32_t PlayStop(std::string) override { return 0; }
+  int attempts{0};
+ private:
+  bool recover_;
+};
+
+void TestAudioStartupRecovery() {
+  for (bool recover : {true, false}) {
+    g1_web::SnapshotStore store;
+    auto audio = std::make_unique<StartupAudio>(recover);
+    auto* probe = audio.get();
+    g1_web::VoiceService voice(store, std::move(audio), false);
+    std::string error;
+    Require(voice.Start(error), "volume failure must not disable unrelated voice services");
+    const auto state = store.GetSnapshot().voice;
+    Require(probe->attempts == (recover ? 2 : 3) &&
+                state.volume_api_result == (recover ? 0 : 3104) &&
+                state.volume_pct == (recover ? 70 : -1) &&
+                state.initialization_error.empty() == recover,
+            "startup must recover transient volume timeouts without hiding persistent failure");
+    store.UpdateVolume(0, 70);
+    Require(store.GetSnapshot().voice.initialization_error.empty(),
+            "successful volume operation must clear only stale volume verification errors");
+    auto unrelated = store.GetSnapshot().voice;
+    unrelated.initialization_error = "unrelated_error";
+    store.SetVoiceState(unrelated);
+    store.UpdateVolume(0, 70);
+    Require(store.GetSnapshot().voice.initialization_error == "unrelated_error",
+            "volume recovery must preserve unrelated initialization errors");
+    voice.Stop();
+  }
+}
+
 void TestGo2ProfileAndRuntime() {
   const auto* profile = g1_web::RobotRegistry::Find("go2");
   Require(profile != nullptr, "Go2 must be registered");
   Require(profile->identity.vendor == "unitree" &&
               profile->identity.product_id == "go2" &&
               profile->identity.variant == "go2_edu" &&
+              profile->identity.display_name == "Unitree GO2" &&
               profile->identity.morphology == "quadruped",
           "Go2 identity must be an explicit quadruped profile");
   Require(profile->idl_family == "unitree_sdk2_go2" &&
               profile->control_api_family == "unitree_sdk2_go2_v2_sport" &&
               profile->joint_schema.motor_slot_count == 20 &&
               profile->joint_schema.joints.size() == 12 &&
+              profile->model_variants.size() == 1 &&
+              profile->model_variants[0].name == "GO2" &&
               profile->capabilities.size() == 10,
           "Go2 must declare 20 raw slots and 12 semantic joints");
 
@@ -307,6 +437,8 @@ void TestGo2MockAudioAndVoice() {
   Require(audio->PlayStream("test", "1", {0, 0, 1, 0}) == 0 &&
               audio->PlayStream("test", "2", {0}) != 0,
           "Go2 PlayStream must accept complete s16 PCM only");
+  Require(audio->PlaybackError() == "local_tts_invalid_pcm",
+          "invalid PCM must retain its specific playback error");
   audio->Stop();
 
   g1_web::SnapshotStore store;
@@ -529,9 +661,12 @@ void TestGo2NormalizationFreshnessAndSerialization() {
   const auto manifest =
       Parse(g1_web::SerializeRobotManifest(runtime.profile, snapshot));
   Require(manifest["identity"]["product_id"].asString() == "go2" &&
+              manifest["identity"]["display_name"].asString() ==
+                  "Unitree GO2" &&
               manifest["identity"]["morphology"].asString() == "quadruped" &&
               manifest["model"]["asset_root"].asString() ==
                   "/assets/unitree/go2_description" &&
+              manifest["model"]["model_name"].asString() == "GO2" &&
               manifest["model"]["urdf_file"].asString() ==
                   "go2_description.urdf" &&
               manifest["capabilities"][1]["parameters"]["web_mode_labels"]
@@ -1109,7 +1244,10 @@ void TestGo2AssetsAndSharedDom() {
               viewer.find("不使用默认零位冒充") != std::string::npos &&
               app.find("robotWorkspaceVisible") != std::string::npos &&
               perception.find("启动 R1") == std::string::npos &&
-              perception.find("cameraName") != std::string::npos,
+              perception.find("cameraName") != std::string::npos &&
+              styles.find(".perception-grid:has(#depthCameraPanel[hidden])") !=
+                  std::string::npos &&
+              styles.find("\"rgb robot\"") != std::string::npos,
           "Go2 Web must avoid repeated mesh parsing, hidden workspace churn, and R1-only camera copy");
 
   std::ifstream adapter_stream(project_root / "src/go2_locomotion_adapter.cpp");
@@ -1128,6 +1266,8 @@ void TestGo2AssetsAndSharedDom() {
 int main() {
   TestGo2ProfileAndRuntime();
   TestGo2MockAudioAndVoice();
+  TestAudioStartupRecovery();
+  TestGo2AudioPacketAndFailureCleanup();
   TestGo2NormalizationFreshnessAndSerialization();
   TestGo2DevicePolicyAndFailClosedPaths();
   TestGo2MockLocomotion();

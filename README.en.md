@@ -1,18 +1,18 @@
-# UniRoboGui — Unitree G1 / R1 Multi-Robot Development & Debugging Web GUI
+# UniRoboGui — Unitree G1 / R1 / GO2 Multi-Robot Development & Debugging Web GUI
 
 [简体中文](README.md) | **English**
 
-> **A unified development and debugging platform for Unitree G1 and R1** — one C++17 Web service selects the active product through \`RobotRegistry\`, Manifest/Capability data, and \`--robot\`, while shared HTTP/WebSocket, frontend, and deployment flows remain product-independent.
+> **A unified development and debugging platform for Unitree G1, R1 and GO2** — one C++17 Web service selects the active product through \`RobotRegistry\`, Manifest/Capability data, and \`--robot\`, while shared HTTP/WebSocket, frontend, and deployment flows remain product-independent.
 
 Unitree SDK2 provides a wide range of low-level robot capabilities, but in a real project those capabilities are spread across different data channels, service APIs, example programs, and sensor pipelines. Before application development can begin, customers often have to combine these interfaces themselves, write test programs, verify robot state, bring up perception and control paths, and prepare separate visualization or debugging tools for each subsystem.
 
-**UniRoboGui is designed to remove that repeated integration and debugging work.** The project keeps a **single multi-product binary**, \`g1_web_server\`; choosing G1 or R1 changes dependencies, SDK prefix, network interface, helpers, systemd unit, and runtime arguments rather than compiling separate product binaries.
+**UniRoboGui is designed to remove that repeated integration and debugging work.** The project keeps a **single multi-product binary**, \`g1_web_server\`; choosing G1, R1 or GO2 changes dependencies, SDK prefix, network interface, helpers, systemd unit, and runtime arguments rather than compiling separate product binaries.
 
 UniRoboGui does not replace Unitree SDK2. It provides an **observable, debuggable, and reusable engineering layer on top of SDK2**, reducing repetitive interface integration and shortening the path from “getting the SDK working” to “building with the robot”.
 
 ### Core capabilities
 
-- **Unified SDK2 capability access**: G1 and R1 share the HTTP/WebSocket core, frontend, and binary while product Profile/RuntimeBundle configuration selects each robot's DDS, joint, control, and device capabilities.
+- **Unified SDK2 capability access**: G1, R1 and GO2 share the HTTP/WebSocket core, frontend, and binary while product Profile/RuntimeBundle configuration selects each robot's DDS, joint, control, and device capabilities.
 - **Integrated debugging and visualization**: view robot state, product-specific RGB/depth streams, URDF pose, SLAM/point cloud, control state, and voice interaction in one browser workspace; visible modules follow Manifest/Capability state.
 - **Perception, mapping, and navigation pipeline**: shares map, track, and navigation UI. G1 keeps its existing Mid-360/navigation pipeline; R1 exposes those capabilities only when attachments and deployment flags are explicitly enabled.
 - **Joint debugging and action development**: product JointSchema drives live pose, upper/full-body debugging, hand-guided teaching, and action entry points without a second product joint-index table in the frontend.
@@ -24,6 +24,14 @@ Runtime truth comes from \`/api/robot/manifest\` and Capability state. Features 
 > **Ready to deploy?** Jump to [Quick deployment](#quick-deployment).
 >
 > Both deployment cases are supported: the robot can access GitHub, or the robot is offline while another Ubuntu/Linux computer has Internet access.
+
+### GO2: capabilities and FP32 deployment
+
+GO2 uses the shared Registry/Web, 12-joint pose, RGB, diagnostics, guarded full-body debug/teach, motion allowlists and local TTS. Physical motion needs operator acceptance; ASR/native TTS/built-in LLM are not integrated. Depth and optional SLAM must not be reported available without evidence.
+
+With updated source, `bash scripts/deploy.sh install --product go2` or PC-side `bash scripts/deploy.sh from-pc --product go2 --host unirobo-go2` prepares **Kokoro FP32** and installs `go2-local-tts.service`. Use `bash scripts/deploy.sh check --product go2` for preflight. Old GitHub revisions do not include unpublished local changes. G1 keeps its previous Kokoro policy; R1 defaults to native TTS.
+
+See the [GO2 deployment/Web guide](docs/go2-guide.en.md) for feature boundaries, proxy setup, upgrades, model verification and listening acceptance.
 
 ---
 
@@ -134,15 +142,15 @@ Fields whose bit definitions are not publicly documented are shown as raw values
 
 ## 3. Quick deployment
 
-G1 and R1 share the same deployment entry point: `scripts/deploy.sh`. The script never guesses the robot model: `--product` is **required**. Use `g1` for a G1 and `r1` for an R1.
+G1, R1 and GO2 share the same deployment entry point: `scripts/deploy.sh`. The script never guesses the robot model: `--product` is **required**. Use `g1`, `r1`, or `go2` for the corresponding robot.
 
 General syntax:
 
 ```bash
-bash scripts/deploy.sh <COMMAND> --product <g1|r1> [OPTIONS]
+bash scripts/deploy.sh <COMMAND> --product <g1|r1|go2> [OPTIONS]
 ```
 
-> `g1|r1` means “choose one”; do not type `g1|r1` literally. For example, use `--product g1` for G1 or `--product r1` for R1.
+> `g1|r1|go2` means “choose one”; do not type `g1|r1|go2` literally. For example, use `--product g1` for G1 or `--product r1` for R1.
 
 Supported commands:
 
@@ -161,7 +169,7 @@ Supported options:
 | `--lang` | No | `zh`, `en` | Default: `zh` | Changes deployment-script output language only; it does not change the Web UI language |
 | `-h` / `--help` | No | None | Any scenario | Show the complete CLI help |
 
-There is **no default robot model**; this prevents accidentally deploying G1 settings to an R1 or vice versa. For a first deployment, use one of these recommended templates based on **whether the robot itself can reach GitHub**, then replace `<PRODUCT>` with `g1` or `r1`:
+There is **no default robot model**; this prevents accidentally deploying G1 settings to an R1 or vice versa. For a first deployment, use one of these recommended templates based on **whether the robot itself can reach GitHub**, then replace `<PRODUCT>` with `g1`, `r1`, or `go2`:
 
 ```bash
 # Robot can reach GitHub: run on the robot
@@ -198,7 +206,7 @@ Target environment:
 
 | Item | Requirement |
 | --- | --- |
-| Robot | Unitree G1 / R1 currently registered in RobotRegistry |
+| Robot | Unitree G1 / R1 / GO2 currently registered in RobotRegistry |
 | PC2 OS | Ubuntu 20.04 AArch64 |
 | User | `unitree` |
 | DDS interface | G1: `eth0`; R1: `eth10` |
@@ -334,7 +342,7 @@ Use the same deployment flow for upgrades:
 - Robot can access GitHub: `bash scripts/deploy.sh install --product <PRODUCT> --lang en`.
 - Robot cannot access GitHub: run `bash scripts/deploy.sh from-pc --product <PRODUCT> --lang en` on the online computer; add `--host <SSH_HOST>` only when the robot does not use the default SSH target.
 
-Replace `<PRODUCT>` with `g1` or `r1`, for example:
+Replace `<PRODUCT>` with `g1`, `r1`, or `go2`, for example:
 
 ```bash
 # G1 upgrade
@@ -400,6 +408,8 @@ The Web interface does not provide built-in user authentication and should not b
 ---
 
 ## 5. Compatibility
+
+G1/R1 comparison follows; see the GO2 guide above for its configuration.
 
 | Item | G1 | R1 |
 | --- | --- | --- |

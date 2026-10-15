@@ -136,7 +136,8 @@ class VoiceService {
   std::string FindCustomerQaAnswer(const std::string& question) const;
   bool LoadCustomerVoiceConfig(std::string& error);
   bool SaveCustomerVoiceConfig(std::string& error) const;
-  bool PlayWithLocalTts(const std::string& text, std::string& error);
+  bool PlayWithLocalTts(const std::string& text, std::string& error,
+                        std::int32_t& api_result);
   static std::string NormalizeQuestionForMatch(const std::string& text);
   static bool StripCustomerWakePrefix(const std::string& text,
                                       const std::string& wake_word,

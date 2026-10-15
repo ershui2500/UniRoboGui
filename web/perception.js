@@ -1680,6 +1680,7 @@ function initializeCameraViewports() {
     elements.image.addEventListener("load", () => {
       syncCameraAspect(stream);
       if (stream === "rgb") {
+        elements.viewport.style.setProperty("--camera-backdrop", `url("${elements.image.currentSrc}")`);
         lastRgbFrameAt = performance.now();
         renderRgbFrameFreshness();
       }

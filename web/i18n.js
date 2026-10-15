@@ -1106,6 +1106,7 @@
     [" 已进入播报队列", " queued for speech"],
     [" 正在合成并播放", " synthesizing and playing"],
     [" 播报完成", " speech completed"],
+    [" 播报请求处理完成，请确认实际声音", " Speech request processed; please confirm the actual sound"],
     ["已保存（掩码显示）", "saved (masked)"],
     ["未填写", "not entered"],
     ["已保存", "saved"],

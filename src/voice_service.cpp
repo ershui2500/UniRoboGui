@@ -214,48 +214,6 @@ std::vector<TtsSegment> SplitMixedTtsText(const std::string& text) {
   return segments;
 }
 
-std::vector<std::string> SplitBufferedTtsText(const std::string& text) {
-  std::vector<std::string> parts;
-  const auto append_part = [&parts](const std::string& value) {
-    const auto first = value.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return;
-    const auto last = value.find_last_not_of(" \t\r\n");
-    parts.push_back(value.substr(first, last - first + 1));
-  };
-  std::size_t begin = 0;
-  double speech_units = 0;
-  for (std::size_t offset = 0; offset < text.size();) {
-    std::uint32_t code_point = 0;
-    if (!DecodeUtf8CodePoint(text, offset, code_point)) return {};
-    if (IsHanCodePoint(code_point)) speech_units += 1;
-    else if (code_point < 128 &&
-             std::isalnum(static_cast<unsigned char>(code_point)) != 0) {
-      speech_units += 0.4;
-    }
-    const bool pause = code_point == 0xFF0C || code_point == 0x3002 ||
-                       code_point == ',' || code_point == '.' ||
-                       code_point == '!' || code_point == '?' ||
-                       code_point == 0xFF01 || code_point == 0xFF1F;
-    if ((speech_units >= 6 || (pause && speech_units >= 3)) &&
-        offset < text.size()) {
-      append_part(text.substr(begin, offset - begin));
-      begin = offset;
-      speech_units = 0;
-    }
-  }
-  const std::size_t prior_parts = parts.size();
-  append_part(text.substr(begin));
-  if (parts.size() > prior_parts && prior_parts > 0 && speech_units < 3) {
-    if (begin < text.size() &&
-        std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
-      parts[prior_parts - 1] += ' ';
-    }
-    parts[prior_parts - 1] += parts.back();
-    parts.pop_back();
-  }
-  return parts;
-}
-
 std::chrono::milliseconds EstimateTtsPlaybackDuration(const std::string& text) {
   std::size_t code_points = 0;
   for (std::size_t offset = 0; offset < text.size();) {
@@ -313,8 +271,11 @@ bool FlushLocalTtsPcm(LocalTtsStreamContext& context, bool force) {
     context.api_result = context.audio_capability->PlayStream(
         context.app_name, context.stream_id, std::move(pcm));
     if (context.api_result != 0) {
-      context.error =
-          "local_tts_play_stream_failed_" + std::to_string(context.api_result);
+      context.error = context.audio_capability->PlaybackError();
+      if (context.error.empty()) {
+        context.error = "local_tts_play_stream_failed_" +
+                        std::to_string(context.api_result);
+      }
       return false;
     }
     context.pending_pcm.clear();
@@ -343,8 +304,11 @@ bool FlushLocalTtsPcm(LocalTtsStreamContext& context, bool force) {
     context.api_result = context.audio_capability->PlayStream(
         context.app_name, context.stream_id, std::move(chunk));
     if (context.api_result != 0) {
-      context.error =
-          "local_tts_play_stream_failed_" + std::to_string(context.api_result);
+      context.error = context.audio_capability->PlaybackError();
+      if (context.error.empty()) {
+        context.error = "local_tts_play_stream_failed_" +
+                        std::to_string(context.api_result);
+      }
       return false;
     }
     context.next_send_time =
@@ -572,7 +536,11 @@ VoiceData VoiceService::InitializeRealVoice(std::string& error) {
 
     if (audio_capability_available_.load() && audio_features.volume) {
       std::uint8_t volume = 0;
-      voice.volume_api_result = audio_capability_->GetVolume(volume);
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        voice.volume_api_result = audio_capability_->GetVolume(volume);
+        if (voice.volume_api_result == 0) break;
+        if (attempt < 2) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      }
       if (voice.volume_api_result == 0) {
         voice.volume_pct = volume;
         voice.vui_service_found = true;
@@ -806,18 +774,11 @@ void VoiceService::WorkerLoop() {
 
     if (tts.backend == "kokoro" && !mock_) {
       std::string local_tts_error;
-      std::vector<std::string> parts{request.text};
-      if (audio_capability_ &&
-          !audio_capability_->Features().incremental_play_stream) {
-        parts = SplitBufferedTtsText(request.text);
-      }
-      bool played = !parts.empty();
-      for (const auto& part : parts) {
-        if (!PlayWithLocalTts(part, local_tts_error)) {
-          played = false;
-          break;
-        }
-      }
+      std::int32_t local_api_result = -1;
+      // Buffered transports must receive one complete utterance. Reopening the
+      // speaker for every few characters adds gaps and can cut off word tails.
+      const bool played =
+          PlayWithLocalTts(request.text, local_tts_error, local_api_result);
       if (played) {
         tts.api_result = 0;
         tts.state = "succeeded";
@@ -828,7 +789,7 @@ void VoiceService::WorkerLoop() {
         continue;
       }
       if (!audio_capability_ || !audio_capability_->Features().tts) {
-        tts.api_result = -1;
+        tts.api_result = local_api_result;
         tts.state = "failed";
         tts.backend_error = local_tts_error;
         tts.updated_time_ms = SystemTimeMs();
@@ -1969,7 +1930,9 @@ void VoiceService::QueueCustomerWakeRequest(const AsrData& asr) {
 }
 
 bool VoiceService::PlayWithLocalTts(const std::string& text,
-                                    std::string& error) {
+                                    std::string& error,
+                                    std::int32_t& api_result) {
+  api_result = -1;
 #ifdef G1_WEB_HAS_CURL
   static const CURLcode curl_global_result =
       curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -2010,6 +1973,8 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
   curl_slist* headers = nullptr;
   headers = curl_slist_append(headers, "Content-Type: application/json");
   curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:8765/tts/stream");
+  curl_easy_setopt(curl, CURLOPT_NOPROXY, "*");
+  curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   curl_easy_setopt(curl, CURLOPT_POST, 1L);
   curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_body.c_str());
@@ -2035,9 +2000,15 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
     if (stream_context.playback_started) {
       audio_capability_->PlayStop(stream_context.stream_id);
     }
-    error = !stream_context.error.empty()
-                ? stream_context.error
-                : "local_tts_synthesis_unavailable";
+    if (stream_context.api_result != 0) api_result = stream_context.api_result;
+    if (!stream_context.error.empty()) {
+      error = stream_context.error;
+    } else if (status >= 400) {
+      error = "local_tts_http_error_" + std::to_string(status);
+    } else {
+      error = "local_tts_synthesis_transfer_failed_" +
+              std::to_string(static_cast<int>(curl_result));
+    }
     return false;
   }
   if (status < 200 || status >= 300) {
@@ -2064,11 +2035,13 @@ bool VoiceService::PlayWithLocalTts(const std::string& text,
   }
   if (!FlushLocalTtsPcm(stream_context, true)) {
     audio_capability_->PlayStop(stream_context.stream_id);
+    api_result = stream_context.api_result;
     error = stream_context.error.empty() ? "local_tts_play_stream_failed"
                                          : stream_context.error;
     return false;
   }
   if (!audio_features.play_state_events) {
+    api_result = 0;
     error.clear();
     return true;
   }

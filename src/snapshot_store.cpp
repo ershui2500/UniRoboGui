@@ -306,6 +306,12 @@ void SnapshotStore::UpdateVolume(std::int32_t api_result,
   snapshot_.voice.volume_api_result = api_result;
   if (api_result == 0) {
     snapshot_.voice.volume_pct = volume_pct;
+    snapshot_.voice.vui_service_found = true;
+    snapshot_.voice.vui_service_status_raw = 0;
+    if (snapshot_.voice.initialization_error.rfind(
+            "Audio service verification failed: GetVolume ret=", 0) == 0) {
+      snapshot_.voice.initialization_error.clear();
+    }
   }
   ++snapshot_.sequence;
 }

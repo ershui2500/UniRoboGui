@@ -3073,6 +3073,15 @@ footer {
 .camera-viewport::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(0deg, transparent 0 4px, rgba(255,255,255,.012) 4px 5px); }
 .camera-viewport img { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #03070c; }
 .camera-viewport img:not([src]) { display: none; }
+#rgbCameraViewport::after {
+  content: "";
+  position: absolute;
+  inset: -24px;
+  background: var(--camera-backdrop, none) center / cover no-repeat;
+  filter: blur(20px) brightness(.55);
+  pointer-events: none;
+}
+#rgbCameraViewport img { background: transparent; }
 .camera-empty { z-index: 2; display: grid; place-content: center; justify-items: center; }
 .camera-empty strong { z-index: 1; margin-top: 34px; font-size: 11px; }
 .camera-empty span { z-index: 1; margin-top: 5px; color: var(--muted); font: 500 8px ui-monospace, monospace; }
@@ -3081,8 +3090,8 @@ footer {
 .camera-reticle::after { content: ""; position: absolute; background: rgba(84,221,255,.2); }
 .camera-reticle::before { left: 26px; top: -18px; width: 1px; height: 88px; }
 .camera-reticle::after { left: -18px; top: 26px; width: 88px; height: 1px; }
-.camera-status { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: center; margin-top: 11px; }
-.camera-status .status-dot { grid-row: 1 / 3; }
+.camera-status { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; column-gap: 8px; align-items: center; margin-top: 6px; white-space: nowrap; }
+.camera-status .status-dot { grid-row: 1; }
 .camera-status strong { font-size: 10px; }
 .camera-status small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .camera-status.online .status-dot { background: var(--green); box-shadow: 0 0 0 4px rgba(109, 241, 192, .1); }
@@ -4767,6 +4776,36 @@ body.console-workspace-active #voice-interaction:not(.drawer-expanded) #ttsSubmi
       "map map map";
   }
 }
+.dashboard.console-active .camera-integrated-heading:has(.camera-device-field[hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.dashboard.console-active .camera-integrated-heading:has(.camera-device-field[hidden]) > div:first-child {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dashboard.console-active .camera-integrated-heading:has(.camera-device-field[hidden]) h3 {
+  margin: 0;
+  font-size: 15px;
+  white-space: nowrap;
+}
+.dashboard.console-active .camera-integrated-heading:has(.camera-device-field[hidden]) .camera-inline-controls {
+  width: auto;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  margin-left: auto;
+}
+.dashboard.console-active .camera-integrated-heading:has(.camera-device-field[hidden]) :is(button, .perception-badge) {
+  flex-shrink: 0;
+  padding-inline: 5px;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 @media (min-width: 901px) and (max-width: 1199px) {
   .dashboard.console-active #sensor-visualization,
   .dashboard.console-active .perception-grid {
@@ -5147,6 +5186,13 @@ body.console-workspace-active #voice-interaction:not(.drawer-expanded) #ttsSubmi
 @media (min-width: 1200px) {
   .dashboard.console-active .perception-grid {
     grid-template-rows: minmax(320px, 37%) minmax(0, 1fr);
+  }
+
+  .dashboard.console-active .perception-grid:has(#depthCameraPanel[hidden]) {
+    grid-template-columns: minmax(300px, 1fr) minmax(420px, 1.28fr);
+    grid-template-areas:
+      "rgb robot"
+      "map map";
   }
 }
 
@@ -7766,6 +7812,6 @@ body.joint-debug-workspace-active footer { display: none; }
   background: rgba(70, 10, 18, .9);
   white-space: nowrap;
 }
-.camera-frame-age { grid-column: 2; color: var(--muted); font-size: 9px; }
+.camera-frame-age { color: var(--muted); font-size: 9px; }
 .camera-status.frozen .status-dot { background: var(--red); box-shadow: 0 0 0 4px rgba(255, 107, 118, .1); }
 .camera-status.frozen .camera-frame-age { color: var(--red); }

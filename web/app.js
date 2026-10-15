@@ -1470,10 +1470,16 @@ function renderVoice(voice) {
     feedback.textContent = `请求 #${integer(tts.request_id)} 正在合成并播放`;
     feedback.classList.add("running");
   } else if (tts.state === "succeeded") {
-    feedback.textContent = `请求 #${integer(tts.request_id)} 播报完成`;
+    feedback.textContent = `请求 #${integer(tts.request_id)} 播报请求处理完成，请确认实际声音`;
     feedback.classList.add("success");
   } else if (tts.state === "failed") {
     feedback.textContent = `TTS 调用失败，API 返回 ${integer(tts.api_result)}`;
+    if (tts.backend_error) {
+      const detail = document.createElement("span");
+      detail.dataset.i18nSkip = "";
+      detail.textContent = ` (${tts.backend_error})`;
+      feedback.appendChild(detail);
+    }
     feedback.classList.add("error");
   } else if (voice.initialization_error) {
     feedback.textContent = voice.initialization_error;

@@ -32,6 +32,7 @@ class IAudioCapability {
                                   std::string stream_id,
                                   std::vector<std::uint8_t> pcm_data) = 0;
   virtual std::int32_t PlayStop(std::string app_name) = 0;
+  virtual std::string PlaybackError() const { return {}; }
 };
 
 }  // namespace g1_web

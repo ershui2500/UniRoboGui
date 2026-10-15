@@ -21,11 +21,11 @@ usage() {
   if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
     cat <<'EOF'
 Usage:
-  bash scripts/deploy_online.sh --product g1|r1
+  bash scripts/deploy_online.sh --product g1|r1|go2
 
 Normally no options are required. Use this entry point when the robot itself can access GitHub.
 If the robot cannot access GitHub, run this on an Ubuntu/Linux computer that can:
-  bash scripts/deploy.sh from-pc --product g1|r1 --host USER@HOST
+  bash scripts/deploy.sh from-pc --product g1|r1|go2 --host USER@HOST
 
 Internal options (used automatically by the offline deployment flow):
   --from-transferred-sources
@@ -34,11 +34,11 @@ EOF
   else
     cat <<'EOF'
 用法：
-  bash scripts/deploy_online.sh --product g1|r1
+  bash scripts/deploy_online.sh --product g1|r1|go2
 
 正常情况下不要加参数。该脚本用于“机器人本身可以访问 GitHub”的部署场景。
 如果机器人不能访问 GitHub，请在一台能访问 GitHub 的 Ubuntu/Linux 电脑上运行：
-  bash scripts/deploy.sh from-pc --product g1|r1 --host USER@HOST
+  bash scripts/deploy.sh from-pc --product g1|r1|go2 --host USER@HOST
 
 内部参数（由离线部署脚本自动调用）：
   --from-transferred-sources
@@ -50,7 +50,7 @@ EOF
 while (($#)); do
   case "$1" in
     --product)
-      (($# >= 2)) || { ui_err "[错误] --product 缺少 g1|r1" "[ERROR] --product requires g1|r1"; exit 2; }
+      (($# >= 2)) || { ui_err "[错误] --product 缺少 g1|r1|go2" "[ERROR] --product requires g1|r1|go2"; exit 2; }
       PRODUCT="$2"
       shift
       ;;
@@ -66,7 +66,7 @@ while (($#)); do
   shift
 done
 
-[[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product g1|r1" "[ERROR] --product g1|r1 is required"; exit 2; }
+[[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product g1|r1|go2" "[ERROR] --product g1|r1|go2 is required"; exit 2; }
 load_product_profile "$PRODUCT"
 
 STEP_ZH=""
@@ -281,7 +281,7 @@ fi
 
 step "5/8 准备 Unitree SDK2 源码" "5/8 Prepare Unitree SDK2 source"
 if [[ "$SDK_POLICY" == verify_existing ]]; then
-  info "R1 复用 /usr/local 的现有 SDK2；本流程不会下载或覆盖它。" "R1 reuses the existing SDK2 under /usr/local; this flow will not download or replace it."
+  info "${PRODUCT_NAME} 复用 /usr/local 的现有 SDK2；本流程不会下载或覆盖它。" "${PRODUCT_NAME} reuses the existing SDK2 under /usr/local; this flow will not download or replace it."
 elif $OFFLINE_MODE; then
   [[ -f "$SDK2_DIR/CMakeLists.txt" ]] || die "离线部署缺少 SDK2 源码：$SDK2_DIR" "Offline deployment is missing SDK2 source: $SDK2_DIR"
   info "使用联网电脑已传入的 SDK2 源码：$SDK2_DIR" "Using SDK2 source transferred by the online computer: $SDK2_DIR"
@@ -314,7 +314,7 @@ step "7/8 编译、测试并安装 UniRoboGui" "7/8 Build, test, and install Uni
 [[ -f "$PROJECT_DIR/scripts/install.sh" ]] || die "缺少 scripts/install.sh。" "Missing scripts/install.sh."
 if $OFFLINE_MODE && ${NEEDS_KOKORO}; then
   [[ -n "$WHEELHOUSE" && -d "$WHEELHOUSE" ]] || die "离线部署缺少 Kokoro wheelhouse：$WHEELHOUSE" "Offline deployment is missing the Kokoro wheelhouse: $WHEELHOUSE"
-  [[ -s /home/unitree/UniRoboGui/tts_models/kokoro-int8-multi-lang-v1_1.tar.bz2 ]] ||
+  [[ -s /home/unitree/UniRoboGui/tts_models/${TTS_MODEL_NAME}.tar.bz2 ]] ||
     die "离线部署缺少 Kokoro 模型压缩包。" "Offline deployment is missing the Kokoro model archive."
   export KOKORO_WHEELHOUSE="$WHEELHOUSE"
   info "Kokoro 将只使用联网电脑传入的 wheelhouse：$WHEELHOUSE" "Kokoro will use only the wheelhouse transferred by the online computer: $WHEELHOUSE"
@@ -338,11 +338,11 @@ else
 fi
 ok "Web 服务正在运行（${service_scope} systemd）。" "Web service is running (${service_scope} systemd)."
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/health
-if ${NEEDS_KOKORO} && [[ "$service_scope" == system ]] && systemctl is-enabled --quiet g1-local-tts.service 2>/dev/null; then
-  systemctl is-active --quiet g1-local-tts.service || die "系统级 g1-local-tts.service 已启用但未正常运行。" "System g1-local-tts.service is enabled but not running."
+if ${NEEDS_KOKORO} && [[ "$service_scope" == system ]] && systemctl is-enabled --quiet "${TTS_SERVICE}" 2>/dev/null; then
+  systemctl is-active --quiet "${TTS_SERVICE}" || die "系统级 ${TTS_SERVICE} 已启用但未正常运行。" "System ${TTS_SERVICE} is enabled but not running."
   curl --noproxy '*' -fsS http://127.0.0.1:8765/health
-elif ${NEEDS_KOKORO} && [[ "$service_scope" == user ]] && systemctl --user is-enabled --quiet g1-local-tts.service 2>/dev/null; then
-  systemctl --user is-active --quiet g1-local-tts.service || die "用户级 g1-local-tts.service 已启用但未正常运行。" "User g1-local-tts.service is enabled but not running."
+elif ${NEEDS_KOKORO} && [[ "$service_scope" == user ]] && systemctl --user is-enabled --quiet "${TTS_SERVICE}" 2>/dev/null; then
+  systemctl --user is-active --quiet "${TTS_SERVICE}" || die "用户级 ${TTS_SERVICE} 已启用但未正常运行。" "User ${TTS_SERVICE} is enabled but not running."
   curl --noproxy '*' -fsS http://127.0.0.1:8765/health
 fi
 if ldd "$PROJECT_DIR/build/g1_web_server" | grep -q 'not found'; then

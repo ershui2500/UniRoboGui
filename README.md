@@ -1,18 +1,18 @@
-# UniRoboGui — Unitree G1 / R1 多机器人二次开发与调试 Web GUI 工作台
+# UniRoboGui — Unitree G1 / R1 / GO2 多机器人二次开发与调试 Web GUI 工作台
 
 **简体中文** | [English](README.en.md)
 
-> **面向 Unitree G1 / R1 的统一二次开发与调试平台** —— 同一套 C++17 Web 服务通过 \`RobotRegistry\`、Manifest、Capability 与 \`--robot\` 选择产品，公共 HTTP/WebSocket、前端和部署流程复用，产品差异集中在 Profile/Policy 与部署配置。
+> **面向 Unitree G1 / R1 / GO2 的统一二次开发与调试平台** —— 同一套 C++17 Web 服务通过 \`RobotRegistry\`、Manifest、Capability 与 \`--robot\` 选择产品，公共 HTTP/WebSocket、前端和部署流程复用，产品差异集中在 Profile/Policy 与部署配置。
 
 Unitree SDK2 提供了丰富的底层能力，但在实际项目中，这些能力分布在不同的数据通道、服务接口、示例程序和传感器链路中。客户在开始真正的二次开发之前，往往需要先自行组合接口、编写测试程序、确认机器人状态、调通感知与控制链路，再为各个模块分别准备可视化和调试工具。
 
-**UniRoboGui 就是为解决这部分重复集成和调试工作而设计的。** 项目保持**一个多产品二进制** \`g1_web_server\`；部署 G1 或 R1 只决定依赖、SDK 前缀、网卡、helper、systemd unit 与运行参数，不进行产品裁剪编译。
+**UniRoboGui 就是为解决这部分重复集成和调试工作而设计的。** 项目保持**一个多产品二进制** \`g1_web_server\`；部署 G1、R1 或 GO2 只决定依赖、SDK 前缀、网卡、helper、systemd unit 与运行参数，不进行产品裁剪编译。
 
 它不是对 Unitree SDK2 的替代，而是建立在 SDK2 之上的 **可观察、可调试、可复用的工程化开发底座**：减少重复的接口拼接和调试工作，让“先把 SDK 调通”更快过渡到“基于机器人能力继续开发”。
 
 ### 核心能力
 
-- **统一 SDK2 能力入口**：G1 / R1 共享 HTTP、WebSocket、前端框架和二进制，通过产品 Profile/RuntimeBundle 装配各自 DDS、关节、控制与设备能力。
+- **统一 SDK2 能力入口**：G1 / R1 / GO2 共享 HTTP、WebSocket、前端框架和二进制，通过产品 Profile/RuntimeBundle 装配各自 DDS、关节、控制与设备能力。
 - **一体化调试与可视化**：在一个浏览器工作台中查看机器人状态、产品对应的 RGB / 深度画面、URDF 三维姿态、SLAM / 点云、控制状态和语音交互；具体模块按 Manifest/Capability 显示。
 - **感知、建图与导航链路**：共享地图、轨迹和导航 UI；G1 保持现有 Mid-360 / 导航链路，R1 只有显式声明附件和部署开关后才开放相应能力。
 - **关节调试与动作开发**：由产品 JointSchema 驱动关节姿态、上半身 / 全身调试、手掰示教和动作入口，不在前端维护第二份产品关节索引。
@@ -24,6 +24,14 @@ Unitree SDK2 提供了丰富的底层能力，但在实际项目中，这些能�
 > **准备部署？** 直接跳转到 [快速部署](#quick-deploy)。
 >
 > 机器人可以访问 GitHub 和机器人无法访问 GitHub 两种场景都提供自动部署脚本。
+
+### GO2：当前能力与 FP32 部署
+
+GO2 已接入共享 Registry、Web 工作台、12关节姿态、RGB、诊断、受控全身调试/示教、运动白名单与本地TTS。真实运动仍需现场操作员验收；ASR/原生TTS/内置LLM尚未接入，深度与可选SLAM能力不能冒充可用。
+
+使用本次更新后的源码执行 `bash scripts/deploy.sh install --product go2`，或在联网电脑执行 `bash scripts/deploy.sh from-pc --product go2 --host unirobo-go2`，默认准备 **Kokoro FP32** 并安装 `go2-local-tts.service`。检查命令为 `bash scripts/deploy.sh check --product go2`。旧GitHub版本不会自动包含尚未发布的本地更改。G1保持原Kokoro策略，R1默认原生TTS。
+
+详见 [GO2部署与Web教程](docs/go2-guide.md)，含功能边界、代理、升级、模型核验和听觉验收。
 
 ---
 
@@ -116,7 +124,7 @@ Unitree SDK2 提供了丰富的底层能力，但在实际项目中，这些能�
 | 综合工作台 | 将摄像头、三维机器人、SLAM 地图、控制和语音交互集中在一个响应式页面 |
 | 机器人状态 | 按产品 Profile 查看 DDS、BMS、FSM、里程计、IMU、语义关节和当前机型三维姿态 |
 | 诊断 | 汇总 DDS、里程计、电机、电池和主板状态，并保留未公开字段的 raw 数据 |
-| 三维模型 | 使用本地 Three.js + URDF Loader，按 Manifest 选择 G1 / R1 模型并同步产品 JointSchema |
+| 三维模型 | 使用本地 Three.js + URDF Loader，按 Manifest 选择 G1 / R1 / GO2 模型并同步产品 JointSchema |
 | SLAM / 点云 | 按产品 Capability 显示实时点云、累积地图、机器人轨迹和占据体素 |
 | 地图管理 | 建图、保存、加载、下载、退出地图，以及地图初始位姿设置 |
 | 导航 | Capability 开放时提供单点、多点、暂停、继续、取消和本地导航任务；R1 默认关闭真实导航 |
@@ -135,15 +143,15 @@ Unitree SDK2 提供了丰富的底层能力，但在实际项目中，这些能�
 
 ## 3. 快速部署
 
-G1 和 R1 共用同一个部署入口：`scripts/deploy.sh`。部署脚本不会猜测机器人型号，`--product` **必须明确填写**：G1 填 `g1`，R1 填 `r1`。
+G1、R1 和 GO2 共用同一个部署入口：`scripts/deploy.sh`。部署脚本不会猜测机器人型号，`--product` **必须明确填写**：G1 填 `g1`，R1 填 `r1`，GO2 填 `go2`。
 
 通用命令格式：
 
 ```bash
-bash scripts/deploy.sh <命令> --product <g1|r1> [可选参数]
+bash scripts/deploy.sh <命令> --product <g1|r1|go2> [可选参数]
 ```
 
-> `g1|r1` 表示“二选一”，不要把 `g1|r1` 原样复制到命令中。例如 G1 使用 `--product g1`，R1 使用 `--product r1`。
+> `g1|r1|go2` 表示“二选一”，不要把 `g1|r1|go2` 原样复制到命令中。例如 G1 使用 `--product g1`，R1 使用 `--product r1`。
 
 支持的命令：
 
@@ -162,7 +170,7 @@ bash scripts/deploy.sh <命令> --product <g1|r1> [可选参数]
 | `--lang` | 否 | `zh`、`en` | 默认 `zh` | 只改变部署脚本输出语言，不改变 Web 页面语言 |
 | `-h` / `--help` | 否 | 无 | 任意场景 | 显示完整命令帮助 |
 
-项目**没有默认机器人型号**，这是为了避免把 G1 错部署成 R1 或反过来。第一次部署时，推荐直接使用下面的命令模板：先根据**机器人是否能访问 GitHub**选择一种方式，再把 `<PRODUCT>` 换成 `g1` 或 `r1`。
+项目**没有默认机器人型号**，这是为了避免把 G1 错部署成 R1 或反过来。第一次部署时，推荐直接使用下面的命令模板：先根据**机器人是否能访问 GitHub**选择一种方式，再把 `<PRODUCT>` 换成 `g1`、`r1` 或 `go2`。
 
 ```bash
 # 机器人本身可以访问 GitHub：在机器人上执行
@@ -172,7 +180,7 @@ bash scripts/deploy.sh install --product <PRODUCT>
 bash scripts/deploy.sh from-pc --product <PRODUCT>
 ```
 
-G1 / R1 可直接复制的常用命令：
+G1 / R1 / GO2 可直接复制的常用命令：
 
 ```bash
 # G1
@@ -199,7 +207,7 @@ bash scripts/deploy.sh install --product r1 --lang en
 
 | 项目 | 要求 |
 | --- | --- |
-| 机器人 | Unitree G1 / R1（当前 Registry 登记产品） |
+| 机器人 | Unitree G1 / R1 / GO2（当前 Registry 登记产品） |
 | PC2 系统 | Ubuntu 20.04 AArch64 |
 | 用户 | `unitree` |
 | DDS 网卡 | G1：`eth0`；R1：`eth10` |
@@ -223,7 +231,7 @@ SSH 登录机器人时，如果出现 ROS 环境选择，请直接按回车选�
 
 ### 3.2 方式 A：机器人可以访问 GitHub
 
-在机器人中 clone 项目，然后根据实际型号选择 **G1 或 R1** 命令：
+在机器人中 clone 项目，然后根据实际型号选择 **G1、R1 或 GO2** 命令：
 
 ```bash
 git clone https://github.com/ershui2500/UniRoboGui.git /home/unitree/UniRoboGui
@@ -267,7 +275,7 @@ bash scripts/deploy.sh from-pc --product g1
 bash scripts/deploy.sh from-pc --product r1
 ```
 
-当前 G1 / R1 的 `from-pc` 默认 SSH 地址均为：
+当前 G1 / R1 / GO2 的 `from-pc` 默认 SSH 地址均为：
 
 ```text
 unitree@192.168.123.164
@@ -317,7 +325,7 @@ curl --noproxy '*' -fsS http://127.0.0.1:8080/api/robot/manifest
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/control/status
 ```
 
-如启用了本地 Kokoro：
+G1 如启用了本地 Kokoro（GO2应检查 `go2-local-tts.service`，见GO2教程）：
 
 ```bash
 systemctl is-active g1-local-tts.service 2>/dev/null || \
@@ -335,7 +343,7 @@ curl --noproxy '*' -fsS http://127.0.0.1:8765/health
 - 机器人可访问 GitHub：`bash scripts/deploy.sh install --product <PRODUCT>`
 - 机器人无法访问 GitHub：在联网电脑运行 `bash scripts/deploy.sh from-pc --product <PRODUCT>`；SSH 地址不是默认值时再加 `--host <SSH_HOST>`
 
-其中 `<PRODUCT>` 必须替换为 `g1` 或 `r1`，例如：
+其中 `<PRODUCT>` 必须替换为 `g1`、`r1` 或 `go2`，例如：
 
 ```bash
 # G1 升级
@@ -401,6 +409,8 @@ Web 页面本身没有身份认证，因此不应暴露到不可信网络或公�
 
 ## 5. 兼容性
 
+G1/R1对照如下；GO2配置见上方专用教程。
+
 | 项目 | G1 | R1 |
 | --- | --- | --- |
 | DDS 网卡 | `eth0` | `eth10` |
@@ -411,7 +421,7 @@ Web 页面本身没有身份认证，因此不应暴露到不可信网络或公�
 | LiDAR / 导航默认 | 保持现有 G1 Mid-360 / 导航配置 | 不声明 Mid-360，不启用真实导航 |
 | 二进制 | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` |
 
-两种产品均使用 Ubuntu 20.04 AArch64、`unitree` 用户、`/home/unitree/UniRoboGui` 项目目录和现代 Chromium 系浏览器。产品能力是否真正可用仍以运行时 Manifest/Capability 和现场设备状态为准。
+三种产品均使用 Ubuntu 20.04 AArch64、`unitree` 用户、`/home/unitree/UniRoboGui` 项目目录和现代 Chromium 系浏览器。产品能力是否真正可用仍以运行时 Manifest/Capability 和现场设备状态为准。
 
 机器人固件、SDK2、LiDAR 服务版本、设备节点和网络地址可能随机器人批次或现场环境变化，
 应以实际机器人状态为准。

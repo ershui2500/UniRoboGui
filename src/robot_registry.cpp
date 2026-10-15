@@ -361,8 +361,8 @@ const RobotProfile& R1Profile() {
 const RobotProfile& Go2Profile() {
   static const RobotProfile profile = [] {
     RobotProfile result;
-    result.identity = {"unitree", "go2", "go2", "go2_edu",
-                       "Unitree Go2 EDU", "quadruped"};
+    result.identity = {"unitree", "go2", "go2", "go2_edu", "Unitree GO2",
+                       "quadruped"};
     result.idl_family = "unitree_sdk2_go2";
     result.control_api_family = "unitree_sdk2_go2_v2_sport";
     result.model_asset_root = "/assets/unitree/go2_description";
@@ -391,7 +391,7 @@ const RobotProfile& Go2Profile() {
          "rear_left_leg"},
     };
     result.model_variants = {
-        {0, "Go2 EDU", "go2_description.urdf"},
+        {0, "GO2", "go2_description.urdf"},
     };
     result.static_constraints = {
         {"motor_slot_count", "20"},
