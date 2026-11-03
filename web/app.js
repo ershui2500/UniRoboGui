@@ -411,6 +411,56 @@ function applyTelemetrySourceVisibility() {
   });
 }
 
+// Group only profiles that expose the quadruped walking workflow.
+function renderWalkingModeGroups(commands, labels, targets, dangerousCommands) {
+  const host = $("walkingModeGroups");
+  const expanded = host.querySelector("details")?.open || false;
+  host.replaceChildren();
+  host.hidden = !commands.has("free_walk");
+  if (host.hidden) return false;
+  const remaining = new Set(commands);
+  function group(parent, zh, en, order) {
+    const available = order.filter((command) => remaining.has(command));
+    if (!available.length) return;
+    const section = document.createElement("section");
+    const heading = document.createElement("h4");
+    heading.textContent = manifestText(zh, en);
+    const grid = document.createElement("div");
+    grid.className = "control-button-grid compact";
+    for (const command of available) {
+      const button = createProfileControlButton(command, labels.get(command),
+        targets.get(command), dangerousCommands.has(command));
+      if (command === "stop_move") button.classList.add("stop-command");
+      if (command === "damp") button.classList.add("critical");
+      grid.append(button);
+      remaining.delete(command);
+    }
+    if (zh) section.append(heading);
+    section.append(grid);
+    parent.append(section);
+  }
+  const title = document.createElement("h3");
+  title.textContent = manifestText("常用模式", "Common modes");
+  host.append(title);
+  group(host, "", "", ["stand_up", "free_walk", "stop_move", "stand_down"]);
+  const advanced = document.createElement("details");
+  advanced.open = expanded;
+  const summary = document.createElement("summary");
+  summary.textContent = manifestText("不常用模式 · 展开查看", "Less-used modes · expand to view");
+  advanced.append(summary);
+  group(advanced, "坐姿与恢复", "Sitting and recovery", ["sit", "rise_sit", "recovery_stand"]);
+  group(advanced, "特殊步态 · 进入与退出", "Special gaits · enter and exit", [
+    "classic_walk_on", "classic_walk_off", "free_avoid_on", "free_avoid_off",
+    "free_bound_on", "free_bound_off", "free_jump_on", "free_jump_off",
+    "hand_stand_on", "hand_stand_off", "walk_upright_on", "walk_upright_off",
+    "cross_step_on", "cross_step_off", "pose_on", "pose_off",
+  ]);
+  group(advanced, "阻尼 · 可能失去姿态支撑", "Damping · posture support may be lost", ["damp"]);
+  group(advanced, "其他模式", "Other modes", [...remaining]);
+  host.append(advanced);
+  return true;
+}
+
 function applyLocomotionPolicy(descriptor) {
   const parameters = descriptor?.parameters || {};
   const visibleCommands = csvSet(parameters.web_mode_commands);
@@ -419,11 +469,18 @@ function applyLocomotionPolicy(descriptor) {
   const dangerousCommands = csvSet(parameters.dangerous_commands);
   const profileGrid = $("profileModeActionGrid");
   profileGrid?.replaceChildren();
+  const grouped = renderWalkingModeGroups(visibleCommands, labels, targets, dangerousCommands);
+  $("controlPanelMode").classList.toggle("walking-mode-layout", grouped);
+  const modeTabDetail = $("controlTabMode").querySelector("small");
+  modeTabDetail.dataset.i18nSkip = "";
+  modeTabDetail.textContent = grouped
+    ? manifestText("站立 · 步态 · 停止与趴下", "Stand · gait · stop and lie down")
+    : manifestText("零力矩 · 阻尼 · 运控模式", "Zero torque · damping · locomotion");
   const represented = new Set();
   document.querySelectorAll('.control-command[data-category="mode"]:not([data-profile-generated="true"])').forEach((button) => {
     const command = button.dataset.command;
     const key = command === "set_fsm_id" ? `${command}:${button.dataset.argument}` : command;
-    button.hidden = !visibleCommands.has(key);
+    button.hidden = grouped || !visibleCommands.has(key);
     if (!button.hidden) represented.add(key);
     const label = labels.get(key);
     if (label) {
@@ -441,7 +498,7 @@ function applyLocomotionPolicy(descriptor) {
     }
   });
   let generatedCount = 0;
-  if (profileGrid) {
+  if (profileGrid && !grouped) {
     for (const command of visibleCommands) {
       if (represented.has(command)) continue;
       profileGrid.append(createProfileControlButton(

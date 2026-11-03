@@ -7815,3 +7815,23 @@ body.joint-debug-workspace-active footer { display: none; }
 .camera-frame-age { color: var(--muted); font-size: 9px; }
 .camera-status.frozen .status-dot { background: var(--red); box-shadow: 0 0 0 4px rgba(255, 107, 118, .1); }
 .camera-status.frozen .camera-frame-age { color: var(--red); }
+
+/* Profiles with a walking workflow share one ordered mode console. */
+body #robot-control #controlPanelMode.walking-mode-layout > .control-group-heading,
+body #robot-control #controlPanelMode.walking-mode-layout > .control-button-grid:not(.compact) {
+  display: none;
+}
+#walkingModeGroups h3 { margin: 0; }
+#walkingModeGroups h4 { margin: 16px 0 0; color: var(--text); font-size: 13px; }
+body #robot-control #walkingModeGroups .control-button-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 8px; }
+#walkingModeGroups details {
+  margin-top: 22px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+#walkingModeGroups summary { cursor: pointer; font-weight: 600; }
+#walkingModeGroups .control-command { min-width: 0; }
+@media (max-width: 520px) {
+  body #robot-control #walkingModeGroups .control-button-grid { grid-template-columns: 1fr; }
+}

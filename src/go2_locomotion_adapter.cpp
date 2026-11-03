@@ -65,9 +65,6 @@ std::int32_t TargetFsm(const std::string& command) {
   }
   if (command == "sit") return 1007;
   if (command == "free_walk") return 100;
-  if (command == "static_walk") return 1015;
-  if (command == "trot_run") return 1016;
-  if (command == "economic_gait") return 1017;
   if (command == "pose_on") return 1091;
   if (command == "classic_walk_on") return 2010;
   if (command == "free_avoid_on") return 2007;
@@ -128,8 +125,7 @@ class Go2LocomotionAdapter final : public ILocomotion {
            command == "stop_move" || command == "stand_up" ||
            command == "stand_down" || command == "recovery_stand" ||
            command == "sit" || command == "rise_sit" ||
-           command == "free_walk" || command == "static_walk" ||
-           command == "trot_run" || command == "economic_gait" ||
+           command == "free_walk" ||
            command == "classic_walk_on" || command == "classic_walk_off" ||
            command == "free_avoid_on" || command == "free_avoid_off" ||
            command == "free_bound_on" || command == "free_bound_off" ||
@@ -226,12 +222,6 @@ class Go2LocomotionAdapter final : public ILocomotion {
         result.api_result = client_->RiseSit();
       } else if (command == "free_walk") {
         result.api_result = client_->FreeWalk();
-      } else if (command == "static_walk") {
-        result.api_result = client_->StaticWalk();
-      } else if (command == "trot_run") {
-        result.api_result = client_->TrotRun();
-      } else if (command == "economic_gait") {
-        result.api_result = client_->EconomicGait();
       } else if (command == "classic_walk_on") {
         result.api_result = client_->ClassicWalk(true);
       } else if (command == "classic_walk_off") {

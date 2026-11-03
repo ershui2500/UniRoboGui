@@ -450,7 +450,7 @@ const RobotProfile& Go2Profile() {
           {"real_control_policy", "operator_validation"},
           {"mode_commands",
            "damp,balance_stand,stop_move,stand_up,stand_down,recovery_stand,"
-           "sit,rise_sit,free_walk,static_walk,trot_run,economic_gait,"
+           "sit,rise_sit,free_walk,"
            "classic_walk_on,classic_walk_off,free_avoid_on,free_avoid_off,"
            "free_bound_on,free_bound_off,free_jump_on,free_jump_off,"
            "hand_stand_on,hand_stand_off,walk_upright_on,walk_upright_off,"
@@ -458,8 +458,8 @@ const RobotProfile& Go2Profile() {
            "content,heart,scrape,dance1,dance2,front_jump,front_pounce,"
            "front_flip,left_flip,back_flip"},
           {"web_mode_commands",
-           "damp,stand_up,stand_down,recovery_stand,balance_stand,stop_move,"
-           "sit,rise_sit,free_walk,static_walk,trot_run,economic_gait,"
+           "damp,stand_up,stand_down,recovery_stand,stop_move,"
+           "sit,rise_sit,free_walk,"
            "classic_walk_on,classic_walk_off,free_avoid_on,free_avoid_off,"
            "free_bound_on,free_bound_off,free_jump_on,free_jump_off,"
            "hand_stand_on,hand_stand_off,walk_upright_on,walk_upright_off,"
@@ -472,9 +472,6 @@ const RobotProfile& Go2Profile() {
            "recovery_stand:恢复站立|Recovery stand|RecoveryStand;"
            "sit:坐下|Sit|Sit;rise_sit:坐下后起身|Rise from sit|RiseSit;"
            "free_walk:灵动模式|Free walk|FreeWalk · FSM 100;"
-           "static_walk:常规行走|Static walk|StaticWalk · FSM 1015;"
-           "trot_run:常规跑步|Trot run|TrotRun · FSM 1016;"
-           "economic_gait:续航模式|Economic gait|EconomicGait · FSM 1017;"
            "classic_walk_on:经典步态|Classic walk|ClassicWalk · FSM 2010;"
            "classic_walk_off:退出经典步态|Exit classic walk|ClassicWalk(false) · → FSM 100;"
            "free_avoid_on:闪避模式|Free avoid|FreeAvoid · FSM 2007;"
@@ -494,7 +491,6 @@ const RobotProfile& Go2Profile() {
           {"mode_targets",
            "damp:1001,stand_up:1002,balance_stand:1013,"
            "recovery_stand:1013,sit:1007,rise_sit:1013,free_walk:100,"
-           "static_walk:1015,trot_run:1016,economic_gait:1017,"
            "classic_walk_on:2010,free_avoid_on:2007,free_bound_on:2008,"
            "free_jump_on:2009,hand_stand_on:2011,walk_upright_on:2017,"
            "cross_step_on:2016,pose_on:1091"},
@@ -512,7 +508,7 @@ const RobotProfile& Go2Profile() {
            "left_flip:左空翻|Left flip|LeftFlip;"
            "back_flip:后空翻|Back flip|BackFlip"},
           {"dangerous_commands",
-           "trot_run,free_bound_on,free_jump_on,hand_stand_on,"
+           "free_bound_on,free_jump_on,hand_stand_on,"
            "walk_upright_on,cross_step_on,front_jump,front_pounce,"
            "front_flip,left_flip,back_flip"},
           {"mode_sources",
@@ -521,10 +517,7 @@ const RobotProfile& Go2Profile() {
            "recovery_stand:100|1001|1002|1004|1007|1013|2006;"
            "balance_stand:100|1002|1004|1007|1013|1015|1016|1017|2006|2007|2008|2009|2010|2011|2016|2017;"
            "sit:100|1002|1013;rise_sit:1007;"
-           "free_walk:100|1013|1015|1016|1017|1091|2007|2008|2009|2010|2011|2016|2017;"
-           "static_walk:100|1013|1015|1016|1017|2007|2008|2009|2010|2011|2016|2017;"
-           "trot_run:100|1013|1015|1016|1017|2010;"
-           "economic_gait:100|1013|1015|1016|1017|2010;"
+           "free_walk:100|1002|1013|1015|1016|1017|1091|2007|2008|2009|2010|2011|2016|2017;"
            "classic_walk_on:100|1013|1015|1016|1017|2010;"
            "classic_walk_off:2010;"
            "free_avoid_on:100|1013|2010;free_avoid_off:2007;"

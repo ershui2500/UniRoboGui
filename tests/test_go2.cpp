@@ -876,8 +876,6 @@ void TestGo2MockControlSequences() {
           }),
           "Go2 interaction action should be available from a stable locked stand without inventing a target FSM");
 
-  submit_mode("go2-balance-before-free", "balance_stand", 1013U);
-
   submit_mode("go2-free-walk", "free_walk", 100U);
   const auto free_hello =
       control.Submit("go2-hello-free", "mode", "hello", 0, true);
@@ -895,7 +893,15 @@ void TestGo2MockControlSequences() {
               blocked_hello.error == "mode_transition_not_allowed",
           "Go2 interaction action must remain blocked in damping state");
   submit_mode("go2-recover-after-block", "recovery_stand", 1013U);
-  submit_mode("go2-static-walk", "static_walk", 1015U);
+  for (const auto* gait : {"static_walk", "trot_run", "economic_gait"}) {
+    const auto rejected = control.Submit(std::string("go2-disabled-") + gait,
+                                         "mode", gait, 0, true);
+    Require(!rejected.accepted, "Unverified legacy gaits must be rejected");
+    Require(FindCapability(*profile, g1_web::CapabilityKey::kLocomotion)
+                ->parameters.at("web_mode_commands").find(gait) ==
+                std::string::npos,
+            "Unverified legacy gaits must not be advertised");
+  }
   submit_mode("go2-classic-on", "classic_walk_on", 2010U);
   submit_mode("go2-classic-off", "classic_walk_off", 100U);
   submit_mode("go2-balance", "balance_stand", 1013U);
