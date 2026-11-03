@@ -112,7 +112,7 @@ R1 使用以下边界：
 `from-pc` 使用 rsync 传输项目时：
 
 - 不传 `.git`；
-- 不传 `AGENTS.md`、`*_AGENTS.md`、`.robot-workspace`、`.robot-backups`、`.robot-sync` 和本地 G1/R1/GO2 参考资料；
+- 不传 `AGENTS.md`、`*_AGENTS.md`、`.robot-workspace`、`.robot-backups`、`.robot-sync`、本地 G1/R1/GO2 参考资料及 `docs/GO2-*`、`docs/voice/` 内部现场记录；
 - 保留机器人整个 `config/`、`build/`、`tts_models/` 和 `tts_kokoro/` 运行目录；
 - 如果机器人项目 Git checkout 有未提交修改，停止部署；
 - 项目同步不使用 `--delete`，保留现场额外文件；版本已删除的旧源码由维护人员审阅后单独清理。SDK/RealSense 上游源码目录采用先备份后镜像的独立流程；

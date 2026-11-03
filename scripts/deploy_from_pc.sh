@@ -352,6 +352,8 @@ rsync -e "$RSYNC_RSH" -az --info=progress2 \
   --exclude '/G1参考资料/' \
   --exclude '/R1参考资料/' \
   --exclude '/GO2参考资料/' \
+  --exclude '/docs/GO2-*' \
+  --exclude '/docs/voice/' \
   --exclude '/build/' \
   --exclude '/config/' \
   --exclude '/tts_models/' \

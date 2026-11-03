@@ -109,7 +109,7 @@ R1 uses these boundaries:
 When `from-pc` transfers the project with rsync:
 
 - `.git` is not transferred.
-- `AGENTS.md`, `*_AGENTS.md`, `.robot-workspace`, `.robot-backups`, `.robot-sync`, and local G1/R1/GO2 reference-material directories are not transferred.
+- `AGENTS.md`, `*_AGENTS.md`, `.robot-workspace`, `.robot-backups`, `.robot-sync`, local G1/R1/GO2 reference directories, and internal field records under `docs/GO2-*` and `docs/voice/` are not transferred.
 - The robot's complete `config/`, `build/`, `tts_models/` and `tts_kokoro/` directories are preserved; product model archives are transferred separately.
 - Deployment stops if the robot-side Git checkout contains uncommitted project changes.
 - Project sync does not use `--delete`; extra on-site files are preserved. A maintainer must review obsolete source files before separately removing them. Upstream SDK/RealSense source directories use a separate backup-then-mirror flow.
