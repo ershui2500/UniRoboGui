@@ -55,14 +55,14 @@ pip_install() {
     if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
       cat >&2 <<EOF
 [ERROR] Kokoro Python dependency installation failed. Verify that wlan0 is connected and PyPI is reachable.
-If the robot cannot access PyPI, provide a wheelhouse for G1 aarch64/Python 3.8 and run:
-  KOKORO_WHEELHOUSE=/uploaded/wheelhouse bash scripts/install_kokoro_tts.sh
+If the robot cannot access PyPI, provide a wheelhouse for ${PRODUCT_NAME} aarch64/Python 3.8 and run:
+  KOKORO_WHEELHOUSE=/uploaded/wheelhouse bash scripts/install_kokoro_tts.sh --product ${PRODUCT_ID}
 EOF
     else
       cat >&2 <<EOF
 [提示] Kokoro Python 依赖安装失败。请先确认 wlan0 已连接且 PyPI 可访问。
-如果机器人不能访问 PyPI，请让供应方提供 G1 aarch64/Python 3.8 的 wheelhouse，上传后运行：
-  KOKORO_WHEELHOUSE=/上传目录 bash scripts/install_kokoro_tts.sh
+如果机器人不能访问 PyPI，请让供应方提供 ${PRODUCT_NAME} aarch64/Python 3.8 的 wheelhouse，上传后运行：
+  KOKORO_WHEELHOUSE=/上传目录 bash scripts/install_kokoro_tts.sh --product ${PRODUCT_ID}
 EOF
     fi
     exit 1
@@ -83,25 +83,23 @@ if sys.version_info < (3, 8):
 print("Python", sys.version.split()[0])
 PY
 
-if [[ ! -x "${VENV}/bin/pip" ]]; then
-  # G1 images may not contain Debian's python3-venv/ensurepip package. Keep
-  # everything under the unitree user's home instead of changing APT state.
-  virtualenv_args=()
-  if [[ -n "${WHEELHOUSE}" ]]; then
-    [[ -d "${WHEELHOUSE}" ]] || fail "KOKORO_WHEELHOUSE 不是目录：${WHEELHOUSE}" "KOKORO_WHEELHOUSE is not a directory: ${WHEELHOUSE}"
-    virtualenv_args+=(--no-index --find-links "${WHEELHOUSE}")
-    ui_line "正在从已传入的 wheelhouse 安装 virtualenv：${WHEELHOUSE}" "Installing virtualenv from transferred wheelhouse: ${WHEELHOUSE}"
+if [[ ! -x "${VENV}/bin/python" || ! -x "${VENV}/bin/pip" ]] ||
+   ! "${VENV}/bin/python" -m pip --version >/dev/null 2>&1; then
+  if ! "${PYTHON}" -m venv "${VENV}" >/dev/null 2>&1; then
+    [[ -n "${WHEELHOUSE}" && -d "${WHEELHOUSE}" ]] ||
+      fail "无法创建项目虚拟环境；请安装 python3-venv，或提供含 pip wheel 的 KOKORO_WHEELHOUSE。" "Cannot create the project venv; install python3-venv or supply KOKORO_WHEELHOUSE with a pip wheel."
+    ui_line "系统 ensurepip 初始化不可用；使用已传入的 pip wheel 准备项目虚拟环境。" "System ensurepip initialization is unavailable; preparing the project venv with the transferred pip wheel."
+    "${PYTHON}" -m venv --without-pip "${VENV}" ||
+      fail "缺少 Python venv 模块；请先安装 python3-venv。" "Python venv module is missing; install python3-venv first."
+    pip_wheels=("${WHEELHOUSE}"/pip-*-py3-none-any.whl)
+    [[ -f "${pip_wheels[0]}" ]] ||
+      fail "离线 wheelhouse 缺少 pip wheel：${WHEELHOUSE}" "Offline wheelhouse is missing a pip wheel: ${WHEELHOUSE}"
+    PYTHONPATH="${pip_wheels[0]}" "${VENV}/bin/python" -m pip install \
+      --no-index --find-links "${WHEELHOUSE}" 'pip<25'
   fi
-  "${PYTHON}" -m pip install --user "${virtualenv_args[@]}" 'virtualenv==20.26.6' || {
-    if [[ -n "${WHEELHOUSE}" ]]; then
-      fail "无法从已传入的 wheelhouse 安装 virtualenv：${WHEELHOUSE}" "Cannot install virtualenv from transferred wheelhouse: ${WHEELHOUSE}"
-    fi
-    fail "无法安装 virtualenv。请让 wlan0 联网，或提供 KOKORO_WHEELHOUSE。" "Cannot install virtualenv. Connect wlan0 to the Internet or provide KOKORO_WHEELHOUSE."
-  }
-  "${PYTHON}" -m virtualenv --clear "${VENV}"
 fi
 
-if "${VENV}/bin/python" - "${SHERPA_VERSION}" <<'PY'
+if "${VENV}/bin/python" - "${SHERPA_VERSION}" <<'PY' >/dev/null 2>&1
 import importlib.metadata
 import sys
 import numpy
@@ -111,12 +109,20 @@ PY
 then
   ui_line "Kokoro Python 依赖已安装；跳过 PyPI。" "Kokoro Python dependencies are already installed; skipping PyPI."
 else
+  ui_line "正在项目虚拟环境内准备 Kokoro Python 依赖。" "Preparing Kokoro Python dependencies inside the project venv."
   pip_install --upgrade 'pip<25' 'setuptools<76' wheel
   pip_install 'numpy<2' "sherpa-onnx==${SHERPA_VERSION}"
 fi
 
 mkdir -p "${MODEL_ROOT}"
-if [[ ! -f "${MODEL_DIR}/${MODEL_FILE}" ]]; then
+model_assets=("${MODEL_FILE}" voices.bin tokens.txt lexicon-us-en.txt lexicon-zh.txt
+  phone-zh.fst date-zh.fst number-zh.fst)
+model_complete=true
+for required in "${model_assets[@]}"; do
+  [[ -f "${MODEL_DIR}/${required}" ]] || model_complete=false
+done
+[[ -d "${MODEL_DIR}/espeak-ng-data" ]] || model_complete=false
+if ! ${model_complete}; then
   if [[ ! -s "${ARCHIVE}" ]]; then
     curl -fL --retry 2 --retry-delay 2 --connect-timeout 8 \
       --continue-at - -o "${ARCHIVE}" "${MODEL_URL}" || {
@@ -125,14 +131,14 @@ if [[ ! -f "${MODEL_DIR}/${MODEL_FILE}" ]]; then
 [ERROR] Kokoro model download failed. Wi-Fi may be connected while GitHub is still unreachable.
 Download ${MODEL_NAME}.tar.bz2 on another computer and upload it to:
   ${ARCHIVE}
-Then rerun this installer. Use --without-kokoro in install_g1.sh only when local TTS is not required.
+Then rerun this installer. Use --without-kokoro in scripts/install.sh --product ${PRODUCT_ID} only when local TTS is not required.
 EOF
       else
         cat >&2 <<EOF
 [错误] Kokoro 模型下载失败。Wi-Fi 可能已经连接，但 GitHub 仍不可访问。
 请在另一台电脑下载 ${MODEL_NAME}.tar.bz2，并上传到：
   ${ARCHIVE}
-然后重新运行安装器。只有不需要本地 TTS 时才在 install_g1.sh 中使用 --without-kokoro。
+然后重新运行安装器。只有不需要本地 TTS 时才在 scripts/install.sh --product ${PRODUCT_ID} 中使用 --without-kokoro。
 EOF
       fi
       exit 1
@@ -148,14 +154,15 @@ if [[ "$PRODUCT_ID" == go2 && -f "${MODEL_DIR}/model.int8.onnx" ]]; then
   fail "GO2 FP32 模型目录混入 INT8 文件；请使用独立的官方 FP32 目录。" "GO2 FP32 model directory contains an INT8 file; use the separate official FP32 directory."
 fi
 
-for required in \
-  "${MODEL_FILE}" voices.bin tokens.txt lexicon-us-en.txt lexicon-zh.txt \
-  phone-zh.fst date-zh.fst number-zh.fst; do
+for required in "${model_assets[@]}"; do
   test -f "${MODEL_DIR}/${required}" || {
     ui_err "缺少 Kokoro 资源：${MODEL_DIR}/${required}" "Missing Kokoro asset: ${MODEL_DIR}/${required}"
     exit 1
   }
 done
+
+[[ -d "${MODEL_DIR}/espeak-ng-data" ]] ||
+  fail "缺少 Kokoro 资源目录：${MODEL_DIR}/espeak-ng-data" "Missing Kokoro asset directory: ${MODEL_DIR}/espeak-ng-data"
 
 KOKORO_MODEL_DIR="${MODEL_DIR}" KOKORO_MODEL_FILE="${MODEL_FILE}" \
   "${VENV}/bin/python" - <<'PY'

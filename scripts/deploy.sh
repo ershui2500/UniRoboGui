@@ -26,12 +26,15 @@ usage() {
 常用示例 / Examples:
   bash scripts/deploy.sh install --product g1
   bash scripts/deploy.sh install --product r1
+  bash scripts/deploy.sh install --product go2
   bash scripts/deploy.sh from-pc --product g1
   bash scripts/deploy.sh from-pc --product r1
+  bash scripts/deploy.sh from-pc --product go2
   bash scripts/deploy.sh from-pc --product g1 --host unitree@192.168.123.164
   bash scripts/deploy.sh from-pc --product r1 --host unitree@192.168.123.164
   bash scripts/deploy.sh check --product g1
   bash scripts/deploy.sh check --product r1
+  bash scripts/deploy.sh check --product go2
   bash scripts/deploy.sh install --product g1 --lang en
   bash scripts/deploy.sh install --product r1 --lang en
 
@@ -99,7 +102,8 @@ case "$command_name" in
     exec bash "$project_dir/scripts/deploy_online.sh" --product "$PRODUCT_ID"
     ;;
   from-pc)
-    [[ -n "$host" ]] || host="$DEFAULT_HOST"
+    resolve_product_host "$host"
+    host="$RESOLVED_HOST"
     exec bash "$project_dir/scripts/deploy_from_pc.sh" \
       --product "$PRODUCT_ID" --host "$host"
     ;;

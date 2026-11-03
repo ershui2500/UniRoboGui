@@ -13,7 +13,6 @@ WHEELHOUSE="$CACHE_ROOT/wheelhouse-aarch64-py38"
 SHERPA_VERSION="1.13.4"
 REMOTE_PROJECT_DIR="/home/unitree/UniRoboGui"
 REMOTE_PROJECT_MARKER="$REMOTE_PROJECT_DIR/.unirobogui-managed"
-PROJECT_SYNC_DELETE=false
 STEP_ZH=""
 STEP_EN=""
 LAST_HELP_ZH=""
@@ -25,12 +24,13 @@ usage() {
 Usage:
   bash scripts/deploy_from_pc.sh --product g1|r1|go2 [--host USER@HOST]
 
-Default robot:
-  $ROBOT
+Defaults: G1/R1 unitree@192.168.123.164; GO2 unitree@192.168.123.18.
+Use --host to override the selected product address.
 
 Examples:
   bash scripts/deploy.sh from-pc --product g1
   bash scripts/deploy.sh from-pc --product r1
+  bash scripts/deploy.sh from-pc --product go2
 
 Run this script on an Ubuntu/Linux computer that can access GitHub.
 The computer must also be able to reach the selected robot over SSH.
@@ -40,12 +40,13 @@ EOF
 用法：
   bash scripts/deploy_from_pc.sh --product g1|r1|go2 [--host USER@HOST]
 
-默认机器人：
-  $ROBOT
+默认地址：G1/R1 unitree@192.168.123.164；GO2 unitree@192.168.123.18。
+地址不同时使用 --host 覆盖。
 
 示例：
   bash scripts/deploy.sh from-pc --product g1
   bash scripts/deploy.sh from-pc --product r1
+  bash scripts/deploy.sh from-pc --product go2
 
 该脚本必须运行在能访问 GitHub 的 Ubuntu/Linux 电脑上。
 电脑还需要能通过 SSH 访问所选机器人。
@@ -75,7 +76,8 @@ done
 load_product_profile "$PRODUCT"
 MODEL_NAME="$TTS_MODEL_NAME"
 MODEL_ARCHIVE="$CACHE_ROOT/${MODEL_NAME}.tar.bz2"
-[[ -n "$ROBOT" ]] || ROBOT="$DEFAULT_HOST"
+resolve_product_host "$ROBOT"
+ROBOT="$RESOLVED_HOST"
 SSH_ARGS=(-o ConnectTimeout=8)
 RSYNC_RSH="ssh -o ConnectTimeout=8"
 
@@ -162,6 +164,21 @@ require_clean_repo() {
   }
 }
 
+update_project_checkout() {
+  [[ -d "$PROJECT_DIR/.git" ]] || die "请先从 GitHub clone UniRoboGui。" "Clone UniRoboGui from GitHub first."
+  require_clean_repo "UniRoboGui" "$PROJECT_DIR" "ershui2500/UniRoboGui"
+  local before after
+  before="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+  info "更新 UniRoboGui 到 origin 当前版本..." "Updating UniRoboGui to the current origin revision..."
+  git -C "$PROJECT_DIR" pull --ff-only
+  after="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+  ok "UniRoboGui 当前提交：${after:0:7}" "UniRoboGui current commit: ${after:0:7}"
+  if [[ "$before" != "$after" ]]; then
+    info "源码已更新，重新进入最新版部署脚本。" "Source updated; restarting with the latest deployment script."
+    exec bash "$PROJECT_DIR/scripts/deploy_from_pc.sh" --product "$PRODUCT_ID" --host "$ROBOT"
+  fi
+}
+
 update_or_clone() {
   local name="$1" url="$2" dir="$3" expected="$4"
   if [[ -e "$dir" ]]; then
@@ -189,9 +206,21 @@ remote_preflight() {
     test -z \"\${CYCLONEDDS_URI:-}\"
     ip link show dev '$DDS_INTERFACE' >/dev/null
   "
+  if [[ "$PRODUCT_ID" == go2 ]]; then
+    local clock_state robot_epoch baseline_epoch pc_epoch delta
+    clock_state="$(ssh "${SSH_ARGS[@]}" "$ROBOT" 'date +%s; stat -c %Y /var/lib/systemd/timesync/clock')" ||
+      die "无法读取 GO2 时钟与持久时间基准；请先按 docs/go2-guide.md 校时。" "Cannot read the GO2 clock and persistent time baseline; follow docs/go2-guide.en.md first."
+    read -r robot_epoch baseline_epoch <<<"${clock_state//$'\n'/ }"
+    [[ "$robot_epoch" =~ ^[0-9]+$ && "$baseline_epoch" =~ ^[0-9]+$ ]] ||
+      die "GO2 时钟响应无效。" "Invalid GO2 clock response."
+    pc_epoch="$(date +%s)"
+    delta=$((pc_epoch - robot_epoch))
+    ((delta >= 0)) || delta=$((-delta))
+    ((delta <= 5 && baseline_epoch <= robot_epoch + 5 && robot_epoch - baseline_epoch <= 300)) ||
+      die "GO2 时差超过5秒或持久时间基准未在5分钟内更新；请从可信电脑校时并更新持久基准后重试。" "GO2 clock differs by more than 5 seconds or its persistent baseline was not updated within 5 minutes; correct it from a trusted computer and update the baseline before retrying."
+  fi
   if [[ ! -t 0 ]] && ! ssh "${SSH_ARGS[@]}" "$ROBOT" 'sudo -n true' >/dev/null 2>&1; then
-    help_customer "当前联网电脑没有交互 TTY，而机器人 sudo 需要密码。请在可交互终端中重新运行；或者仅在受控自动化环境中预先配置免密 sudo。" "This computer has no interactive TTY but robot sudo requires a password. Rerun in an interactive terminal, or configure passwordless sudo only in a controlled automation environment."
-    die "非交互终端无法完成机器人 sudo 密码认证。" "A non-interactive terminal cannot complete robot sudo password authentication."
+    warn "当前无交互 sudo；安装器将检查用户级 systemd、Linger=yes 和系统包是否齐全，不满足时会停止。" "Interactive sudo is unavailable; the installer will require user systemd, Linger=yes and all system packages, and stop if any prerequisite is missing."
   fi
   ok "SSH 已连接机器人，${PRODUCT_NAME} 基础环境检查通过。" "SSH connected and the ${PRODUCT_NAME} base environment check passed."
 }
@@ -235,12 +264,6 @@ prepare_remote_target() {
       echo "$dirty" >&2
       die "机器人端 $name 项目源码有未提交修改。为避免覆盖业务代码，请先备份/提交后重试。" "Robot-side $name project source has uncommitted changes. Back up or commit them before retrying to avoid overwriting project code."
     fi
-    PROJECT_SYNC_DELETE=true
-  elif ssh "${SSH_ARGS[@]}" "$ROBOT" "test -f '$REMOTE_PROJECT_MARKER'"; then
-    info "检测到方式 B 管理的项目目录；升级时会删除已从新版本移除的旧项目文件，同时保留 build/ 和客户配置。" "A Method B managed project directory was detected. Upgrade will remove project files deleted by newer versions while preserving build/ and customer configuration."
-    PROJECT_SYNC_DELETE=true
-  else
-    info "机器人项目目录不是 Git 仓库，且没有方式 B 管理标记；本次按兼容模式同步，不删除额外文件。成功后会写入管理标记，后续升级可安全清理旧项目文件。" "The robot project directory is not a Git repository and has no Method B management marker. This run uses compatibility sync without deleting extra files. A management marker will be written after success so future upgrades can safely remove obsolete project files."
   fi
 }
 
@@ -264,11 +287,7 @@ step "3/8 提前检测 SSH 到机器人" "3/8 Preflight SSH to the robot"
 remote_preflight
 
 step "4/8 更新 UniRoboGui 和目标产品依赖" "4/8 Update UniRoboGui and product dependencies"
-[[ -d "$PROJECT_DIR/.git" ]] || die "请从 GitHub clone UniRoboGui 后，在仓库根目录运行本脚本。当前项目没有 .git。" "Clone UniRoboGui from GitHub and run this script from the repository root. The current project has no .git directory."
-require_clean_repo "UniRoboGui" "$PROJECT_DIR" "ershui2500/UniRoboGui"
-info "更新 UniRoboGui 到 origin 当前版本..." "Updating UniRoboGui to the current origin revision..."
-git -C "$PROJECT_DIR" pull --ff-only
-ok "UniRoboGui 当前提交：$(git -C "$PROJECT_DIR" rev-parse --short HEAD)" "UniRoboGui current commit: $(git -C "$PROJECT_DIR" rev-parse --short HEAD)"
+update_project_checkout
 if [[ "$SDK_POLICY" != verify_existing ]]; then
   update_or_clone "Unitree SDK2" "https://github.com/unitreerobotics/unitree_sdk2.git" "$SDK2_CACHE" "unitreerobotics/unitree_sdk2"
 fi
@@ -294,7 +313,7 @@ if ${NEEDS_KOKORO}; then
   help_customer "如果 pip 下载失败，先确认这台联网电脑能访问 PyPI；不要用 x86_64 wheel 代替。" "If pip download fails, verify PyPI access; do not substitute x86_64 wheels."
   python3 -m pip download --dest "$WHEELHOUSE" --only-binary=:all: \
     --platform manylinux2014_aarch64 --python-version 38 --implementation cp \
-    --abi cp38 'virtualenv==20.26.6' 'pip<25' 'setuptools<76' wheel \
+    --abi cp38 'pip<25' 'setuptools<76' wheel \
     'numpy<2' "sherpa-onnx==${SHERPA_VERSION}"
   ok "离线 wheelhouse 已准备：$WHEELHOUSE" "Offline wheelhouse is ready: $WHEELHOUSE"
 fi
@@ -322,9 +341,7 @@ if ${NEEDS_REALSENSE}; then
 fi
 
 info "传输 UniRoboGui（不传 .git；保留机器人已有客户配置和 build 目录）..." "Transferring UniRoboGui (excluding .git while preserving robot customer configuration and build directory)..."
-project_delete_args=()
-$PROJECT_SYNC_DELETE && project_delete_args+=(--delete)
-rsync -e "$RSYNC_RSH" -az "${project_delete_args[@]}" --info=progress2 \
+rsync -e "$RSYNC_RSH" -az --info=progress2 \
   --exclude '/.git/' \
   --exclude '/.unirobogui-managed' \
   --exclude '/.robot-workspace/' \

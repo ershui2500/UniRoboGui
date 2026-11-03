@@ -20,7 +20,7 @@ install_scope=""
 sdk_prefix=""
 SYSTEM_PACKAGES=(
   build-essential cmake pkg-config git curl bzip2
-  python3 python3-pip
+  python3
   libboost-system-dev libboost-thread-dev libjsoncpp-dev
   libcurl4-openssl-dev libopencv-dev libzmq3-dev
   libusb-1.0-0-dev libssl-dev libudev-dev
@@ -133,7 +133,7 @@ github_help() {
   if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
     cat >&2 <<EOF
 [TIP] A working Wi-Fi link does not guarantee GitHub access. Do not retry indefinitely.
-Download on a computer that can access GitHub, then transfer over the 192.168.123.164 Ethernet link:
+Download on a computer that can access GitHub, then transfer over the actual robot Ethernet/LAN link:
   - project -> /home/unitree/UniRoboGui
   - latest unitree_sdk2 source -> /home/unitree/unitree_sdk2
   - librealsense source (only if the robot lacks usable librealsense2) -> /home/unitree/librealsense
@@ -143,7 +143,7 @@ EOF
   else
     cat >&2 <<EOF
 [提示] Wi-Fi 连上不等于能访问 GitHub，国内网络经常会超时。不要反复重试。
-请在一台能访问 GitHub 的电脑下载，再通过 192.168.123.164 有线传到机器人：
+请在一台能访问 GitHub 的电脑下载，再通过实际机器人的有线/局域网地址传到机器人：
   - 项目目录 -> /home/unitree/UniRoboGui
   - unitree_sdk2 最新源码 -> /home/unitree/unitree_sdk2
   - librealsense 源码（仅机器人缺少可用 librealsense2 时需要）-> /home/unitree/librealsense
@@ -191,11 +191,15 @@ configure_install_scope() {
         ("${install_scope_request}" == "auto" && -t 0) ]]; then
     [[ -t 0 ]] || fail "系统级安装需要 sudo，但当前终端不可交互。请在交互终端重试；仅当 Linger=yes 且系统包已齐全时才使用 --user-install。" "System install requires sudo, but this terminal is not interactive. Rerun interactively or use --user-install when Linger=yes and system packages are already present."
     ui_line "[信息] 长时间编译前先验证 sudo 权限..." "[INFO] Verifying sudo access before long builds..."
-    sudo -v
-    install_scope=system
-    sdk_prefix="${SYSTEM_SDK_PREFIX}"
-    ui_line "[OK] sudo 权限验证通过；采用系统级安装。" "[OK] sudo access verified; using system install."
-    return
+    if sudo -v; then
+      install_scope=system
+      sdk_prefix="${SYSTEM_SDK_PREFIX}"
+      ui_line "[OK] sudo 权限验证通过；采用系统级安装。" "[OK] sudo access verified; using system install."
+      return
+    fi
+    [[ "${install_scope_request}" != system ]] ||
+      fail "系统级安装的 sudo 验证失败。" "Sudo authentication failed for system installation."
+    warn "sudo 不可用；继续检查是否满足持久用户级安装条件。" "Sudo is unavailable; checking persistent user-install prerequisites instead."
   fi
 
   systemctl --user show-environment >/dev/null 2>&1 ||
@@ -209,6 +213,26 @@ configure_install_scope() {
   install_scope=user
   sdk_prefix="${USER_SDK_PREFIX}"
   ui_line "[OK] 无交互 sudo；采用持久用户级安装（systemctl --user，Linger=yes）。" "[OK] Interactive sudo is unavailable; using persistent user-local install (systemctl --user, Linger=yes)."
+}
+
+prepare_kokoro_bootstrap() {
+  ${without_kokoro} && return 0
+  local venv="${KOKORO_VENV:-${project_dir}/tts_kokoro}"
+  if [[ -x "${venv}/bin/python" && -x "${venv}/bin/pip" ]] &&
+     "${venv}/bin/python" -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -n "${KOKORO_WHEELHOUSE:-}" ]] &&
+     compgen -G "${KOKORO_WHEELHOUSE}/pip-*-py3-none-any.whl" >/dev/null; then
+    return 0
+  fi
+  python3 -c 'import ensurepip' >/dev/null 2>&1 && return 0
+  if [[ "${install_scope}" == system ]]; then
+    SYSTEM_PACKAGES+=(python3-venv)
+    ui_line "首次本地 TTS 安装需要 python3-venv；将通过系统软件源准备。" "First-time local TTS setup requires python3-venv; preparing it from the system package mirror."
+  else
+    fail "首次本地 TTS 安装缺少 ensurepip。请提供含 pip wheel 的 KOKORO_WHEELHOUSE，或由管理员先安装 python3-venv；当前尚未开始编译。" "First-time local TTS setup requires ensurepip. Supply KOKORO_WHEELHOUSE containing a pip wheel, or ask an administrator to install python3-venv; compilation has not started."
+  fi
 }
 
 missing_system_packages() {
@@ -270,7 +294,7 @@ install_sdk2() {
   if [[ "${SDK_POLICY}" == "verify_existing" ]]; then
     [[ -f "${config}" ]] ||
       fail "${PRODUCT_NAME} 要求复用 ${sdk_prefix} 的现有 SDK2；未找到 ${config}，不会自动覆盖安装。" "${PRODUCT_NAME} reuses the existing SDK2 under ${sdk_prefix}; ${config} is missing and will not be installed automatically."
-    if [[ "$PRODUCT_ID" == r1 ]]; then
+    if [[ "$PRODUCT_ID" == r1 || "$PRODUCT_ID" == go2 ]]; then
       [[ -f "${sdk_prefix}/include/unitree/robot/r1/audio/audio_client.hpp" &&
          -f "${sdk_prefix}/include/unitree/robot/r1/loco/r1_loco_client.hpp" ]] ||
         fail "${sdk_prefix} 的 SDK2 缺少共享二进制需要的 R1 Audio/Loco 头文件；请安装兼容 SDK。" "SDK2 under ${sdk_prefix} lacks the R1 Audio/Loco headers required by the shared binary. Install a firmware/ABI-compatible SDK first."
@@ -478,9 +502,35 @@ PY
   fi
 }
 
+assert_web_service_identity() {
+  local scope="$1" exec_start pid cmdline
+  local ctl=(systemctl)
+  [[ "$scope" != user ]] || ctl+=(--user)
+  exec_start="$("${ctl[@]}" show "${WEB_SERVICE}" -p ExecStart --value)"
+  pid="$("${ctl[@]}" show "${WEB_SERVICE}" -p MainPID --value)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/cmdline" ]] ||
+    fail "无法核实 ${WEB_SERVICE} 的 MainPID，拒绝停止。" "Cannot verify MainPID for ${WEB_SERVICE}; refusing to stop."
+  cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
+  [[ "$exec_start" == *"${project_dir}/build/g1_web_server "* &&
+     "$cmdline" == "${project_dir}/build/g1_web_server "* ]] ||
+    fail "${WEB_SERVICE} 的程序路径不匹配，拒绝停止。" "${WEB_SERVICE} executable path does not match; refusing to stop."
+  local args
+  for args in "$exec_start" "$cmdline"; do
+    [[ "$args" =~ (^|[[:space:]])--robot[[:space:]]${PRODUCT_ID}([[:space:]\;]|$) &&
+       "$args" =~ (^|[[:space:]])--interface[[:space:]]${DDS_INTERFACE}([[:space:]\;]|$) ]] ||
+      fail "${WEB_SERVICE} 的产品或网卡参数不匹配，拒绝停止。" "${WEB_SERVICE} product or interface arguments do not match; refusing to stop."
+  done
+}
+
 stop_current_user_services() {
+  if [[ "${install_scope}" == system ]] && ${NEEDS_KOKORO} &&
+     systemctl is-active --quiet "${TTS_SERVICE}" 2>/dev/null; then
+    sudo systemctl stop "${TTS_SERVICE}" ||
+      fail "停止现有系统级 ${TTS_SERVICE} 失败。" "Failed to stop existing system ${TTS_SERVICE}."
+  fi
   if systemctl --user is-active --quiet "${WEB_SERVICE}" 2>/dev/null; then
     ui_line "[信息] 发现正在运行的用户级 ${WEB_SERVICE}；替换前先确认产品身份与零运动..." "[INFO] Found active user service ${WEB_SERVICE}; verifying product identity and zero motion before replacement..."
+    assert_web_service_identity user
     assert_running_product
     assert_motion_stopped
     systemctl --user stop "${WEB_SERVICE}" ||
@@ -577,6 +627,7 @@ if ${check_only}; then
 fi
 
 configure_install_scope
+prepare_kokoro_bootstrap
 
 if [[ "$offline_mode" == "1" ]]; then
   ui_line "[OK] 已提供离线部署资源；跳过 Wi-Fi/GitHub 必需性检查。" "[OK] Offline deployment resources were supplied; skipping Wi-Fi/GitHub requirement checks."
@@ -662,6 +713,7 @@ done
 if [[ "${install_scope}" == "system" ]]; then
   assert_no_other_product_service
   if systemctl is-active --quiet "${WEB_SERVICE}"; then
+    assert_web_service_identity system
     assert_running_product
     assert_motion_stopped
     sudo systemctl stop "${WEB_SERVICE}"
@@ -748,8 +800,11 @@ ${without_kokoro} || wait_for_url http://127.0.0.1:8765/health 120
 wait_for_url http://127.0.0.1:8080/api/health 60
 verify_running_service
 
-robot_ip="$(ip -4 -o addr show dev wlan0 2>/dev/null | awk '{split($4, a, "/"); print a[1]; exit}')"
-[[ -n "${robot_ip}" ]] || robot_ip="192.168.123.164"
+robot_ip="$(ip -4 -o addr show dev wlan0 2>/dev/null | awk '{split($4, a, "/"); print a[1]; exit}' || true)"
+if [[ -z "${robot_ip}" ]]; then
+  robot_ip="$(ip -4 -o addr show dev "${DDS_INTERFACE}" 2>/dev/null | awk '{split($4, a, "/"); print a[1]; exit}' || true)"
+fi
+[[ -n "${robot_ip}" ]] || robot_ip="<ROBOT_IP>"
 echo
 ui_line "UniRoboGui 部署完成。" "UniRoboGui deployment completed."
 ui_line "安装范围：${install_scope}（SDK2：${sdk_prefix}）" "Install scope: ${install_scope} (SDK2: ${sdk_prefix})"

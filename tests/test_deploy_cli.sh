@@ -21,6 +21,7 @@ expect_rc() {
     fail "expected rc=$expected, got rc=$rc: $*"
 }
 
+source "$ROOT/scripts/deploy_i18n.sh"
 source "$ROOT/scripts/deploy_product.sh"
 load_product_profile g1
 [[ "$DDS_INTERFACE" == eth0 && "$WEB_SERVICE" == g1-web-control.service &&
@@ -34,7 +35,7 @@ load_product_profile go2
 [[ "$DDS_INTERFACE" == eth0 && "$WEB_SERVICE" == go2-web-control.service &&
    "$SYSTEM_SDK_PREFIX" == /usr/local && "$SDK_POLICY" == verify_existing &&
    "$NEEDS_KOKORO" == true && "$NEEDS_REALSENSE" == false &&
-   "$DEFAULT_HOST" == unirobo-go2 && -z "$CAMERA_HELPER" &&
+   "$DEFAULT_HOST" == unitree@192.168.123.18 && -z "$CAMERA_HELPER" &&
    "$TTS_MODEL_NAME" == kokoro-multi-lang-v1_1 && "$TTS_MODEL_FILE" == model.onnx &&
    "$TTS_SERVICE" == go2-local-tts.service ]]
 for profile in g1 r1 go2; do
@@ -94,9 +95,155 @@ grep -q 'deploy_from_pc.sh --product r1 --host unitree@192.168.123.164' "$DEPLOY
 bash "$TMP/repo/scripts/deploy.sh" install --product go2
 bash "$TMP/repo/scripts/deploy.sh" check --product go2
 bash "$TMP/repo/scripts/deploy.sh" from-pc --product go2
+grep -q 'deploy_from_pc.sh --product go2 --host unitree@192.168.123.18' "$DEPLOY_TEST_LOG" ||
+  fail "GO2 default host was not dispatched"
+bash "$TMP/repo/scripts/deploy.sh" from-pc --product go2 --host unirobo-go2
 grep -q 'deploy_online.sh --product go2' "$DEPLOY_TEST_LOG"
 grep -q 'install.sh --product go2 --check-only' "$DEPLOY_TEST_LOG"
 grep -q 'deploy_from_pc.sh --product go2 --host unirobo-go2' "$DEPLOY_TEST_LOG"
+
+# Invalid destinations must fail before networking, even through the internal entry.
+mkdir -p "$TMP/no-network"
+for tool in curl ssh git rsync; do
+  cat >"$TMP/no-network/$tool" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0 $*" >>"${DEPLOY_TEST_LOG:?}"
+exit 99
+EOF
+  chmod +x "$TMP/no-network/$tool"
+done
+: >"$DEPLOY_TEST_LOG"
+for invalid_host in '-v@host' '-oProxyCommand=anything' 'unitree@robot;id' 'user@host name'; do
+  expect_rc 2 env PATH="$TMP/no-network:$PATH" bash "$ROOT/scripts/deploy_from_pc.sh" --product go2 --host "$invalid_host"
+  [[ ! -s "$DEPLOY_TEST_LOG" ]] || fail "invalid host reached networking"
+done
+
+# Final URLs use detected addresses, then the selected product default.
+line() { :; }
+ip() {
+  if [[ "$*" == *'dev wlan0' ]]; then
+    [[ -n "$fixture_wifi_ip" ]] || return 1
+    printf '2: wlan0 inet %s/24\n' "$fixture_wifi_ip"
+  else
+    [[ -n "$fixture_dds_ip" ]] || return 1
+    printf '3: %s inet %s/24\n' "$DDS_INTERFACE" "$fixture_dds_ip"
+  fi
+}
+fixture_wifi_ip=""
+fixture_dds_ip=""
+for profile in g1 r1 go2; do
+  load_product_profile "$profile"
+  address_output="$(source <(sed -n '/^robot_ip=/,$p' "$ROOT/scripts/deploy_online.sh"))"
+  [[ "$address_output" == *"http://${DEFAULT_HOST#*@}:8080"* ]] || fail "$profile URL has wrong default"
+done
+fixture_dds_ip=192.168.123.99
+address_output="$(source <(sed -n '/^robot_ip=/,$p' "$ROOT/scripts/deploy_online.sh"))"
+[[ "$address_output" == *'http://192.168.123.99:8080'* ]] || fail "DDS address not used"
+fixture_wifi_ip=10.0.0.25
+address_output="$(source <(sed -n '/^robot_ip=/,$p' "$ROOT/scripts/deploy_online.sh"))"
+[[ "$address_output" == *'http://10.0.0.25:8080'* ]] || fail "Wi-Fi address not preferred"
+unset -f ip line
+
+# Execute the actual service replacement function with stubbed systemd/listeners.
+source <(sed -n '/^stop_current_user_services() {$/,/^}$/p' "$ROOT/scripts/install.sh")
+install_scope=system
+NEEDS_KOKORO=true
+TTS_SERVICE=go2-local-tts.service
+WEB_SERVICE=go2-web-control.service
+without_kokoro=false
+system_tts_active=true
+unknown_tts_listener=false
+systemctl() {
+  if [[ "$*" == "is-active --quiet $TTS_SERVICE" ]]; then
+    $system_tts_active
+  elif [[ "$*" == "stop $TTS_SERVICE" ]]; then
+    system_tts_active=false
+  else
+    return 1
+  fi
+}
+sudo() { "$@"; }
+sleep() { :; }
+ss() {
+  if [[ "$*" == *8765* ]] && { $system_tts_active || $unknown_tts_listener; }; then
+    printf '%s\n' 'LISTEN 0 128 127.0.0.1:8765'
+  fi
+  return 0
+}
+stop_current_user_services
+[[ "$system_tts_active" == false ]] || fail "existing product system TTS was not stopped"
+unknown_tts_listener=true
+service_stop_in_subshell() ( stop_current_user_services )
+expect_rc 1 service_stop_in_subshell
+grep -q '8765' "$TMP/stderr" || fail "unknown TTS listener was accepted"
+unset -f systemctl sudo sleep ss
+
+# Exercise exact unit/MainPID checks without operating any services.
+source <(sed -n '/^assert_web_service_identity() {$/,/^}$/p' "$ROOT/scripts/install.sh")
+project_dir=/home/unitree/UniRoboGui
+PRODUCT_ID=go2
+DDS_INTERFACE=eth0
+unit_args="$project_dir/build/g1_web_server --robot go2 --interface eth0 "
+process_args="$unit_args"
+systemctl() {
+  if [[ "$*" == *ExecStart* ]]; then printf '%s\n' "$unit_args";
+  elif [[ "$*" == *MainPID* ]]; then printf '%s\n' "$$"; else return 1; fi
+}
+tr() { printf '%s\n' "$process_args"; }
+assert_web_service_identity system
+identity_in_subshell() ( assert_web_service_identity system )
+unit_args="$project_dir/build/g1_web_server --robot go2x --interface eth0 "
+expect_rc 1 identity_in_subshell
+unit_args="$process_args"
+process_args="$project_dir/build/g1_web_server --robot go2 --interface eth10 "
+expect_rc 1 identity_in_subshell
+unset -f systemctl tr
+
+# A GO2 deployment still builds the shared binary and needs R1 headers.
+source <(sed -n '/^install_sdk2() {$/,/^}$/p' "$ROOT/scripts/install.sh")
+sdk_prefix="$TMP/sdk"
+SDK_POLICY=verify_existing
+mkdir -p "$sdk_prefix/lib/cmake/unitree_sdk2" "$sdk_prefix/include/unitree/robot/go2/"{vui,sport}
+touch "$sdk_prefix/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" \
+  "$sdk_prefix/lib/libddsc.so" "$sdk_prefix/lib/libddscxx.so" \
+  "$sdk_prefix/include/unitree/robot/go2/vui/vui_client.hpp" \
+  "$sdk_prefix/include/unitree/robot/go2/sport/sport_client.hpp"
+sdk_in_subshell() ( install_sdk2 )
+expect_rc 1 sdk_in_subshell
+grep -q 'R1 Audio/Loco' "$TMP/stderr" || fail "missing shared R1 headers were not rejected"
+mkdir -p "$sdk_prefix/include/unitree/robot/r1/"{audio,loco}
+touch "$sdk_prefix/include/unitree/robot/r1/audio/audio_client.hpp" \
+  "$sdk_prefix/include/unitree/robot/r1/loco/r1_loco_client.hpp"
+install_sdk2 >"$TMP/sdk-check"
+
+# GO2 clock checks run before any robot source inspection or transfer.
+source <(sed -n '/^remote_preflight() {$/,/^}$/p' "$ROOT/scripts/deploy_from_pc.sh")
+SSH_ARGS=()
+ROBOT=unitree@go2-test
+PRODUCT_NAME='Unitree GO2'
+clock_offset=0
+baseline_age=0
+ssh() {
+  if [[ "$*" == *'stat -c %Y'* ]]; then
+    local now
+    now="$(date +%s)"
+    printf '%s\n%s\n' "$((now + clock_offset))" "$((now + clock_offset - baseline_age))"
+  fi
+}
+help_customer() { :; }
+ok() { :; }
+die() { printf '%s\n' "$2" >&2; exit 1; }
+remote_preflight
+preflight_in_subshell() ( remote_preflight )
+clock_offset=-10
+expect_rc 1 preflight_in_subshell
+clock_offset=0
+baseline_age=301
+expect_rc 1 preflight_in_subshell
+grep -q '5 minutes' "$TMP/stderr" || fail "stale persistent baseline accepted"
+baseline_age=-10
+expect_rc 1 preflight_in_subshell
+unset -f ssh help_customer ok die
 
 # Execute the real resource installer with a fake venv; never download or run models.
 export INSTALL_TEST_LOG="$TMP/tts-install.log"
@@ -107,6 +254,7 @@ for profile in g1 go2; do
   for name in "$TTS_MODEL_FILE" voices.bin tokens.txt lexicon-us-en.txt lexicon-zh.txt phone-zh.fst date-zh.fst number-zh.fst; do
     touch "$fixture/archive/$TTS_MODEL_NAME/$name"
   done
+  mkdir -p "$fixture/archive/$TTS_MODEL_NAME/espeak-ng-data"
   tar -cjf "$fixture/tts_models/$TTS_MODEL_NAME.tar.bz2" -C "$fixture/archive" "$TTS_MODEL_NAME"
   cat >"$fixture/tts_kokoro/bin/python" <<'EOF'
 #!/usr/bin/env bash
@@ -204,4 +352,16 @@ for script in \
   bash -n "$ROOT/$script"
 done
 
+
+# Project transfers preserve unrelated on-site files in every target directory.
+RSYNC_RSH=ssh
+PROJECT_DIR="$TMP/repo"
+ROBOT=fixture-robot
+REMOTE_PROJECT_DIR=/home/unitree/UniRoboGui
+rsync() { printf '%s\n' "$@" >"$TMP/project-rsync-args"; }
+source <(sed -n '/^rsync -e .* -az --info=progress2 /,/^project_revision=/{ /^project_revision=/!p; }' "$ROOT/scripts/deploy_from_pc.sh")
+[[ -s "$TMP/project-rsync-args" ]] || fail "project transfer was not exercised"
+! grep -Fxq -- '--delete' "$TMP/project-rsync-args" || fail "project transfer deletes on-site files"
+grep -Fxq '/config/' "$TMP/project-rsync-args" || fail "project transfer exposes customer config"
+unset -f rsync
 printf '%s\n' 'deploy CLI regression passed'

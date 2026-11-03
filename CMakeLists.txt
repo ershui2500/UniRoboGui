@@ -139,6 +139,10 @@ if(BUILD_TESTING)
                      $<TARGET_FILE:g1_web_server> ${CMAKE_CURRENT_SOURCE_DIR}/web)
     add_test(NAME unirobo_deploy_cli_tests
              COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deploy_cli.sh)
+    add_test(NAME unirobo_deploy_bootstrap_tests
+             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deploy_bootstrap.sh)
+    add_test(NAME unirobo_start_services_tests
+             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_start_services.sh)
     add_test(NAME unirobo_local_tts_tests
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_local_tts.py)
 endif()

@@ -2,11 +2,11 @@
 
 **简体中文** | [English](README.en.md)
 
-> **面向 Unitree G1 / R1 / GO2 的统一二次开发与调试平台** —— 同一套 C++17 Web 服务通过 \`RobotRegistry\`、Manifest、Capability 与 \`--robot\` 选择产品，公共 HTTP/WebSocket、前端和部署流程复用，产品差异集中在 Profile/Policy 与部署配置。
+> **面向 Unitree G1 / R1 / GO2 的统一二次开发与调试平台** —— 同一套 C++17 Web 服务通过 `RobotRegistry`、Manifest、Capability 与 `--robot` 选择产品，公共 HTTP/WebSocket、前端和部署流程复用，产品差异集中在 Profile/Policy 与部署配置。
 
 Unitree SDK2 提供了丰富的底层能力，但在实际项目中，这些能力分布在不同的数据通道、服务接口、示例程序和传感器链路中。客户在开始真正的二次开发之前，往往需要先自行组合接口、编写测试程序、确认机器人状态、调通感知与控制链路，再为各个模块分别准备可视化和调试工具。
 
-**UniRoboGui 就是为解决这部分重复集成和调试工作而设计的。** 项目保持**一个多产品二进制** \`g1_web_server\`；部署 G1、R1 或 GO2 只决定依赖、SDK 前缀、网卡、helper、systemd unit 与运行参数，不进行产品裁剪编译。
+**UniRoboGui 就是为解决这部分重复集成和调试工作而设计的。** 项目保持**一个多产品二进制** `g1_web_server`；部署 G1、R1 或 GO2 只决定依赖、SDK 前缀、网卡、helper、systemd unit 与运行参数，不进行产品裁剪编译。
 
 它不是对 Unitree SDK2 的替代，而是建立在 SDK2 之上的 **可观察、可调试、可复用的工程化开发底座**：减少重复的接口拼接和调试工作，让“先把 SDK 调通”更快过渡到“基于机器人能力继续开发”。
 
@@ -14,30 +14,22 @@ Unitree SDK2 提供了丰富的底层能力，但在实际项目中，这些能�
 
 - **统一 SDK2 能力入口**：G1 / R1 / GO2 共享 HTTP、WebSocket、前端框架和二进制，通过产品 Profile/RuntimeBundle 装配各自 DDS、关节、控制与设备能力。
 - **一体化调试与可视化**：在一个浏览器工作台中查看机器人状态、产品对应的 RGB / 深度画面、URDF 三维姿态、SLAM / 点云、控制状态和语音交互；具体模块按 Manifest/Capability 显示。
-- **感知、建图与导航链路**：共享地图、轨迹和导航 UI；G1 保持现有 Mid-360 / 导航链路，R1 只有显式声明附件和部署开关后才开放相应能力。
+- **感知、建图与导航链路**：共享地图、轨迹和导航 UI；G1 保持现有 Mid-360 / 导航链路，R1 / GO2 只有显式声明附件和部署开关后才开放相应能力。
 - **关节调试与动作开发**：由产品 JointSchema 驱动关节姿态、上半身 / 全身调试、手掰示教和动作入口，不在前端维护第二份产品关节索引。
-- **语音与大模型能力整合**：共享 ASR、Unitree TTS、内置/客户大模型能力；G1 可使用本地 Kokoro，R1 默认只使用 Unitree 原生 TTS。
+- **语音与大模型能力整合**：共享 ASR、Unitree TTS、内置/客户大模型能力；G1 可使用本地 Kokoro，R1 默认只使用 Unitree 原生 TTS；GO2 使用本地 Kokoro FP32，不支持 ASR / 原生TTS / 内置大模型。
 - **面向后续二次开发**：提供中英文界面、在线 / 离线自动部署、Mock 回归模式和控制安全互锁，可直接作为机器人功能验证、现场调试以及上层应用开发的基础环境。
 
-运行时能力以 \`/api/robot/manifest\` 和 Capability 状态为真值：未实现、未检测、附件未启用或尚未真机验证的能力会保持 \`unsupported\`、\`disabled\` 或 \`unverified\`，不会因为页面存在入口就视为可用。
+运行时能力以 `/api/robot/manifest` 和 Capability 状态为真值：未实现、未检测、附件未启用或尚未真机验证的能力会保持 `unsupported`、`disabled` 或 `unverified`，不会因为页面存在入口就视为可用。
 
 > **准备部署？** 直接跳转到 [快速部署](#quick-deploy)。
 >
 > 机器人可以访问 GitHub 和机器人无法访问 GitHub 两种场景都提供自动部署脚本。
 
-### GO2：当前能力与 FP32 部署
-
-GO2 已接入共享 Registry、Web 工作台、12关节姿态、RGB、诊断、受控全身调试/示教、运动白名单与本地TTS。真实运动仍需现场操作员验收；ASR/原生TTS/内置LLM尚未接入，深度与可选SLAM能力不能冒充可用。
-
-使用本次更新后的源码执行 `bash scripts/deploy.sh install --product go2`，或在联网电脑执行 `bash scripts/deploy.sh from-pc --product go2 --host unirobo-go2`，默认准备 **Kokoro FP32** 并安装 `go2-local-tts.service`。检查命令为 `bash scripts/deploy.sh check --product go2`。旧GitHub版本不会自动包含尚未发布的本地更改。G1保持原Kokoro策略，R1默认原生TTS。
-
-详见 [GO2部署与Web教程](docs/go2-guide.md)，含功能边界、代理、升级、模型核验和听觉验收。
-
 ---
 
 ## 1. 界面预览
 
-以下截图均为 **G1 实机界面示例**，用于展示共享 Web 工作台形态；它们不代表 R1 已完成相同附件或真机验收。R1 页面内容由 Manifest/Capability 和现场设备状态动态收紧。
+以下截图均为 **G1 实机界面示例**，用于展示共享 Web 工作台形态；它们不代表 R1 / GO2 已完成相同附件或真机验收。R1 / GO2 页面内容由 Manifest/Capability 和现场设备状态动态收紧。
 
 ### 1.1 综合工作台
 
@@ -127,13 +119,13 @@ GO2 已接入共享 Registry、Web 工作台、12关节姿态、RGB、诊断、�
 | 三维模型 | 使用本地 Three.js + URDF Loader，按 Manifest 选择 G1 / R1 / GO2 模型并同步产品 JointSchema |
 | SLAM / 点云 | 按产品 Capability 显示实时点云、累积地图、机器人轨迹和占据体素 |
 | 地图管理 | 建图、保存、加载、下载、退出地图，以及地图初始位姿设置 |
-| 导航 | Capability 开放时提供单点、多点、暂停、继续、取消和本地导航任务；R1 默认关闭真实导航 |
-| RGB / 深度相机 | G1 使用 D435i/librealsense；R1 使用受控固定 RGB/Depth source，均按运行时证据报告可用性 |
+| 导航 | Capability 开放时提供单点、多点、暂停、继续、取消和本地导航任务；R1 / GO2 默认关闭真实导航 |
+| RGB / 深度相机 | G1 使用 D435i/librealsense；R1 使用受控固定 RGB/Depth source；GO2 仅固定 RGB，均按运行时证据报告可用性 |
 | 机器人控制 | 安全锁、常用运动模式、键盘运动、上肢预设动作和固件示教动作 |
-| 调试与示教 | 上半身 / 全身关节目标、手掰录制、动作播放、保持 / 释放和遥控器绑定 |
-| ASR | 接收机器人语音识别结果、显示最近识别历史并转交给大模型 |
-| TTS | Unitree 原生 TTS；G1 可使用本地 Kokoro，R1 默认不安装 Kokoro |
-| 大模型 | 机器人内置对话或客户 OpenAI-compatible API，支持角色、固定问答和唤醒短语 |
+| 调试与示教 | 按产品支持上半身 / 全身调试、手掰录制与遥控绑定；GO2 仅全身，无独立头部控制 |
+| ASR | G1/R1 接收识别结果、显示历史并转交大模型；GO2 尚未接入 |
+| TTS | Unitree 原生 TTS；G1 可使用本地 Kokoro，R1 默认不安装 Kokoro；GO2 使用 Kokoro FP32，无原生回退 |
+| 大模型 | 机器人内置对话或客户 OpenAI-compatible API，支持角色、固定问答和唤醒短语；GO2 仅客户文本 API，无语音唤醒或内置大模型 |
 | 国际化 | 中文 / English 切换，静态和动态界面使用同一套翻译机制 |
 | Mock | 无真实 DDS 初始化的开发与回归模式，用于验证 UI、HTTP、WebSocket 和安全状态机 |
 
@@ -151,7 +143,7 @@ G1、R1 和 GO2 共用同一个部署入口：`scripts/deploy.sh`。部署脚本
 bash scripts/deploy.sh <命令> --product <g1|r1|go2> [可选参数]
 ```
 
-> `g1|r1|go2` 表示“二选一”，不要把 `g1|r1|go2` 原样复制到命令中。例如 G1 使用 `--product g1`，R1 使用 `--product r1`。
+> `g1|r1|go2` 表示“三选一”，不要把 `g1|r1|go2` 原样复制到命令中。例如 G1 使用 `--product g1`，R1 使用 `--product r1`。
 
 支持的命令：
 
@@ -165,8 +157,8 @@ bash scripts/deploy.sh <命令> --product <g1|r1|go2> [可选参数]
 
 | 参数 | 是否必填 | 可填写内容 | 默认值 / 适用范围 | 说明 |
 | --- | --- | --- | --- | --- |
-| `--product` | **是** | `g1`、`r1` | 无默认值 | 选择实际机器人型号。G1 必须写 `--product g1`；R1 必须写 `--product r1` |
-| `--host` | 否 | `USER@HOST`、SSH Host 别名 | 仅 `from-pc` 可用；当前 G1/R1 默认均为 `unitree@192.168.123.164` | 机器人 SSH 地址不同或已有 SSH alias 时覆盖默认值，例如 `--host unitree@192.168.123.200` |
+| `--product` | **是** | `g1`、`r1`、`go2` | 无默认值 | 选择实际机器人型号。G1 必须写 `--product g1`；R1 必须写 `--product r1`；GO2 必须写 `--product go2` |
+| `--host` | 否 | `USER@HOST`、SSH Host 别名 | 仅 `from-pc` 可用；使用下表中的产品默认地址 | 现场地址不同时覆盖默认值，例如 `--host unitree@192.168.123.200` |
 | `--lang` | 否 | `zh`、`en` | 默认 `zh` | 只改变部署脚本输出语言，不改变 Web 页面语言 |
 | `-h` / `--help` | 否 | 无 | 任意场景 | 显示完整命令帮助 |
 
@@ -180,28 +172,24 @@ bash scripts/deploy.sh install --product <PRODUCT>
 bash scripts/deploy.sh from-pc --product <PRODUCT>
 ```
 
-G1 / R1 / GO2 可直接复制的常用命令：
+以下按执行位置列出命令。只选实际产品的一列和需要的一行，在已下载项目的根目录执行，不要逐格全部运行。
 
-```bash
-# G1
-bash scripts/deploy.sh install --product g1
-bash scripts/deploy.sh from-pc --product g1
-bash scripts/deploy.sh check --product g1
+| 用途 / 执行位置 | G1 | R1 | GO2 |
+| --- | --- | --- | --- |
+| 安装/升级 / 机器人 | `bash scripts/deploy.sh install --product g1` | `bash scripts/deploy.sh install --product r1` | `bash scripts/deploy.sh install --product go2` |
+| 传输安装 / 联网电脑 | `bash scripts/deploy.sh from-pc --product g1` | `bash scripts/deploy.sh from-pc --product r1` | `bash scripts/deploy.sh from-pc --product go2` |
+| 只读检查 / 机器人 | `bash scripts/deploy.sh check --product g1` | `bash scripts/deploy.sh check --product r1` | `bash scripts/deploy.sh check --product go2` |
 
-# R1
-bash scripts/deploy.sh install --product r1
-bash scripts/deploy.sh from-pc --product r1
-bash scripts/deploy.sh check --product r1
-
-# 查看帮助 / 使用英文部署日志
-bash scripts/deploy.sh --help
-bash scripts/deploy.sh install --product g1 --lang en
-bash scripts/deploy.sh install --product r1 --lang en
-```
+查看帮助使用 `bash scripts/deploy.sh --help`；需要英文日志时给选中的命令加 `--lang en`。
 
 旧 `deploy_g1_*` / `install_g1*` 中英文脚本仅作为一个兼容周期的弃用入口保留，会提示迁移并转发到 `--product g1`。
 
 ### 3.1 部署前确认
+
+执行 clone 的机器先要安装 Git。方式 B 的联网电脑还需 `curl`、OpenSSH客户端、`rsync`、`python3` 和 `python3 -m pip`；可在电脑运行 `command -v git curl ssh rsync python3` 与 `python3 -m pip --version` 检查。缺失时先在电脑安装 Ubuntu 软件包 `git curl openssh-client rsync python3 python3-pip`。文中的“机器人终端”指已通过 SSH 登录为 `unitree` 的终端，或机器人本机终端；不要在电脑本地终端执行机器人命令。
+
+方式 B 搬运上游源码、模型和 wheels，不包含 Ubuntu 系统包。机器人完全离线前，需准备缺失的 Ubuntu 20.04 arm64 系统依赖；在机器人运行 `check` 可列出缺项。
+
 
 目标机器人环境：
 
@@ -210,11 +198,11 @@ bash scripts/deploy.sh install --product r1 --lang en
 | 机器人 | Unitree G1 / R1 / GO2（当前 Registry 登记产品） |
 | PC2 系统 | Ubuntu 20.04 AArch64 |
 | 用户 | `unitree` |
-| DDS 网卡 | G1：`eth0`；R1：`eth10` |
-| SDK 前缀 | G1：`/opt/unitree_robotics` 或用户前缀；R1：复用 `/usr/local` |
-| Web service | G1：`g1-web-control.service`；R1：`r1-web-control.service` |
+| DDS 网卡 | G1：`eth0`；R1：`eth10`；GO2：默认 `eth0`，先现场确认 |
+| SDK 前缀 | G1：`/opt/unitree_robotics` 或用户前缀；R1 / GO2：复用 `/usr/local` |
+| Web service | G1：`g1-web-control.service`；R1：`r1-web-control.service`；GO2：`go2-web-control.service` |
 | 项目目录 | `/home/unitree/UniRoboGui` |
-| 相机 | G1：D435i/librealsense；R1：R1 EDU 固定相机链路与 helper |
+| 相机 | G1：D435i/librealsense；R1：R1 EDU 固定相机链路与 helper；GO2：固定 RGB，无深度 |
 | 浏览器访问 | 与机器人网络互通的电脑 / 平板 |
 
 SSH 登录机器人时，如果出现 ROS 环境选择，请直接按回车选择 **none**。
@@ -222,11 +210,12 @@ SSH 登录机器人时，如果出现 ROS 环境选择，请直接按回车选�
 
 部署时，安装器会根据产品配置处理各自依赖，并自动选择服务安装范围：
 
-- **有交互 sudo**：安装所选产品的系统级 service 与受控相机 helper；G1 可安装/复用 SDK2，R1 只校验并复用 `/usr/local`，不会自动覆盖。
-- **没有可交互 sudo**：仅当系统包已齐全、`systemctl --user` 可用且 `Linger=yes` 时使用用户级 service。G1 可使用用户 SDK 前缀；R1 仍只复用 `/usr/local`。
+- **有交互 sudo**：安装所选产品的系统级 service 与受控相机 helper；G1 可安装/复用 SDK2，R1 / GO2 只校验并复用 `/usr/local`，不会自动覆盖。
+- **没有可交互 sudo**：仅当系统包已齐全、`systemctl --user` 可用且 `Linger=yes` 时使用用户级 service。G1 可使用用户 SDK 前缀；R1 / GO2 仍只复用 `/usr/local`。
 
 - **G1**：保持现有 D435i/librealsense、Kokoro 和导航默认值。
 - **R1**：默认使用 Unitree 原生 TTS，不安装 Kokoro；不声明 Mid-360，也不启用真实导航。
+- **GO2**：复用已有 `/usr/local` SDK，安装 Kokoro FP32 与专属 TTS unit；默认不安装 RealSense/helper、可选雷达或真实导航。先完成 [GO2 部署前检查](docs/go2-guide.md#3-部署步骤)，尤其是可信时钟与实际 DDS 网卡。
 - **本仓库为公开仓库**，正常 clone 不需要仓库读取 Token。无论采用哪种部署方式，都不要把 GitHub Token、SSH / Wi-Fi 密码、API Key 或其他凭据写进 README、脚本参数、日志或 Git 提交。
 
 ### 3.2 方式 A：机器人可以访问 GitHub
@@ -236,25 +225,29 @@ SSH 登录机器人时，如果出现 ROS 环境选择，请直接按回车选�
 ```bash
 git clone https://github.com/ershui2500/UniRoboGui.git /home/unitree/UniRoboGui
 cd /home/unitree/UniRoboGui
-
-# Unitree G1
-bash scripts/deploy.sh install --product g1
-
-# Unitree R1
-bash scripts/deploy.sh install --product r1
 ```
+
+然后**只执行实际机型对应的一条命令**：
+
+| 产品 | 命令 |
+| --- | --- |
+| G1 | `bash scripts/deploy.sh install --product g1` |
+| R1 | `bash scripts/deploy.sh install --product r1` |
+| GO2 | `bash scripts/deploy.sh install --product go2` |
 
 如果项目已经存在，只需要进入目录后运行对应产品命令：
 
 ```bash
 cd /home/unitree/UniRoboGui
-
-# 如果是 G1
-bash scripts/deploy.sh install --product g1
-
-# 如果是 R1
-bash scripts/deploy.sh install --product r1
 ```
+
+然后**只执行实际机型对应的一条命令**：
+
+| 产品 | 命令 |
+| --- | --- |
+| G1 | `bash scripts/deploy.sh install --product g1` |
+| R1 | `bash scripts/deploy.sh install --product r1` |
+| GO2 | `bash scripts/deploy.sh install --product go2` |
 
 脚本会自动检查所选产品的 Ubuntu/AArch64/`unitree` 环境、DDS 网卡和无 ROS/RMW 污染，保护未提交源码，按产品策略处理 SDK/相机/TTS 依赖，完成 Release 构建、完整 CTest、`ldd`、精确 service 安装和只读运行验收。G1 会按现有流程处理 SDK2、librealsense 与 Kokoro；R1 只校验 `/usr/local` SDK，跳过 librealsense/Kokoro 自动安装。
 
@@ -262,24 +255,30 @@ bash scripts/deploy.sh install --product r1
 
 ### 3.3 方式 B：机器人不能访问 GitHub，但另一台电脑可以访问
 
+先完成电脑工具准备与 clone。GO2 应在电脑上、执行 `from-pc` 前紧接着完成[校时步骤](docs/go2-guide.md#31-准备与校时)（5分钟内）；如果准备过程超过窗口，重新校时后再试。
+
 在一台能访问 GitHub、并且能通过 SSH 连接机器人的 Ubuntu / Linux 电脑上 clone 项目，然后按实际产品执行对应命令：
 
 ```bash
 git clone https://github.com/ershui2500/UniRoboGui.git
 cd UniRoboGui
-
-# Unitree G1
-bash scripts/deploy.sh from-pc --product g1
-
-# Unitree R1
-bash scripts/deploy.sh from-pc --product r1
 ```
 
-当前 G1 / R1 / GO2 的 `from-pc` 默认 SSH 地址均为：
+然后**只执行实际机型对应的一条命令**：
 
-```text
-unitree@192.168.123.164
-```
+| 产品 | 命令 |
+| --- | --- |
+| G1 | `bash scripts/deploy.sh from-pc --product g1` |
+| R1 | `bash scripts/deploy.sh from-pc --product r1` |
+| GO2 | `bash scripts/deploy.sh from-pc --product go2` |
+
+三产品均可直接按默认地址部署，无需填写 `--host`：
+
+| 产品 | 默认 SSH 目标 |
+| --- | --- |
+| G1 | `unitree@192.168.123.164` |
+| R1 | `unitree@192.168.123.164` |
+| GO2 | `unitree@192.168.123.18`（拓展计算单元） |
 
 如果现场机器人地址不同，用 `--host` 覆盖；产品参数仍然按实际机器人填写：
 
@@ -289,9 +288,12 @@ bash scripts/deploy.sh from-pc --product g1 --host unitree@<G1_IP>
 
 # R1 示例
 bash scripts/deploy.sh from-pc --product r1 --host unitree@<R1_IP>
+
+# GO2 仅在现场地址不同时覆盖
+bash scripts/deploy.sh from-pc --product go2 --host unitree@<GO2_IP>
 ```
 
-联网电脑脚本会先检查 GitHub/SSH 和机器人源码脏状态，再只准备所选产品需要的资源并通过 rsync 传输。G1 会准备 SDK2、librealsense、Kokoro 和 AArch64/Python 3.8 wheelhouse；R1 不下载或覆盖 `/usr/local` SDK，也不准备 Kokoro。项目传输排除 `.git/`、AGENTS/参考资料和本地机器人工作区，并保留机器人客户配置与 build。
+联网电脑脚本会先检查 GitHub/SSH 和机器人源码脏状态，再只准备所选产品需要的资源并通过 rsync 传输。G1 会准备 SDK2、librealsense、Kokoro 和 AArch64/Python 3.8 wheelhouse；R1 不下载或覆盖 `/usr/local` SDK，也不准备 Kokoro；GO2 同样保留已有 SDK，并准备 FP32 模型和 wheelhouse。项目传输排除 `.git/`、AGENTS/参考资料和本地机器人工作区，并保留机器人客户配置与 build。
 
 机器人如果缺少 Ubuntu 系统包，脚本会明确列出包名；此时需要提供 Ubuntu 20.04 arm64 软件包来源。不要为上网而断开或修改所选产品 DDS 网卡。
 
@@ -301,12 +303,10 @@ bash scripts/deploy.sh from-pc --product r1 --host unitree@<R1_IP>
 
 ### 3.4 部署完成后
 
-在机器人查看网络地址（按实际产品检查 `eth0` 或 `eth10`）：
+在机器人终端查看网络地址（无需逐个猜网卡）：
 
 ```bash
-ip -4 addr show wlan0
-ip -4 addr show eth0
-ip -4 addr show eth10
+ip -br -4 addr
 ```
 
 浏览器打开：
@@ -315,10 +315,10 @@ ip -4 addr show eth10
 http://<机器人IP>:8080
 ```
 
-只读验收。系统级安装使用 `systemctl`，用户级安装使用 `systemctl --user`：
+以下命令在机器人终端执行；`127.0.0.1` 指机器人本机。只读验收。系统级安装使用 `systemctl`，用户级安装使用 `systemctl --user`：
 
 ```bash
-# 将 <service> 替换为 g1-web-control.service 或 r1-web-control.service
+# 将 <service> 替换为 g1-web-control.service、r1-web-control.service 或 go2-web-control.service
 systemctl is-active <service> 2>/dev/null || systemctl --user is-active <service>
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/health
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/robot/manifest
@@ -341,7 +341,7 @@ curl --noproxy '*' -fsS http://127.0.0.1:8765/health
 升级和首次安装使用相同脚本：
 
 - 机器人可访问 GitHub：`bash scripts/deploy.sh install --product <PRODUCT>`
-- 机器人无法访问 GitHub：在联网电脑运行 `bash scripts/deploy.sh from-pc --product <PRODUCT>`；SSH 地址不是默认值时再加 `--host <SSH_HOST>`
+- 机器人无法访问 GitHub：在联网电脑运行 `bash scripts/deploy.sh from-pc --product <PRODUCT>`；现场地址不同才通过可选 `--host` 覆盖，已有别名也可作为目标
 
 其中 `<PRODUCT>` 必须替换为 `g1`、`r1` 或 `go2`，例如：
 
@@ -351,6 +351,9 @@ bash scripts/deploy.sh install --product g1
 
 # R1 升级
 bash scripts/deploy.sh install --product r1
+
+# GO2 升级
+bash scripts/deploy.sh install --product go2
 ```
 
 在线方式会先安全执行 UniRoboGui 的 `git pull --ff-only`，离线方式会由联网电脑更新项目后再同步；
@@ -385,6 +388,7 @@ UniRoboGui 的生产运行使用 Unitree SDK2 DDS：
 ```text
 G1: eth0  -> Unitree SDK2 DDS
 R1: eth10 -> Unitree SDK2 DDS
+GO2: 现场有线接口（默认 eth0）-> Unitree SDK2 DDS
 wlan0     -> 网页访问 / 外网（按现场网络）
 ```
 
@@ -409,17 +413,18 @@ Web 页面本身没有身份认证，因此不应暴露到不可信网络或公�
 
 ## 5. 兼容性
 
-G1/R1对照如下；GO2配置见上方专用教程。
+以下是仓库默认部署配置；网卡、附件和可用能力还需现场确认。
 
-| 项目 | G1 | R1 |
-| --- | --- | --- |
-| DDS 网卡 | `eth0` | `eth10` |
-| SDK 前缀 | `/opt/unitree_robotics` 或用户前缀 | 现有 `/usr/local`，只校验不自动覆盖 |
-| Web service | `g1-web-control.service` | `r1-web-control.service` |
-| 相机 | D435i / librealsense + G1 helper | R1 EDU 固定 RGB/Depth + R1 helper |
-| TTS 默认 | Kokoro + Unitree fallback | Unitree 原生 TTS |
-| LiDAR / 导航默认 | 保持现有 G1 Mid-360 / 导航配置 | 不声明 Mid-360，不启用真实导航 |
-| 二进制 | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` |
+| 项目 | G1 | R1 | GO2 |
+| --- | --- | --- | --- |
+| 语义关节 | 29 | 26 | 12 |
+| DDS 网卡 | `eth0` | `eth10` | `eth0`（先核对现场） |
+| SDK 前缀 | `/opt/unitree_robotics` 或用户前缀 | 现有 `/usr/local`，只校验不自动覆盖 | `/usr/local`，仅校验已有兼容 SDK，不覆盖 |
+| Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` |
+| 相机 | D435i / librealsense + G1 helper | R1 EDU 固定 RGB/Depth + R1 helper | 固定原生 RGB；深度不支持；无特权 helper |
+| TTS 默认 | Kokoro + Unitree fallback | Unitree 原生 TTS | Kokoro FP32；无原生回退 |
+| LiDAR / 导航默认 | 保持现有 G1 Mid-360 / 导航配置 | 不声明 Mid-360，不启用真实导航 | 默认不声明可选雷达，不启用真实导航 |
+| 二进制 | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` |
 
 三种产品均使用 Ubuntu 20.04 AArch64、`unitree` 用户、`/home/unitree/UniRoboGui` 项目目录和现代 Chromium 系浏览器。产品能力是否真正可用仍以运行时 Manifest/Capability 和现场设备状态为准。
 
@@ -460,8 +465,9 @@ UniRoboGui/
 在可以访问 GitHub 的 Ubuntu / Linux 电脑中运行：
 
 ```bash
-bash scripts/deploy.sh from-pc --product g1 --host unitree@<G1_IP>
-bash scripts/deploy.sh from-pc --product r1 --host unitree@<R1_IP>
+bash scripts/deploy.sh from-pc --product g1
+bash scripts/deploy.sh from-pc --product r1
+bash scripts/deploy.sh from-pc --product go2
 ```
 
 脚本会准备依赖并通过 SSH / rsync 传入机器人。
@@ -521,6 +527,7 @@ nmcli radio wifi on
 ```bash
 systemctl --no-pager --full status g1-web-control.service
 systemctl --no-pager --full status r1-web-control.service
+systemctl --no-pager --full status go2-web-control.service
 curl --noproxy '*' -v http://127.0.0.1:8080/api/health
 ss -ltnp 'sport = :8080'
 ```
@@ -549,12 +556,17 @@ D435i 的“启动 RGB + 深度”会优先使用 librealsense2 与机器人现�
 
 ### 6.8 页面显示数据离线
 
-检查所选产品的 DDS 网卡（G1 `eth0` / R1 `eth10`）、对应 Web service、ROS/RMW/CycloneDDS 环境污染，以及 Manifest 声明的必需数据源是否正在发布。
+检查所选产品的 DDS 网卡（G1 `eth0` / R1 `eth10` / GO2 现场有线接口，默认 `eth0`）、对应 Web service、ROS/RMW/CycloneDDS 环境污染，以及 Manifest 声明的必需数据源是否正在发布。
 
 ### 6.9 客户大模型无法使用
 
 检查 API Base URL、模型名和鉴权配置是否与客户实际服务一致。
 页面支持 OpenAI-compatible Chat Completions 接口；不同云厂商的模型标识应按其官方 API 文档填写。
+
+### 6.10 GO2：TTS、SDK 或部署失败
+
+先看 [GO2 教程](docs/go2-guide.md)：确认已校时、实际 DDS 接口、兼容 `/usr/local` SDK 和 FP32 模型 `model.onnx`；检查 `go2-web-control.service`、`go2-local-tts.service` 的实际 system/user 范围及日志。API 成功不代表机身声音完整，仍需现场听者确认。深度/ASR/原生TTS/内置LLM 不支持时无需重装来“修复”。
+
 
 ---
 
@@ -563,6 +575,7 @@ D435i 的“启动 RGB + 深度”会优先使用 librealsense2 与机器人现�
 ### 7.1 项目文档
 
 - [依赖安装与离线部署](docs/deployment-dependencies.md)
+- [GO2 快速上手、维护与排障](docs/go2-guide.md)
 - [第三方静态资产声明](web/assets/THIRD_PARTY_NOTICES.md)
 
 ### 7.2 Unitree 官方资料
@@ -577,14 +590,14 @@ D435i 的“启动 RGB + 深度”会优先使用 librealsense2 与机器人现�
 
 ## 8. 问题反馈与贡献
 
-如果你在新的 G1、不同固件或不同现场网络中遇到问题，建议先查看上面的[常见问题](#常见问题)和
+如果你在 G1 / R1 / GO2、不同固件或不同现场网络中遇到问题，建议先查看上面的[常见问题](#常见问题)和
 [依赖安装与离线部署文档](docs/deployment-dependencies.md)。
 
 确认属于项目问题后，可以通过 [GitHub Issues](https://github.com/ershui2500/UniRoboGui/issues) 提交。
 为了更快定位问题，建议同时提供：
 
 - UniRoboGui 版本；
-- Unitree G1 EDU 机型与 `mode_machine`（如已知）；
+- 机器人产品/具体变体、固件/SDK版本、部署方式与 service 范围；G1 可附 `mode_machine`；
 - 问题发生在哪个页面和操作步骤；
 - 浏览器提示或 HTTP 错误；
 - `systemctl status` / `journalctl` 中与问题相关的日志；

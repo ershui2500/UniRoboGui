@@ -11,7 +11,7 @@ WHEELHOUSE=""
 PRODUCT=""
 SYSTEM_PACKAGES=(
   build-essential cmake pkg-config git curl bzip2 rsync
-  python3 python3-pip
+  python3
   libboost-system-dev libboost-thread-dev libjsoncpp-dev
   libcurl4-openssl-dev libopencv-dev libzmq3-dev
   libusb-1.0-0-dev libssl-dev libudev-dev
@@ -251,7 +251,8 @@ else
     echo
     ui_line "请在一台能访问 GitHub、并能通过网线/局域网连接机器人的 Ubuntu/Linux 电脑上执行：" "On an Ubuntu/Linux computer that can access GitHub and reach the robot over Ethernet/LAN, run:"
     echo "  cd UniRoboGui"
-    echo "  bash scripts/deploy.sh from-pc --product ${PRODUCT_ID} --host ${DEFAULT_HOST}"
+    echo "  bash scripts/deploy.sh from-pc --product ${PRODUCT_ID}"
+    ui_line "现场地址不同，可添加 --host unitree@实际IP 覆盖默认地址。" "For a different site address, add --host unitree@ACTUAL_IP to override the default."
     echo
     ui_line "该脚本只准备所选产品需要的依赖，然后通过 SSH/rsync 传到机器人并自动编译安装。" "The script prepares only the dependencies required by the selected product, transfers them via SSH/rsync, and builds/installs on the robot."
     exit 20
@@ -350,11 +351,12 @@ if ldd "$PROJECT_DIR/build/g1_web_server" | grep -q 'not found'; then
   die "最终动态库检查发现 not found。" "Final shared-library check found unresolved libraries."
 fi
 
-robot_ip="$(ip -4 -o addr show dev wlan0 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')"
-[[ -n "$robot_ip" ]] || robot_ip="$(ip -4 -o addr show dev "$DDS_INTERFACE" 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')"
+robot_ip="$(ip -4 -o addr show dev wlan0 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}' || true)"
+[[ -n "$robot_ip" ]] || robot_ip="$(ip -4 -o addr show dev "$DDS_INTERFACE" 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}' || true)"
+[[ -n "$robot_ip" ]] || robot_ip="${DEFAULT_HOST#*@}"
 echo
 line
 ui_line "[部署完成] UniRoboGui 已完成依赖安装、编译、CTest、服务安装和健康检查。" "[DEPLOYMENT COMPLETE] UniRoboGui dependencies, build, CTest, service installation, and health checks completed."
-ui_line "[访问地址] http://${robot_ip:-192.168.123.164}:8080" "[OPEN] http://${robot_ip:-192.168.123.164}:8080"
+ui_line "[访问地址] http://${robot_ip}:8080" "[OPEN] http://${robot_ip}:8080"
 ui_line "[安全说明] 本脚本没有主动执行机器人运动、导航、模式切换、上肢或示教动作。" "[SAFETY] This script did not actively execute robot motion, navigation, mode switching, upper-body motion, or taught actions."
 line

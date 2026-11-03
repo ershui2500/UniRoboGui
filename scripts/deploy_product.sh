@@ -41,7 +41,7 @@ load_product_profile() {
     go2)
       PRODUCT_ID=go2
       PRODUCT_NAME="Unitree GO2"
-      DEFAULT_HOST="unirobo-go2"
+      DEFAULT_HOST="unitree@192.168.123.18"
       DDS_INTERFACE=eth0
       WEB_SERVICE="go2-web-control.service"
       OTHER_WEB_SERVICE="g1-web-control.service r1-web-control.service"
@@ -78,4 +78,14 @@ load_product_profile() {
   export PRODUCT_ID PRODUCT_NAME DEFAULT_HOST DDS_INTERFACE WEB_SERVICE OTHER_WEB_SERVICE
   export WEB_SYSTEM_UNIT WEB_USER_UNIT SYSTEM_SDK_PREFIX USER_SDK_PREFIX
   export SDK_POLICY NEEDS_REALSENSE NEEDS_KOKORO CAMERA_HELPER CAMERA_SUDOERS
+}
+
+resolve_product_host() {
+  local requested="${1:-}"
+  RESOLVED_HOST="${requested:-$DEFAULT_HOST}"
+  if [[ "$RESOLVED_HOST" == -* || ! "$RESOLVED_HOST" =~ ^([a-zA-Z0-9._-]+@)?[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+    ui_err '--host 必须是 SSH Host 别名、主机名或 USER@IPv4/主机名；不能包含选项或命令。' \
+      '--host must be an SSH Host alias, hostname or USER@IPv4/hostname; options and commands are not allowed.'
+    return 2
+  fi
 }

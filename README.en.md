@@ -2,11 +2,11 @@
 
 [简体中文](README.md) | **English**
 
-> **A unified development and debugging platform for Unitree G1, R1 and GO2** — one C++17 Web service selects the active product through \`RobotRegistry\`, Manifest/Capability data, and \`--robot\`, while shared HTTP/WebSocket, frontend, and deployment flows remain product-independent.
+> **A unified development and debugging platform for Unitree G1, R1 and GO2** — one C++17 Web service selects the active product through `RobotRegistry`, Manifest/Capability data, and `--robot`, while shared HTTP/WebSocket, frontend, and deployment flows remain product-independent.
 
 Unitree SDK2 provides a wide range of low-level robot capabilities, but in a real project those capabilities are spread across different data channels, service APIs, example programs, and sensor pipelines. Before application development can begin, customers often have to combine these interfaces themselves, write test programs, verify robot state, bring up perception and control paths, and prepare separate visualization or debugging tools for each subsystem.
 
-**UniRoboGui is designed to remove that repeated integration and debugging work.** The project keeps a **single multi-product binary**, \`g1_web_server\`; choosing G1, R1 or GO2 changes dependencies, SDK prefix, network interface, helpers, systemd unit, and runtime arguments rather than compiling separate product binaries.
+**UniRoboGui is designed to remove that repeated integration and debugging work.** The project keeps a **single multi-product binary**, `g1_web_server`; choosing G1, R1 or GO2 changes dependencies, SDK prefix, network interface, helpers, systemd unit, and runtime arguments rather than compiling separate product binaries.
 
 UniRoboGui does not replace Unitree SDK2. It provides an **observable, debuggable, and reusable engineering layer on top of SDK2**, reducing repetitive interface integration and shortening the path from “getting the SDK working” to “building with the robot”.
 
@@ -14,30 +14,22 @@ UniRoboGui does not replace Unitree SDK2. It provides an **observable, debuggabl
 
 - **Unified SDK2 capability access**: G1, R1 and GO2 share the HTTP/WebSocket core, frontend, and binary while product Profile/RuntimeBundle configuration selects each robot's DDS, joint, control, and device capabilities.
 - **Integrated debugging and visualization**: view robot state, product-specific RGB/depth streams, URDF pose, SLAM/point cloud, control state, and voice interaction in one browser workspace; visible modules follow Manifest/Capability state.
-- **Perception, mapping, and navigation pipeline**: shares map, track, and navigation UI. G1 keeps its existing Mid-360/navigation pipeline; R1 exposes those capabilities only when attachments and deployment flags are explicitly enabled.
+- **Perception, mapping, and navigation pipeline**: shares map, track, and navigation UI. G1 keeps its existing Mid-360/navigation pipeline; R1/GO2 expose those capabilities only when attachments and deployment flags are explicitly enabled.
 - **Joint debugging and action development**: product JointSchema drives live pose, upper/full-body debugging, hand-guided teaching, and action entry points without a second product joint-index table in the frontend.
-- **Voice and LLM integration**: shares ASR, Unitree TTS, and built-in/customer LLM support. G1 can use local Kokoro; R1 defaults to Unitree native TTS only.
+- **Voice and LLM integration**: shares ASR, Unitree TTS, and built-in/customer LLM support. G1 can use local Kokoro; R1 defaults to Unitree native TTS; GO2 uses local Kokoro FP32 with no ASR/native TTS/built-in LLM support.
 - **A foundation for further development**: provides Chinese/English UI, online/offline automated deployment, Mock regression mode, and control safety interlocks, making it suitable as a base environment for robot feature validation, field debugging, and higher-level application development.
 
-Runtime truth comes from \`/api/robot/manifest\` and Capability state. Features that are not implemented, detected, explicitly enabled, or verified stay \`unsupported\`, \`disabled\`, or \`unverified\`; a visible UI entry is not proof that a capability is available.
+Runtime truth comes from `/api/robot/manifest` and Capability state. Features that are not implemented, detected, explicitly enabled, or verified stay `unsupported`, `disabled`, or `unverified`; a visible UI entry is not proof that a capability is available.
 
 > **Ready to deploy?** Jump to [Quick deployment](#quick-deployment).
 >
 > Both deployment cases are supported: the robot can access GitHub, or the robot is offline while another Ubuntu/Linux computer has Internet access.
 
-### GO2: capabilities and FP32 deployment
-
-GO2 uses the shared Registry/Web, 12-joint pose, RGB, diagnostics, guarded full-body debug/teach, motion allowlists and local TTS. Physical motion needs operator acceptance; ASR/native TTS/built-in LLM are not integrated. Depth and optional SLAM must not be reported available without evidence.
-
-With updated source, `bash scripts/deploy.sh install --product go2` or PC-side `bash scripts/deploy.sh from-pc --product go2 --host unirobo-go2` prepares **Kokoro FP32** and installs `go2-local-tts.service`. Use `bash scripts/deploy.sh check --product go2` for preflight. Old GitHub revisions do not include unpublished local changes. G1 keeps its previous Kokoro policy; R1 defaults to native TTS.
-
-See the [GO2 deployment/Web guide](docs/go2-guide.en.md) for feature boundaries, proxy setup, upgrades, model verification and listening acceptance.
-
 ---
 
 ## 1. Interface preview
 
-All screenshots below are **G1 deployment examples** showing the shared Web workspace. They do not claim equivalent R1 attachment or hardware acceptance; R1 content is narrowed at runtime by Manifest/Capability and detected devices.
+All screenshots below are **G1 deployment examples** showing the shared Web workspace. They do not claim equivalent R1/GO2 attachment or hardware acceptance; R1/GO2 content is narrowed at runtime by Manifest/Capability and detected devices.
 
 ### 1.1 Integrated workstation
 
@@ -123,16 +115,16 @@ Fields whose bit definitions are not publicly documented are shown as raw values
 | Integrated workstation | Camera, 3D robot, SLAM map, control, and voice/LLM interaction in one responsive page |
 | Robot status | Product-profile DDS, BMS, FSM, odometry, IMU, semantic joints, and current-model 3D pose |
 | Diagnostics | DDS, odometry, motor, battery, and main-board summaries plus raw values |
-| 3D model | Local Three.js + URDF Loader selects G1/R1 assets from the Manifest and follows the product JointSchema |
+| 3D model | Local Three.js + URDF Loader selects G1/R1/GO2 assets from the Manifest and follows the product JointSchema |
 | SLAM / point cloud | Product-Capability-gated live point cloud, accumulated map, robot track, and occupancy voxels |
 | Map management | Start mapping, save/load/download/exit maps, and set initial pose |
-| Navigation | Single/multi-point tasks when Capability allows them; real R1 navigation is disabled by default |
-| RGB / depth camera | G1 uses D435i/librealsense; R1 uses controlled fixed RGB/depth sources, both narrowed by runtime evidence |
+| Navigation | Single/multi-point tasks when Capability allows them; real R1/GO2 navigation is disabled by default |
+| RGB / depth camera | G1 uses D435i/librealsense; R1 uses controlled fixed RGB/depth sources, GO2 uses fixed RGB only; availability follows runtime evidence |
 | Robot control | Safety lock, common motion modes, keyboard motion, upper-body presets, and firmware taught actions |
-| Debug and teaching | Upper/full-body joint targets, hand-guided recording, playback, hold/release, and remote binding |
-| ASR | Receive robot ASR results, display recent recognition history, and forward text to the LLM |
-| TTS | Unitree native TTS; G1 may use local Kokoro while R1 does not install it by default |
-| LLM | Robot built-in dialog or customer OpenAI-compatible API with role, fixed Q&A, and wake phrases |
+| Debug and teaching | Product-specific upper/full-body debugging, recording and remote binding; GO2 is full-body only with no head control |
+| ASR | G1/R1 receive ASR results/history and forward text to the LLM; GO2 is not integrated |
+| TTS | Unitree native TTS; G1 may use local Kokoro while R1 does not install it by default; GO2 uses FP32 Kokoro without native fallback |
+| LLM | Robot built-in dialog or customer OpenAI-compatible API with role, fixed Q&A, and wake phrases; GO2 supports customer text APIs only, without voice wake or built-in LLM |
 | Internationalization | Chinese / English switching for static and dynamic Web UI |
 | Mock mode | Development/regression without real DDS initialization for UI, HTTP, WebSocket, and safety-state testing |
 
@@ -164,8 +156,8 @@ Supported options:
 
 | Option | Required | Accepted values | Default / scope | Meaning |
 | --- | --- | --- | --- | --- |
-| `--product` | **Yes** | `g1`, `r1` | No default | Select the actual robot. Use `--product g1` for G1 and `--product r1` for R1 |
-| `--host` | No | `USER@HOST` or an SSH Host alias | `from-pc` only; G1/R1 currently default to `unitree@192.168.123.164` | Override the robot SSH target, for example `--host unitree@192.168.123.200` |
+| `--product` | **Yes** | `g1`, `r1`, `go2` | No default | Select the actual robot. Use `--product g1`, `r1` or `go2` for the actual robot |
+| `--host` | No | `USER@HOST` or an SSH Host alias | `from-pc` only; uses the product default address listed below | Override only when the actual address differs, for example `--host unitree@192.168.123.200` |
 | `--lang` | No | `zh`, `en` | Default: `zh` | Changes deployment-script output language only; it does not change the Web UI language |
 | `-h` / `--help` | No | None | Any scenario | Show the complete CLI help |
 
@@ -179,28 +171,24 @@ bash scripts/deploy.sh install --product <PRODUCT>
 bash scripts/deploy.sh from-pc --product <PRODUCT>
 ```
 
-Copy-ready G1/R1 examples:
+Choose one product column and one action below. Run each command from the cloned project root on the machine indicated; do not run all cells.
 
-```bash
-# G1
-bash scripts/deploy.sh install --product g1
-bash scripts/deploy.sh from-pc --product g1
-bash scripts/deploy.sh check --product g1
+| Action / machine | G1 | R1 | GO2 |
+| --- | --- | --- | --- |
+| Install/upgrade / robot | `bash scripts/deploy.sh install --product g1 --lang en` | `bash scripts/deploy.sh install --product r1 --lang en` | `bash scripts/deploy.sh install --product go2 --lang en` |
+| Transfer/install / PC | `bash scripts/deploy.sh from-pc --product g1 --lang en` | `bash scripts/deploy.sh from-pc --product r1 --lang en` | `bash scripts/deploy.sh from-pc --product go2 --lang en` |
+| Read-only preflight / robot | `bash scripts/deploy.sh check --product g1 --lang en` | `bash scripts/deploy.sh check --product r1 --lang en` | `bash scripts/deploy.sh check --product go2 --lang en` |
 
-# R1
-bash scripts/deploy.sh install --product r1
-bash scripts/deploy.sh from-pc --product r1
-bash scripts/deploy.sh check --product r1
-
-# Help / English deployment logs
-bash scripts/deploy.sh --help
-bash scripts/deploy.sh install --product g1 --lang en
-bash scripts/deploy.sh install --product r1 --lang en
-```
+Use `bash scripts/deploy.sh --help` for help. `--lang en` changes script logs only.
 
 Legacy `deploy_g1_*` / `install_g1*` Chinese and English scripts remain for one compatibility cycle only. They print a deprecation message and forward to `--product g1`.
 
 ### 3.1 Before deployment
+
+Before cloning, the machine running `git clone` needs Git. For Method B, the online PC also needs `curl`, OpenSSH client, `rsync`, `python3` and `python3 -m pip`. On that PC, check with `command -v git curl ssh rsync python3` and `python3 -m pip --version`. If missing, install Ubuntu packages `git curl openssh-client rsync python3 python3-pip` on the PC first. Do not run robot commands in the PC terminal: a robot terminal means an SSH session logged in as `unitree` (or a terminal on the robot itself).
+
+Method B transfers upstream sources/models/wheels, not Ubuntu system packages. Before an offline install, arrange any missing Ubuntu 20.04 arm64 packages on the robot; the robot-side `check` lists missing prerequisites.
+
 
 Target environment:
 
@@ -209,24 +197,25 @@ Target environment:
 | Robot | Unitree G1 / R1 / GO2 currently registered in RobotRegistry |
 | PC2 OS | Ubuntu 20.04 AArch64 |
 | User | `unitree` |
-| DDS interface | G1: `eth0`; R1: `eth10` |
-| SDK prefix | G1: `/opt/unitree_robotics` or user prefix; R1: existing `/usr/local` |
-| Web service | G1: `g1-web-control.service`; R1: `r1-web-control.service` |
+| DDS interface | G1: `eth0`; R1: `eth10`; GO2: default `eth0`, verify on site |
+| SDK prefix | G1: `/opt/unitree_robotics` or user prefix; R1/GO2: existing `/usr/local` |
+| Web service | G1: `g1-web-control.service`; R1: `r1-web-control.service`; GO2: `go2-web-control.service` |
 | Project directory | `/home/unitree/UniRoboGui` |
-| Camera | G1 D435i/librealsense; R1 EDU fixed camera chain/helper |
+| Camera | G1 D435i/librealsense; R1 EDU fixed camera chain/helper; GO2 fixed RGB, no depth |
 | Browser client | Computer/tablet with network reachability to the robot |
 
 When SSH login displays a ROS environment selection prompt, press Enter and select **none**. Do not repurpose the selected product's DDS interface or source ROS/RMW/CycloneDDS into the Web process.
 
 The installer chooses one of two service scopes:
 
-- **Interactive sudo available:** install the selected product's system service and controlled camera helper. G1 can install/reuse SDK2; R1 only validates and reuses `/usr/local` and never overwrites it automatically.
-- **Interactive sudo unavailable:** user services are allowed only when system packages are complete, `systemctl --user` works, and `Linger=yes`. G1 may use a user SDK prefix; R1 still reuses `/usr/local`.
+- **Interactive sudo available:** install the selected product's system service and controlled camera helper. G1 can install/reuse SDK2; R1/GO2 only validate and reuse `/usr/local` and never overwrites it automatically.
+- **Interactive sudo unavailable:** user services are allowed only when system packages are complete, `systemctl --user` works, and `Linger=yes`. G1 may use a user SDK prefix; R1/GO2 still reuse `/usr/local`.
 
 External resources differ by method:
 
 - **G1:** keeps the existing D435i/librealsense, Kokoro, and navigation defaults.
 - **R1:** defaults to Unitree native TTS, does not install Kokoro, does not declare Mid-360, and does not enable real navigation.
+- **GO2:** reuses existing `/usr/local` SDK, installs Kokoro FP32 and its own TTS unit, and skips RealSense/helpers, optional LiDAR and real navigation. Complete the [GO2 prerequisites](docs/go2-guide.en.md#3-deployment), especially clock and actual DDS interface checks, before either method.
 - **This is a public repository**, so a normal clone does not require a repository access token. Regardless of deployment method, do not put GitHub tokens, SSH/Wi-Fi passwords, API keys, or other credentials in README files, script arguments, logs, or Git commits.
 
 ### 3.2 Method A: the robot can access GitHub
@@ -236,25 +225,29 @@ Clone the project on the robot, then choose the command for the actual model:
 ```bash
 git clone https://github.com/ershui2500/UniRoboGui.git /home/unitree/UniRoboGui
 cd /home/unitree/UniRoboGui
-
-# Unitree G1
-bash scripts/deploy.sh install --product g1 --lang en
-
-# Unitree R1
-bash scripts/deploy.sh install --product r1 --lang en
 ```
+
+Then run **only the command for your robot**:
+
+| Product | Command |
+| --- | --- |
+| G1 | `bash scripts/deploy.sh install --product g1 --lang en` |
+| R1 | `bash scripts/deploy.sh install --product r1 --lang en` |
+| GO2 | `bash scripts/deploy.sh install --product go2 --lang en` |
 
 If the repository already exists, enter it and run the command for the actual product:
 
 ```bash
 cd /home/unitree/UniRoboGui
-
-# Choose this for G1
-bash scripts/deploy.sh install --product g1 --lang en
-
-# Choose this for R1
-bash scripts/deploy.sh install --product r1 --lang en
 ```
+
+Then run **only the command for your robot**:
+
+| Product | Command |
+| --- | --- |
+| G1 | `bash scripts/deploy.sh install --product g1 --lang en` |
+| R1 | `bash scripts/deploy.sh install --product r1 --lang en` |
+| GO2 | `bash scripts/deploy.sh install --product go2 --lang en` |
 
 The script validates the selected product's Ubuntu/AArch64/`unitree` environment, DDS interface, and clean ROS/RMW state; protects dirty source trees; handles SDK/camera/TTS dependencies according to the product profile; then performs a Release build, full CTest, `ldd`, exact service installation, and read-only runtime acceptance. G1 keeps the existing SDK2/librealsense/Kokoro flow; R1 validates the existing `/usr/local` SDK and skips automatic librealsense/Kokoro installation.
 
@@ -262,24 +255,30 @@ If the first step shows that GitHub is unreachable, the script stops and tells y
 
 ### 3.3 Method B: the robot cannot access GitHub, but another computer can
 
+Complete PC tools and clone first. For GO2, run the [clock procedure](docs/go2-guide.en.md#31-prerequisites-and-clock) on the PC immediately before `from-pc` (within five minutes); if it expires, correct the clock again before retrying.
+
 On an Ubuntu/Linux computer that can access GitHub **and** connect to the robot over SSH, clone the project and run the command for the actual product:
 
 ```bash
 git clone https://github.com/ershui2500/UniRoboGui.git
 cd UniRoboGui
-
-# Unitree G1
-bash scripts/deploy.sh from-pc --product g1 --lang en
-
-# Unitree R1
-bash scripts/deploy.sh from-pc --product r1 --lang en
 ```
 
-The current default SSH target for both G1 and R1 is:
+Then run **only the command for your robot**:
 
-```text
-unitree@192.168.123.164
-```
+| Product | Command |
+| --- | --- |
+| G1 | `bash scripts/deploy.sh from-pc --product g1 --lang en` |
+| R1 | `bash scripts/deploy.sh from-pc --product r1 --lang en` |
+| GO2 | `bash scripts/deploy.sh from-pc --product go2 --lang en` |
+
+All three products work with their default addresses without `--host`:
+
+| Product | Default SSH target |
+| --- | --- |
+| G1 | `unitree@192.168.123.164` |
+| R1 | `unitree@192.168.123.164` |
+| GO2 | `unitree@192.168.123.18` (expansion computer) |
 
 If the robot uses a different address, override it with `--host` while keeping the correct product value:
 
@@ -289,9 +288,12 @@ bash scripts/deploy.sh from-pc --product g1 --host unitree@<G1_IP> --lang en
 
 # R1 example
 bash scripts/deploy.sh from-pc --product r1 --host unitree@<R1_IP> --lang en
+
+# GO2: override only if the actual address differs
+bash scripts/deploy.sh from-pc --product go2 --host unitree@<GO2_IP> --lang en
 ```
 
-The online-computer flow checks GitHub/SSH and robot-side dirty state, prepares only the selected product's resources, and transfers them with rsync. G1 prepares SDK2, librealsense, Kokoro, and the AArch64/Python 3.8 wheelhouse. R1 neither downloads nor overwrites the existing `/usr/local` SDK and does not prepare Kokoro. Project transfer excludes `.git/`, AGENTS/reference material, and local robot workspaces while preserving customer runtime configuration and build output.
+The online-computer flow checks GitHub/SSH and robot-side dirty state, prepares only the selected product's resources, and transfers them with rsync. G1 prepares SDK2, librealsense, Kokoro, and the AArch64/Python 3.8 wheelhouse. R1 neither downloads nor overwrites the existing `/usr/local` SDK and does not prepare Kokoro. GO2 also preserves the existing SDK and prepares the FP32 model and wheelhouse. Project transfer excludes `.git/`, AGENTS/reference material, and local robot workspaces while preserving customer runtime configuration and build output.
 
 If Ubuntu packages are missing, provide the required Ubuntu 20.04 arm64 packages. Do not disconnect or repurpose the selected product's DDS interface.
 
@@ -301,12 +303,10 @@ If interactive sudo is unavailable on the robot but system packages are already 
 
 ### 3.4 After deployment
 
-Check network addresses as appropriate for the selected product:
+In the robot terminal, list available network addresses:
 
 ```bash
-ip -4 addr show wlan0
-ip -4 addr show eth0
-ip -4 addr show eth10
+ip -br -4 addr
 ```
 
 Open:
@@ -315,10 +315,10 @@ Open:
 http://<ROBOT_IP>:8080
 ```
 
-Read-only acceptance checks. System installations use `systemctl`; user-local installations use `systemctl --user`:
+Run these commands in the robot terminal; `127.0.0.1` refers to the robot. Read-only acceptance checks. System installations use `systemctl`; user-local installations use `systemctl --user`:
 
 ```bash
-# Replace <service> with g1-web-control.service or r1-web-control.service
+# Replace <service> with g1-web-control.service, r1-web-control.service or go2-web-control.service
 systemctl is-active <service> 2>/dev/null || systemctl --user is-active <service>
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/health
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/robot/manifest
@@ -340,7 +340,7 @@ See [docs/deployment-dependencies.en.md](docs/deployment-dependencies.en.md) for
 Use the same deployment flow for upgrades:
 
 - Robot can access GitHub: `bash scripts/deploy.sh install --product <PRODUCT> --lang en`.
-- Robot cannot access GitHub: run `bash scripts/deploy.sh from-pc --product <PRODUCT> --lang en` on the online computer; add `--host <SSH_HOST>` only when the robot does not use the default SSH target.
+- Robot cannot access GitHub: run `bash scripts/deploy.sh from-pc --product <PRODUCT> --lang en` on the online computer; optionally override `--host` only when the actual address differs; an existing SSH alias can also be used.
 
 Replace `<PRODUCT>` with `g1`, `r1`, or `go2`, for example:
 
@@ -350,6 +350,9 @@ bash scripts/deploy.sh install --product g1 --lang en
 
 # R1 upgrade
 bash scripts/deploy.sh install --product r1 --lang en
+
+# GO2 upgrade
+bash scripts/deploy.sh install --product go2 --lang en
 ```
 
 Method A uses a safe `git pull --ff-only`. Method B updates the online checkout and synchronizes it to the robot. Both refresh upstream dependencies as needed, rebuild the project, and preserve customer runtime configuration.
@@ -386,6 +389,7 @@ Production communication uses Unitree SDK2 DDS:
 ```text
 G1: eth0  -> Unitree SDK2 DDS
 R1: eth10 -> Unitree SDK2 DDS
+GO2: verified wired interface (default eth0) -> Unitree SDK2 DDS
 wlan0     -> Web access / Internet when configured
 ```
 
@@ -409,19 +413,20 @@ The Web interface does not provide built-in user authentication and should not b
 
 ## 5. Compatibility
 
-G1/R1 comparison follows; see the GO2 guide above for its configuration.
+These are repository deployment defaults; verify interfaces, attachments and availability on the actual robot.
 
-| Item | G1 | R1 |
-| --- | --- | --- |
-| DDS interface | `eth0` | `eth10` |
-| SDK prefix | `/opt/unitree_robotics` or user prefix | existing `/usr/local`; validate only, never auto-overwrite |
-| Web service | `g1-web-control.service` | `r1-web-control.service` |
-| Camera | D435i/librealsense + G1 helper | fixed R1 EDU RGB/Depth + R1 helper |
-| Default TTS | Kokoro + Unitree fallback | Unitree native TTS |
-| LiDAR/navigation default | existing G1 Mid-360/navigation configuration | no Mid-360 declaration and no real navigation |
-| Binary | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` |
+| Item | G1 | R1 | GO2 |
+| --- | --- | --- | --- |
+| Semantic joints | 29 | 26 | 12 |
+| DDS interface | `eth0` | `eth10` | `eth0` (verify on site) |
+| SDK prefix | `/opt/unitree_robotics` or user prefix | existing `/usr/local`; validate only, never auto-overwrite | `/usr/local`; validate existing compatible SDK, never overwrite |
+| Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` |
+| Camera | D435i/librealsense + G1 helper | fixed R1 EDU RGB/Depth + R1 helper | Fixed native RGB; depth unsupported; no privileged helper |
+| Default TTS | Kokoro + Unitree fallback | Unitree native TTS | Kokoro FP32; no native fallback |
+| LiDAR/navigation default | existing G1 Mid-360/navigation configuration | no Mid-360 declaration and no real navigation | No optional LiDAR declaration or real navigation by default |
+| Binary | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` |
 
-Both products use Ubuntu 20.04 AArch64, the `unitree` account, `/home/unitree/UniRoboGui`, and a modern Chromium-class browser. Runtime Manifest/Capability state and field hardware remain the source of truth for actual availability.
+All three products use Ubuntu 20.04 AArch64, the `unitree` account, `/home/unitree/UniRoboGui`, and a modern Chromium-class browser. Runtime Manifest/Capability state and field hardware remain the source of truth for actual availability.
 
 Robot firmware, SDK2, LiDAR services, device nodes, and network addresses can differ by robot batch and field configuration. Verify against the actual robot.
 
@@ -455,8 +460,9 @@ The recommended deployment entry point is `scripts/deploy.sh`. Legacy `deploy_g1
 Do not keep retrying GitHub operations on the robot. On an Ubuntu/Linux computer that can reach GitHub:
 
 ```bash
-bash scripts/deploy.sh from-pc --product g1 --host unitree@<G1_IP> --lang en
-bash scripts/deploy.sh from-pc --product r1 --host unitree@<R1_IP> --lang en
+bash scripts/deploy.sh from-pc --product g1 --lang en
+bash scripts/deploy.sh from-pc --product r1 --lang en
+bash scripts/deploy.sh from-pc --product go2 --lang en
 ```
 
 The script prepares dependencies and transfers them with SSH/rsync.
@@ -513,6 +519,7 @@ On the robot:
 ```bash
 systemctl --no-pager --full status g1-web-control.service
 systemctl --no-pager --full status r1-web-control.service
+systemctl --no-pager --full status go2-web-control.service
 curl --noproxy '*' -v http://127.0.0.1:8080/api/health
 ss -ltnp 'sport = :8080'
 ```
@@ -543,11 +550,16 @@ Because video device numbers can change across USB enumeration, leave the manual
 
 ### 6.8 Robot data is offline in the page
 
-Check the selected product's DDS interface (G1 `eth0` / R1 `eth10`), the matching Web service, ROS/RMW/CycloneDDS environment contamination, and whether the Manifest-required data sources are actually publishing.
+Check the selected product's DDS interface (G1 `eth0` / R1 `eth10` / GO2 verified wired interface, default `eth0`), the matching Web service, ROS/RMW/CycloneDDS environment contamination, and whether the Manifest-required data sources are actually publishing.
 
 ### 6.9 Customer LLM does not work
 
 Verify the API Base URL, model identifier, and authentication against the customer's actual service. UniRoboGui supports an OpenAI-compatible Chat Completions interface; model names differ between providers.
+
+### 6.10 GO2: TTS, SDK or deployment failures
+
+Follow the [GO2 guide](docs/go2-guide.en.md): verify clock correction, actual DDS interface, compatible `/usr/local` SDK and FP32 `model.onnx`. Inspect `go2-web-control.service` and `go2-local-tts.service` in the actual system/user scope. API success still needs on-site listening acceptance. Unsupported depth/ASR/native TTS/built-in LLM cannot be fixed by reinstalling.
+
 
 ---
 
@@ -557,6 +569,7 @@ Verify the API Base URL, model identifier, and authentication against the custom
 
 - [Chinese README](README.md)
 - [Dependency installation and offline deployment](docs/deployment-dependencies.en.md)
+- [GO2 setup, maintenance and troubleshooting](docs/go2-guide.en.md)
 - [Third-party static asset notices](web/assets/THIRD_PARTY_NOTICES.md)
 
 ### 7.2 Unitree references
@@ -571,12 +584,12 @@ Verify the API Base URL, model identifier, and authentication against the custom
 
 ## 8. Issues and contributions
 
-For a new G1, different firmware, or a different field network, review [Troubleshooting](#6-troubleshooting) and the deployment dependency document first.
+For a G1/R1/GO2, different firmware, or a different field network, review [Troubleshooting](#6-troubleshooting) and the deployment dependency document first.
 
 If the issue is project-specific, open a GitHub Issue and include, where possible:
 
 - UniRoboGui version;
-- Unitree G1 EDU variant and `mode_machine` if known;
+- robot product/variant, firmware/SDK, deployment method and service scope; include `mode_machine` for G1 if known;
 - the page and operation where the issue occurs;
 - browser/HTTP errors;
 - relevant `systemctl status` / `journalctl` output;
