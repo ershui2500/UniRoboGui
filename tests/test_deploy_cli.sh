@@ -372,7 +372,6 @@ unset -f rsync
 if [[ -d "$ROOT/.git" ]]; then
   while IFS= read -r -d '' tracked; do
     case "$tracked" in
-      docs/voice/GO2-TTS-诊断与离线方案评估.md) ;;
       docs/GO2-*|docs/voice/*|AGENTS.md|*_AGENTS.md|*/AGENTS.md|*/*_AGENTS.md|\
       config/customer_voice.json|config/customer_voice.json.tmp|\
       .env|*/.env|.env.*|*/.env.*|*.pem|*.key|*.token|id_rsa|*/id_rsa|id_ed25519|*/id_ed25519)

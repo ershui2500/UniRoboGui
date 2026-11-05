@@ -1,6 +1,6 @@
 # GO2 部署与 Web 使用教程
 
-[English](go2-guide.en.md) · [通用部署指南](deployment-dependencies.md) · [TTS 诊断与实测](voice/GO2-TTS-诊断与离线方案评估.md)
+[English](go2-guide.en.md) · [通用部署指南](deployment-dependencies.md)
 
 适用于本项目已注册的 GO2 二次开发变体，运行身份为 `product_id=go2`、内部 `variant=go2_edu`。页面显示 Unitree GO2 不会改变协议标识。不要将其他 GO2 型号或其他机器人的能力直接类推到当前设备。
 
