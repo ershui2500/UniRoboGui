@@ -6,6 +6,7 @@ const SAVED_API_KEY_MASK = "••••••••••••";
 const sourceLabels = {
   low_state: "低层状态",
   bms: "电池 BMS",
+  secondary_bms: "电池① BMS",
   secondary_imu: "躯干 IMU",
   mainboard: "主板状态",
   odometry: "里程计",
@@ -102,6 +103,7 @@ const appState = {
   lastAsrKey: "",
   voiceReady: false,
   ttsBusy: false,
+  ttsBackendInitialized: false,
   asrRequestInFlight: false,
   volumeRequestInFlight: false,
   volumeDraft: false,
@@ -128,6 +130,7 @@ const appState = {
   controlData: null,
   pendingControl: null,
   motionEnabled: false,
+  motionInputOwned: false,
   keyboardMotionKeys: new Set(),
   pointerMotionKeys: new Map(),
   motionRequestInFlight: false,
@@ -211,6 +214,9 @@ function manifestCapabilityReason(descriptor, state, manifestError = "", compact
     );
   }
   const reason = typeof descriptor.reason === "string" ? descriptor.reason.trim() : "";
+  if (descriptor.parameters?.reason_zh && descriptor.parameters?.reason_en) {
+    return manifestText(descriptor.parameters.reason_zh, descriptor.parameters.reason_en);
+  }
   if (descriptor.key === "audio" && reason === "go2_audio_hardware_unverified") {
     return manifestText(
       "机器人麦克风和扬声器尚未通过真机验证，语音功能暂不可用。",
@@ -326,6 +332,11 @@ function capabilityParameters(key) {
   return appState.robotManifest?.capabilities?.find((item) => item?.key === key)?.parameters || {};
 }
 
+function capabilityAvailable(key) {
+  const descriptor = appState.robotManifest?.capabilities?.find((item) => item?.key === key);
+  return manifestCapabilityState(descriptor) === "available";
+}
+
 function csvSet(value) {
   return new Set(typeof value === "string" ? value.split(",").map((item) => item.trim()).filter(Boolean) : []);
 }
@@ -416,7 +427,8 @@ function renderWalkingModeGroups(commands, labels, targets, dangerousCommands) {
   const host = $("walkingModeGroups");
   const expanded = host.querySelector("details")?.open || false;
   host.replaceChildren();
-  host.hidden = !commands.has("free_walk");
+  const a2Layout = commands.has("walk") && commands.has("run") && commands.has("climb");
+  host.hidden = !commands.has("free_walk") && !a2Layout;
   if (host.hidden) return false;
   const remaining = new Set(commands);
   function group(parent, zh, en, order) {
@@ -442,19 +454,30 @@ function renderWalkingModeGroups(commands, labels, targets, dangerousCommands) {
   const title = document.createElement("h3");
   title.textContent = manifestText("常用模式", "Common modes");
   host.append(title);
-  group(host, "", "", ["stand_up", "free_walk", "stop_move", "stand_down"]);
+  group(host, "", "", a2Layout
+    ? ["stand_up", "balance_stand", "stop_move", "stand_down"]
+    : ["stand_up", "free_walk", "stop_move", "stand_down"]);
   const advanced = document.createElement("details");
   advanced.open = expanded;
   const summary = document.createElement("summary");
   summary.textContent = manifestText("不常用模式 · 展开查看", "Less-used modes · expand to view");
   advanced.append(summary);
-  group(advanced, "坐姿与恢复", "Sitting and recovery", ["sit", "rise_sit", "recovery_stand"]);
-  group(advanced, "特殊步态 · 进入与退出", "Special gaits · enter and exit", [
-    "classic_walk_on", "classic_walk_off", "free_avoid_on", "free_avoid_off",
-    "free_bound_on", "free_bound_off", "free_jump_on", "free_jump_off",
-    "hand_stand_on", "hand_stand_off", "walk_upright_on", "walk_upright_off",
-    "cross_step_on", "cross_step_off", "pose_on", "pose_off",
-  ]);
+  if (a2Layout) {
+    group(advanced, "步态切换", "Gait selection", ["walk", "run", "climb"]);
+    group(advanced, "特殊姿态 · 进入与退出", "Special poses · enter and exit", [
+      "left_side_gait_on", "left_side_gait_off", "right_side_gait_on", "right_side_gait_off",
+      "hand_stand_on", "hand_stand_off", "biped_stand_on", "biped_stand_off",
+    ]);
+    group(advanced, "恢复站立", "Recovery stand", ["recovery_stand"]);
+  } else {
+    group(advanced, "坐姿与恢复", "Sitting and recovery", ["sit", "rise_sit", "recovery_stand"]);
+    group(advanced, "特殊步态 · 进入与退出", "Special gaits · enter and exit", [
+      "classic_walk_on", "classic_walk_off", "free_avoid_on", "free_avoid_off",
+      "free_bound_on", "free_bound_off", "free_jump_on", "free_jump_off",
+      "hand_stand_on", "hand_stand_off", "walk_upright_on", "walk_upright_off",
+      "cross_step_on", "cross_step_off", "pose_on", "pose_off",
+    ]);
+  }
   group(advanced, "阻尼 · 可能失去姿态支撑", "Damping · posture support may be lost", ["damp"]);
   group(advanced, "其他模式", "Other modes", [...remaining]);
   host.append(advanced);
@@ -473,7 +496,7 @@ function applyLocomotionPolicy(descriptor) {
   $("controlPanelMode").classList.toggle("walking-mode-layout", grouped);
   const modeTabDetail = $("controlTabMode").querySelector("small");
   modeTabDetail.dataset.i18nSkip = "";
-  modeTabDetail.textContent = grouped
+  modeTabDetail.textContent = grouped || visibleCommands.has("walk")
     ? manifestText("站立 · 步态 · 停止与趴下", "Stand · gait · stop and lie down")
     : manifestText("零力矩 · 阻尼 · 运控模式", "Zero torque · damping · locomotion");
   const represented = new Set();
@@ -537,8 +560,8 @@ function applyLocomotionPolicy(descriptor) {
   if (note) {
     note.textContent = parameters.speed_presets
       ? manifestText(
-          `W/S 前后、A/D 转向、Q/E 横移。按住移动、松开即停；窗口失焦、切页或通信异常会自动停止。三档均需处于 FSM ${allowedFsm}。`,
-          `W/S forward/back, A/D turn, Q/E strafe. Hold to move and release to stop; blur, page changes, or communication loss stop motion automatically. All three presets require FSM ${allowedFsm}.`,
+          `W/S 前后、A/D 转向、Q/E 横移。按住移动、松开即停；窗口失焦、切页或通信异常会自动停止。各档均需处于 FSM ${allowedFsm}。`,
+          `W/S forward/back, A/D turn, Q/E strafe. Hold to move and release to stop; blur, page changes, or communication loss stop motion automatically. All presets require FSM ${allowedFsm}.`,
         )
       : speedModes.size === 1 && speedModes.has("0")
       ? manifestText(
@@ -634,7 +657,7 @@ function applyControlActionPolicy(byKey) {
   setText(
     "controlActionTabTitle",
     interactionOnly
-      ? manifestText("互动动作", "Interaction Actions")
+      ? manifestText("高层动作", "High-level Actions")
       : both
         ? manifestText("动作与互动", "Actions & Interaction")
         : manifestText("上肢动作与示教", "Upper-body Actions & Teaching"),
@@ -642,7 +665,7 @@ function applyControlActionPolicy(byKey) {
   setText(
     "controlActionTabDetail",
     interactionOnly
-      ? manifestText("招呼 · 舞蹈 · 特殊动作", "Greetings · dances · special actions")
+      ? manifestText("高层动作 · 安全确认", "High-level actions · safety confirmation")
       : both
         ? manifestText("预设动作 · 互动动作", "Preset · interaction actions")
         : manifestText("预设动作 · 固件示教动作", "Preset · firmware-taught actions"),
@@ -651,7 +674,7 @@ function applyControlActionPolicy(byKey) {
   setText(
     "controlActionPanelTitle",
     interactionOnly
-      ? manifestText("机器狗互动动作", "Quadruped Interaction Actions")
+      ? manifestText("机器狗高层动作", "Quadruped High-level Actions")
       : both
         ? manifestText("预设与互动动作", "Preset & Interaction Actions")
         : manifestText("上肢预设动作", "Upper-body Preset Actions"),
@@ -683,8 +706,8 @@ function applyControlActionPolicy(byKey) {
       setText(
         "interactionActionHint",
         manifestText(
-          `已按当前产品高层接口开放 ${interactionCommands.size} 个互动动作；高动态动作会显示警示并再次确认。`,
-          `${interactionCommands.size} interaction actions are exposed by this product's high-level API; high-dynamic actions are warned and reconfirmed.`,
+          `已按当前产品高层接口开放 ${interactionCommands.size} 个动作；高动态动作会显示警示并再次确认。`,
+          `${interactionCommands.size} actions are exposed by this product's high-level API; high-dynamic actions are warned and reconfirmed.`,
         ),
       );
     }
@@ -709,6 +732,8 @@ function applyManifestCapabilities(manifest, manifestError = "") {
     const state = manifestCapabilityState(descriptor);
     const receiverStartAllowed =
       descriptor?.parameters?.receiver_start_allowed_when_unavailable === "true";
+    const placeholder = Boolean(manifest) && !manifestError &&
+      descriptor?.parameters?.ui_placeholder === "true";
     const viewWhenUnavailable =
       element.hasAttribute("data-capability-view-when-unavailable") &&
       Boolean(manifest) && !manifestError &&
@@ -719,6 +744,7 @@ function applyManifestCapabilities(manifest, manifestError = "") {
       (state !== "available" && !receiverStartAllowed);
     const blocked = capabilityBlocked && !viewWhenUnavailable;
     element.dataset.capabilityState = manifestError || !manifest ? "unavailable" : state;
+    element.dataset.capabilityPlaceholder = placeholder ? "true" : "false";
     element.inert = blocked;
     if (blocked) element.setAttribute("aria-disabled", "true");
     else element.removeAttribute("aria-disabled");
@@ -730,11 +756,11 @@ function applyManifestCapabilities(manifest, manifestError = "") {
       if (reason) element.title = reason;
       else element.removeAttribute("title");
     }
-    if (manifest && !manifestError && state === "unsupported") element.hidden = true;
+    if (manifest && !manifestError && state === "unsupported") element.hidden = !placeholder;
 
     setCapabilityNotice(
       element,
-      !isEntry && capabilityBlocked && state !== "unsupported" ? reason : "",
+      !isEntry && capabilityBlocked && (state !== "unsupported" || placeholder) ? reason : "",
     );
   });
 }
@@ -752,7 +778,7 @@ function renderRobotManifestPlaceholder(failed = false) {
   setText("robotJointStatusTitle", manifestText("机器人关节状态", "Robot Joint Status"));
   setText(
     "robotJointCountLabel",
-    manifestText("关节 · 拖动旋转 · 滚轮缩放", "Joints · drag to rotate · wheel to zoom"),
+    manifestText("关节 · 左键旋转 · 右键平移 · 指针缩放", "Joints · left-drag rotate · right-drag pan · cursor zoom"),
   );
   setText(
     "robotOverviewSummary",
@@ -807,8 +833,8 @@ function renderRobotManifest(manifest) {
   setText(
     "robotJointCountLabel",
     hasDof
-      ? manifestText(`${dof}关节 · 拖动旋转 · 滚轮缩放`, `${dof} joints · drag to rotate · wheel to zoom`)
-      : manifestText("关节 · 拖动旋转 · 滚轮缩放", "Joints · drag to rotate · wheel to zoom"),
+      ? manifestText(`${dof}关节 · 左键旋转 · 右键平移 · 指针缩放`, `${dof} joints · left-drag rotate · right-drag pan · cursor zoom`)
+      : manifestText("关节 · 左键旋转 · 右键平移 · 指针缩放", "Joints · left-drag rotate · right-drag pan · cursor zoom"),
   );
   setText(
     "robotOverviewSummary",
@@ -1204,19 +1230,22 @@ function render(data) {
   const diagnosticsVisible = [...document.querySelectorAll('[data-workspace="diagnostics"]')]
     .some((element) => !element.hidden);
   if (robotWorkspaceVisible) renderSources(sources);
-  renderBattery(data.battery || {}, sources.bms);
+  renderBatteries(data.batteries || [], data.battery || {}, sources.bms);
   if (robotWorkspaceVisible) renderOdometry(data.odometry || {}, sources.odometry);
   if (!$('voice-interaction').hidden) renderVoice(data.voice || {});
   renderControl(data.control || {});
-  if (robotWorkspaceVisible) renderJoints(data.joints || []);
+  if (robotWorkspaceVisible) renderJoints(telemetrySourceFresh(sources, "low_state") ? data.joints || [] : []);
   if (diagnosticsVisible) renderDiagnostics(data);
 
   if (robotWorkspaceVisible) {
-    setText("reservedSlots", JSON.stringify(data.reserved_motor_slots || [], null, 2));
+    setText("reservedSlots", telemetrySourceFresh(sources, "low_state")
+      ? JSON.stringify(data.reserved_motor_slots || [], null, 2) : "--");
   }
   if (diagnosticsVisible) {
-    setText("bmsRaw", telemetrySourceFresh(sources, "bms")
-      ? JSON.stringify(data.battery || {}, null, 2) : "--");
+    setText("bmsRaw", data.batteries?.length
+      ? JSON.stringify(data.batteries.map((item) => ({id: item.id, topic: item.topic,
+        state: item.state, data: item.state?.status === "online" ? item : null})), null, 2)
+      : telemetrySourceFresh(sources, "bms") ? JSON.stringify(data.battery || {}, null, 2) : "--");
     setText("mainboardRaw", telemetrySourceFresh(sources, "mainboard")
       ? JSON.stringify(data.mainboard || {}, null, 2) : "--");
   }
@@ -1398,6 +1427,15 @@ function renderVoice(voice) {
   const asrSupported = audioParameters.asr !== "false";
   const nativeTtsSupported = audioParameters.tts !== "false";
   const builtinLlmSupported = audioParameters.builtin_llm !== "false";
+  $("voice-interaction").querySelector(".section-description").textContent = builtinLlmSupported
+    ? manifestText(
+        "默认使用 chat_go「笨笨同学」；也可切换客户 OpenAI 兼容 API，客户模式会自动停用 chat_go。",
+        "Uses chat_go “Benben” by default; you can switch to a customer OpenAI-compatible API, which automatically disables chat_go.",
+      )
+    : manifestText(
+        "支持本机语音识别、文本播报和音量控制；大模型互动需配置客户 API。",
+        "Supports onboard speech recognition, text to speech, and volume control; AI chat requires a customer API.",
+      );
   const llmMode = llm.mode === "customer" ? "customer" : "builtin";
   const chatGoOk =
     llmMode === "builtin"
@@ -1424,7 +1462,9 @@ function renderVoice(voice) {
     (voice.initialized && Number(voice.volume_api_result) === 0);
   setVoiceBadge(
     "vuiBadge",
-    audioAvailable ? "vui_service 可用" : "vui_service 异常",
+    audioAvailable
+      ? manifestText("音频接口已连接", "Audio interface connected")
+      : manifestText("音频服务异常", "Audio service unavailable"),
     audioAvailable ? "ok" : voice.initialized ? "error" : "pending",
   );
   setVoiceBadge(
@@ -1436,12 +1476,26 @@ function renderVoice(voice) {
     !asrSupported || !voice.initialized || voice.asr_subscribed || appState.asrRequestInFlight;
   $("disableAsr").disabled =
     !asrSupported || !voice.initialized || !voice.asr_subscribed || appState.asrRequestInFlight;
+  const ttsBackends = new Set(String(audioParameters.tts_backends || "kokoro,unitree").split(","));
   for (const selectId of ["ttsBackend", "customerTtsBackend"]) {
     const select = $(selectId);
-    const unitree = select?.querySelector('option[value="unitree"]');
-    if (unitree) unitree.disabled = !nativeTtsSupported;
-    if (!nativeTtsSupported && select?.value === "unitree") {
-      select.value = "kokoro";
+    for (const option of select?.options || []) {
+      option.disabled = !ttsBackends.has(option.value) ||
+        (option.value === "unitree" && !nativeTtsSupported);
+      option.hidden = option.disabled;
+    }
+    if (select?.selectedOptions[0]?.disabled) select.value = [...select.options].find((option) => !option.disabled)?.value || "";
+  }
+  if (!appState.ttsBackendInitialized) {
+    const preferredBackend = audioParameters.default_tts_backend;
+    if (typeof preferredBackend === "string") {
+      const preferredOption = [...$("ttsBackend").options].find(
+        (option) => option.value === preferredBackend && !option.disabled,
+      );
+      if (preferredOption) {
+        $("ttsBackend").value = preferredOption.value;
+      }
+      appState.ttsBackendInitialized = true;
     }
   }
   if ($("customerWakeWord")) $("customerWakeWord").disabled = !asrSupported;
@@ -2487,6 +2541,7 @@ const controlErrorLabels = {
   velocity_out_of_range: "速度超过当前档位或服务端上限",
   motion_fsm_not_allowed: "当前 FSM 不支持平移运动",
   invalid_speed_mode: "速度档位无效",
+  motion_stop_unconfirmed: "停止尚未确认，正在重试；暂不接受新的运动指令",
   speed_mode_requires_walkrun: "高速仅允许在走跑 FSM 801/802 使用",
   motion_precondition_changed: "机器人运动状态已经变化，指令已停止",
   arm_action_fsm_not_allowed: "当前 FSM 不允许上肢动作",
@@ -2627,8 +2682,13 @@ function renderControl(control) {
   const nextMotionFsmFamily = motionFsmFamily(control);
   if (
     nextMotionFsmFamily &&
-    nextMotionFsmFamily !== appState.motionFsmFamily
+    (nextMotionFsmFamily !== appState.motionFsmFamily ||
+      (capabilityParameters("locomotion").fsm_speed_presets &&
+       Number(control.fsm_id) !== appState.motionPresetFsm))
   ) {
+    if (appState.motionEnabled) {
+      disableMotionControl(manifestText("步态已变化，请重新启用运动控制", "Gait changed; enable motion control again"));
+    }
     renderMotionPresetOptions(nextMotionFsmFamily);
     const preset = motionPresetValues(0, nextMotionFsmFamily);
     appState.motionPreset = {
@@ -2641,11 +2701,24 @@ function renderControl(control) {
       `低速 · ${number(preset.forwardSpeed, nextMotionFsmFamily === "profile" ? 2 : 1)} m/s`,
     );
   }
+  appState.motionPresetFsm = Number(control.fsm_id);
   appState.motionFsmFamily = nextMotionFsmFamily;
-  const ready = control.initialized === true && control.enabled === true;
+  const controlCapabilityAvailable =
+    appState.robotManifest?.capabilities?.some((capability) =>
+      ["locomotion", "joint_debug", "joint_teach"].includes(capability.key) &&
+      capability.available === true) === true;
+  const policyDisabled = Boolean(appState.robotManifest) &&
+    !control.initialization_error && !controlCapabilityAvailable;
+  const ready = control.initialized === true && control.enabled === true &&
+    controlCapabilityAvailable;
+  if (policyDisabled) appState.controlUnlocked = false;
+  $("unlockControl").disabled = !ready;
   const badge = $("controlBadge");
   badge.classList.remove("locked", "unlocked", "error");
-  if (!ready) {
+  if (policyDisabled) {
+    badge.classList.add("locked");
+    badge.textContent = "控制已禁用";
+  } else if (!ready) {
     badge.classList.add("error");
     badge.textContent = "控制服务异常";
   } else if (appState.controlUnlocked) {
@@ -2657,7 +2730,8 @@ function renderControl(control) {
   }
   setText(
     "topControlLock",
-    ready ? (appState.controlUnlocked ? "已解锁" : "已锁定") : "服务异常",
+    ready ? (appState.controlUnlocked ? "已解锁" : "已锁定")
+      : policyDisabled ? "控制已禁用" : "服务异常",
   );
 
   setText("controlFsmId", control.sport_state_received ? integer(control.fsm_id) : "--");
@@ -2742,11 +2816,13 @@ function updateControlButtons() {
   const baseReady = serviceReady && !busy;
   const armInterrupts =
     capabilityParameters("joint_debug").arm_action_interrupts === "true";
+  const locomotionAvailable = capabilityAvailable("locomotion");
 
   document.querySelectorAll(".control-command").forEach((button) => {
     const category = button.dataset.category;
     const command = button.dataset.command;
     let allowed = baseReady;
+    if (category === "mode") allowed = allowed && locomotionAvailable;
     if (command !== "damp" && command !== "stop_move") {
       allowed = allowed && !motionActive;
       allowed = category === "mode"
@@ -2794,16 +2870,9 @@ function locomotionLimit(name, fallback) {
 
 function motionPresetValues(speedMode, family = appState.motionFsmFamily) {
   if (family === "profile") {
-    const configured = [...csvSet(capabilityParameters("locomotion").speed_presets)]
-      .map((entry) => entry.split(":"))
-      .find(([mode]) => Number(mode) === speedMode);
-    if (configured?.length === 4) {
-      return {
-        forwardSpeed: Number(configured[1]),
-        lateralSpeed: Number(configured[2]),
-        yawSpeed: Number(configured[3]),
-      };
-    }
+    const configured = window.MotionPolicy.preset(
+      capabilityParameters("locomotion"), appState.controlData?.fsm_id, speedMode);
+    if (configured) return configured;
     return {
       forwardSpeed: locomotionLimit("forward_hard_limit_mps", 0.5),
       lateralSpeed: locomotionLimit("lateral_hard_limit_mps", 0.2),
@@ -2824,15 +2893,21 @@ function motionPresetValues(speedMode, family = appState.motionFsmFamily) {
 }
 
 function renderMotionPresetOptions(family) {
+  const parameters = capabilityParameters("locomotion");
   const forwardDigits = family === "profile" ? 2 : 1;
   document.querySelectorAll(".motion-speed-button").forEach((button) => {
     const speedMode = Number(button.dataset.speedMode);
     const preset = motionPresetValues(speedMode, family);
+    const label = window.MotionPolicy.label(parameters, speedMode, window.UiI18n?.language) ||
+      manifestText(speedMode === 0 ? "低速" : speedMode === 1 ? "中速" : "高速",
+                   speedMode === 0 ? "Low" : speedMode === 1 ? "Medium" : "High");
+    button.querySelector("strong").textContent = label;
     button.dataset.forwardSpeed = String(preset.forwardSpeed);
     button.dataset.lateralSpeed = String(preset.lateralSpeed);
     button.dataset.yawSpeed = String(preset.yawSpeed);
     button.querySelector("span").textContent =
-      `前进 ${preset.forwardSpeed.toFixed(forwardDigits)} m/s · 横移 ${preset.lateralSpeed.toFixed(2)} m/s · 转向 ${preset.yawSpeed.toFixed(2)} rad/s`;
+      manifestText(`前进 ${preset.forwardSpeed.toFixed(forwardDigits)} m/s · 横移 ${preset.lateralSpeed.toFixed(2)} m/s · 转向 ${preset.yawSpeed.toFixed(2)} rad/s`,
+        `Forward ${preset.forwardSpeed.toFixed(forwardDigits)} m/s · Strafe ${preset.lateralSpeed.toFixed(2)} m/s · Turn ${preset.yawSpeed.toFixed(2)} rad/s`);
   });
 }
 
@@ -2851,6 +2926,7 @@ function speedModeRequiresWalkRun(speedMode) {
 function motionBaseReady() {
   const control = appState.controlData || {};
   return (
+    capabilityAvailable("locomotion") &&
     appState.controlUnlocked &&
     control.initialized === true &&
     control.enabled === true &&
@@ -2970,7 +3046,7 @@ function enableMotionControl() {
 
 function disableMotionControl(reason = "键盘运动控制已停用") {
   appState.motionEnabled = false;
-  releaseAllMotionInput(true);
+  releaseAllMotionInput(appState.motionInputOwned);
   const feedback = $("motionFeedback");
   feedback.className = "";
   feedback.textContent = reason;
@@ -3052,6 +3128,9 @@ async function flushMotionRequests() {
       if (!response.ok || !result.accepted) {
         throw new Error(result.error || `HTTP ${response.status}`);
       }
+      if (!request.active && !appState.pendingMotionRequest?.active) {
+        appState.motionInputOwned = false;
+      }
     } catch (error) {
       const feedback = $("motionFeedback");
       feedback.className = "error";
@@ -3068,6 +3147,7 @@ async function flushMotionRequests() {
 }
 
 function queueMotionRequest(vector) {
+  if (vector.active) appState.motionInputOwned = true;
   appState.pendingMotionRequest = {
     vx: vector.active ? vector.vx : 0,
     vy: vector.active ? vector.vy : 0,
@@ -3419,120 +3499,8 @@ function maxMotorTemperature(joints, index) {
   return result;
 }
 
-function renderDiagnostics(data) {
-  const sources = data.sources || {};
-  const joints = Array.isArray(data.joints) ? data.joints : [];
-  const reserved = Array.isArray(data.reserved_motor_slots)
-    ? data.reserved_motor_slots
-    : [];
-  const batteryFresh = telemetrySourceFresh(sources, "bms");
-  const mainboardFresh = telemetrySourceFresh(sources, "mainboard");
-  const odometryFresh = telemetrySourceFresh(sources, "odometry");
-  const battery = batteryFresh ? data.battery || {} : {};
-  const mainboard = mainboardFresh ? data.mainboard || {} : {};
-  const odometry = odometryFresh ? data.odometry || {} : {};
-  const control = data.control || {};
-  const voice = data.voice || {};
-  const telemetryParameters = capabilityParameters("telemetry");
-  const motorFaultEncoding = telemetryParameters.motor_fault_encoding || "raw";
-  const motorTemperatureChannels = Number(
-    telemetryParameters.motor_temperature_channels || 1,
-  );
-  const batterySohSupported =
-    telemetryParameters.battery_soh_supported !== "false";
-
-  const sourceEntries = Object.entries(sourceLabels)
-    .filter(([key]) => telemetrySourceDeclared(key))
-    .map(([key, label]) => [
-      key,
-      label,
-      sources[key] || { status: "offline", age_ms: null },
-    ]);
-  const onlineCount = sourceEntries.filter(([, , source]) => source.status === "online").length;
-  const offlineSources = sourceEntries.filter(([, , source]) => source.status === "offline");
-  const delayedSources = sourceEntries.filter(([, , source]) => source.status === "delayed");
-  const lowState = sources.low_state || {};
-
-  setText("diagnosticDdsState", data.dds_initialized ? "已初始化" : "初始化失败");
-  setText("diagnosticSourceHealth", `${onlineCount}/${sourceEntries.length} 在线`);
-  setText(
-    "diagnosticLowStateAge",
-    lowState.age_ms === null || lowState.age_ms === undefined
-      ? "--"
-      : `${integer(lowState.age_ms)} ms · ${statusLabels[lowState.status] || "未知"}`,
-  );
-  const odometryCodeIsMotionState =
-    telemetryParameters.odometry_error_code_role === "motion_state_id";
-  setText("diagnosticOdomLabel", odometryCodeIsMotionState ? "运动状态机 raw" : "里程计 error_code");
-  setText("diagnosticOdomError", odometryCodeIsMotionState ? integer(odometry.error_code) : hex32(odometry.error_code));
-  const componentState = Number(data.robot?.low_state_component_state_raw) >>> 0;
-  setText(
-    "diagnosticComponentState",
-    motorFaultEncoding === "go2_reserve0"
-      ? `${hex32(componentState)} · ${decodeFaultBits(componentState, go2ComponentStateBits).join(" / ") || "正常"}`
-      : "--",
-  );
-
-  const bodyFaults = joints.filter((joint) => (Number(joint.state_raw) >>> 0) !== 0);
-  const reservedFaults = reserved.filter((motor) => (Number(motor.state_raw) >>> 0) !== 0);
-  setText("diagnosticMotorFaultCount", String(bodyFaults.length));
-
-  const shellTemp = maxMotorTemperature(joints, 0);
-  const windingTemp =
-    motorTemperatureChannels > 1 ? maxMotorTemperature(joints, 1) : null;
-  setText(
-    "diagnosticMotorShellTemp",
-    shellTemp ? `${integer(shellTemp.value)} · ${shellTemp.name}` : "--",
-  );
-  setText(
-    "diagnosticMotorWindingTemp",
-    windingTemp ? `${integer(windingTemp.value)} · ${windingTemp.name}` : "--",
-  );
-
-  const motorVoltages = joints
-    .map((joint) => Number(joint.voltage_v))
-    .filter((value) => Number.isFinite(value) && value > 0);
-  setText(
-    "diagnosticMotorVoltage",
-    motorVoltages.length
-      ? `${number(Math.min(...motorVoltages), 2)}–${number(Math.max(...motorVoltages), 2)} V`
-      : "--",
-  );
-
-  const faultList = $("diagnosticMotorFaultList");
-  faultList.replaceChildren();
-  const allMotorFaults = [...bodyFaults, ...reservedFaults];
-  if (allMotorFaults.length === 0) {
-    const ok = document.createElement("div");
-    ok.className = "diagnostic-fault ok";
-    ok.textContent = "当前未发现电机已公开故障位";
-    faultList.append(ok);
-  } else {
-    allMotorFaults.forEach((motor) => {
-      const item = document.createElement("div");
-      item.className = "diagnostic-fault error";
-      const title = document.createElement("strong");
-      title.textContent = `${motor.name || `motor ${integer(motor.index)}`} · ${hex32(motor.state_raw)}`;
-      const detail = document.createElement("span");
-      const labels = decodeMotorState(motor.state_raw);
-      detail.textContent = labels.length ? labels.join(" / ") : "未知电机状态";
-      item.append(title, detail);
-      faultList.append(item);
-    });
-  }
-
-  const reservedHint = $("diagnosticReservedMotorHint");
-  const hasReservedTimeout =
-    motorFaultEncoding === "hg_motorstate" &&
-    reservedFaults.some((motor) => {
-      const raw = Number(motor.state_raw) >>> 0;
-      return (raw & 0x40000000) !== 0 || (raw & 0x80000000) !== 0;
-    });
-  reservedHint.hidden = !hasReservedTimeout;
-  reservedHint.textContent = hasReservedTimeout
-    ? "保留/扩展槽出现 PC/电机断联超时；若对应电机未安装，请核对外设配置。"
-    : "";
-
+function renderBatteryDiagnostics(card, battery, batteryFresh, batterySohSupported) {
+  const setText = (id, value) => { card.querySelector(`[data-diagnostic-field="${id}"]`).textContent = value; };
   const batteryCells = Array.isArray(battery.cell_voltage_raw)
     ? battery.cell_voltage_raw.map(Number).filter((value) => Number.isFinite(value) && value > 0)
     : [];
@@ -3571,6 +3539,123 @@ function renderDiagnostics(data) {
       : "--",
   );
 
+}
+
+function renderDiagnostics(data) {
+  const sources = data.sources || {};
+  const motorFresh = telemetrySourceFresh(sources, "low_state");
+  const joints = motorFresh && Array.isArray(data.joints) ? data.joints : [];
+  const reserved = motorFresh && Array.isArray(data.reserved_motor_slots)
+    ? data.reserved_motor_slots
+    : [];
+  const mainboardFresh = telemetrySourceFresh(sources, "mainboard");
+  const odometryFresh = telemetrySourceFresh(sources, "odometry");
+  const mainboard = mainboardFresh ? data.mainboard || {} : {};
+  const odometry = odometryFresh ? data.odometry || {} : {};
+  const control = data.control || {};
+  const voice = data.voice || {};
+  const telemetryParameters = capabilityParameters("telemetry");
+  const motorFaultEncoding = telemetryParameters.motor_fault_encoding || "raw";
+  const motorTemperatureChannels = Number(
+    telemetryParameters.motor_temperature_channels || 1,
+  );
+  const batterySohSupported =
+    telemetryParameters.battery_soh_supported !== "false";
+
+  const sourceEntries = Object.entries(sourceLabels)
+    .filter(([key]) => telemetrySourceDeclared(key))
+    .map(([key, label]) => [
+      key,
+      label,
+      sources[key] || { status: "offline", age_ms: null },
+    ]);
+  const onlineCount = sourceEntries.filter(([, , source]) => source.status === "online").length;
+  const offlineSources = sourceEntries.filter(([, , source]) => source.status === "offline");
+  const delayedSources = sourceEntries.filter(([, , source]) => source.status === "delayed");
+  const lowState = sources.low_state || {};
+
+  setText("diagnosticDdsState", data.dds_initialized ? "已初始化" : "初始化失败");
+  setText("diagnosticSourceHealth", `${onlineCount}/${sourceEntries.length} 在线`);
+  setText(
+    "diagnosticLowStateAge",
+    lowState.age_ms === null || lowState.age_ms === undefined
+      ? "--"
+      : `${integer(lowState.age_ms)} ms · ${statusLabels[lowState.status] || "未知"}`,
+  );
+  const odometryCodeIsMotionState =
+    telemetryParameters.odometry_error_code_role === "motion_state_id";
+  setText("diagnosticOdomLabel", odometryCodeIsMotionState ? "运动状态机 raw" : "里程计 error_code");
+  setText("diagnosticOdomError", odometryCodeIsMotionState ? integer(odometry.error_code) : hex32(odometry.error_code));
+  const componentState = motorFresh ? Number(data.robot?.low_state_component_state_raw) >>> 0 : 0;
+  setText(
+    "diagnosticComponentState",
+    motorFresh && motorFaultEncoding === "go2_reserve0"
+      ? `${hex32(componentState)} · ${decodeFaultBits(componentState, go2ComponentStateBits).join(" / ") || "正常"}`
+      : "--",
+  );
+
+  const bodyFaults = joints.filter((joint) => (Number(joint.state_raw) >>> 0) !== 0);
+  const reservedFaults = reserved.filter((motor) => (Number(motor.state_raw) >>> 0) !== 0);
+  setText("diagnosticMotorFaultCount", motorFresh ? String(bodyFaults.length) : "--");
+
+  const shellTemp = maxMotorTemperature(joints, 0);
+  const windingTemp =
+    motorTemperatureChannels > 1 ? maxMotorTemperature(joints, 1) : null;
+  setText(
+    "diagnosticMotorShellTemp",
+    shellTemp ? `${integer(shellTemp.value)} · ${shellTemp.name}` : "--",
+  );
+  setText(
+    "diagnosticMotorWindingTemp",
+    windingTemp ? `${integer(windingTemp.value)} · ${windingTemp.name}` : "--",
+  );
+
+  const motorVoltages = joints
+    .map((joint) => Number(joint.voltage_v))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  setText(
+    "diagnosticMotorVoltage",
+    motorVoltages.length
+      ? `${number(Math.min(...motorVoltages), 2)}–${number(Math.max(...motorVoltages), 2)} V`
+      : "--",
+  );
+
+  const faultList = $("diagnosticMotorFaultList");
+  faultList.replaceChildren();
+  const allMotorFaults = [...bodyFaults, ...reservedFaults];
+  if (allMotorFaults.length === 0) {
+    const ok = document.createElement("div");
+    ok.className = `diagnostic-fault ${motorFresh ? "ok" : ""}`;
+    ok.textContent = motorFresh ? "当前未发现电机已公开故障位" : manifestText("等待新鲜 LowState，无法判定电机状态", "Waiting for fresh LowState; motor status is unknown");
+    faultList.append(ok);
+  } else {
+    allMotorFaults.forEach((motor) => {
+      const item = document.createElement("div");
+      item.className = "diagnostic-fault error";
+      const title = document.createElement("strong");
+      title.textContent = `${motor.name || `motor ${integer(motor.index)}`} · ${hex32(motor.state_raw)}`;
+      const detail = document.createElement("span");
+      const labels = decodeMotorState(motor.state_raw);
+      detail.textContent = labels.length ? labels.join(" / ") : "未知电机状态";
+      item.append(title, detail);
+      faultList.append(item);
+    });
+  }
+
+  const reservedHint = $("diagnosticReservedMotorHint");
+  const hasReservedTimeout =
+    motorFaultEncoding === "hg_motorstate" &&
+    reservedFaults.some((motor) => {
+      const raw = Number(motor.state_raw) >>> 0;
+      return (raw & 0x40000000) !== 0 || (raw & 0x80000000) !== 0;
+    });
+  reservedHint.hidden = !hasReservedTimeout;
+  reservedHint.textContent = hasReservedTimeout
+    ? "保留/扩展槽出现 PC/电机断联超时；若对应电机未安装，请核对外设配置。"
+    : "";
+
+  renderDiagnosticBatteries(data, batterySohSupported);
+
   const mainboardTemps = Array.isArray(mainboard.temperature_raw)
     ? mainboard.temperature_raw.map(Number).filter(Number.isFinite)
     : [];
@@ -3598,6 +3683,14 @@ function renderDiagnostics(data) {
   );
 
   const issues = [];
+  for (const pack of data.batteries || []) {
+    if (pack.state?.status === "online" &&
+        !(pack.cell_voltage_raw || []).some((value) => Number(value) > 0)) {
+      issues.push({level: "warning", text: manifestText(
+        `电池 ${pack.id}：BMS 已收帧，但没有有效电芯电压；请核对电池安装与 BMS 数据。`,
+        `Battery ${pack.id}: BMS frames received without valid cell voltages; check battery installation and BMS data.`)});
+    }
+  }
   if (telemetryParameters.fault_service_topic) {
     renderGo2FaultService(data, issues);
   }
@@ -3606,7 +3699,7 @@ function renderDiagnostics(data) {
   }
   if (offlineSources.length) {
     issues.push({
-      level: "error",
+      level: offlineSources.some(([key]) => csvSet(telemetryParameters.required_sources || "low_state").has(key)) ? "error" : "warning",
       text: `数据源离线：${offlineSources.map(([, label]) => label).join(" / ")}`,
     });
   }
@@ -3679,36 +3772,6 @@ function renderDiagnostics(data) {
     issues.length
       ? "以下项目来自当前实时遥测，请优先处理红色故障，再检查黄色告警。"
       : "DDS 数据源、电机已公开故障位、里程计及服务初始化状态当前未见异常。",
-  );
-}
-
-function renderBattery(battery, source) {
-  const fresh = source && source.status === "online";
-  const soc = fresh ? Math.max(0, Math.min(100, Number(battery.soc_pct) || 0)) : 0;
-  $("batteryRing").style.setProperty("--soc", soc);
-  setText("batterySoc", fresh ? `${integer(battery.soc_pct)}%` : "--");
-  setText("topBattery", fresh ? `${integer(battery.soc_pct)}%` : "--");
-  setText("batterySoh", fresh ? `${integer(battery.soh_pct)}%` : "--");
-  setText("batteryCycle", fresh ? integer(battery.cycle) : "--");
-  setText("batteryCurrent", fresh ? integer(battery.current_raw) : "--");
-  setText("batteryVersion", fresh ? battery.version || "--" : "--");
-
-  const temperatures = fresh && Array.isArray(battery.temperature_raw)
-    ? battery.temperature_raw.filter(Number.isFinite)
-    : [];
-  setText(
-    "batteryTemp",
-    temperatures.length ? integer(Math.max(...temperatures)) : "--",
-  );
-
-  const cells = fresh && Array.isArray(battery.cell_voltage_raw)
-    ? battery.cell_voltage_raw.filter((value) => Number(value) > 0)
-    : [];
-  setText(
-    "batteryCells",
-    cells.length
-      ? `${integer(Math.min(...cells))}–${integer(Math.max(...cells))}`
-      : "--",
   );
 }
 
@@ -4029,13 +4092,13 @@ window.addEventListener("keyup", (event) => {
 });
 
 window.addEventListener("blur", () => {
-  if (appState.motionEnabled) {
+  if (appState.motionEnabled && appState.motionInputOwned) {
     emergencyStopMotion("窗口失焦，已自动停止运动");
   }
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && appState.motionEnabled) {
+  if (document.hidden && appState.motionEnabled && appState.motionInputOwned) {
     emergencyStopMotion("页面进入后台，已自动停止运动");
   }
 });

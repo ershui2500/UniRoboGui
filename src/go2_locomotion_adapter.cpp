@@ -12,29 +12,29 @@
 namespace g1_web {
 namespace {
 
-constexpr float kMaximumForwardSpeedMps = 0.5F;
-constexpr float kMaximumLateralSpeedMps = 0.3F;
-constexpr float kMaximumYawSpeedRadS = 0.6F;
+constexpr float kMaximumForwardSpeedMps = 1.5F;
+constexpr float kMaximumLateralSpeedMps = 1.0F;
+constexpr float kMaximumYawSpeedRadS = 2.3F;
 
 bool IsAllowedSpeedMode(std::int32_t speed_mode) {
   return speed_mode == 0 || speed_mode == 1 || speed_mode == 3;
 }
 
 float ForwardLimit(std::int32_t speed_mode) {
-  if (speed_mode == 0) return 0.2F;
-  if (speed_mode == 1) return 0.35F;
+  if (speed_mode == 0) return 0.5F;
+  if (speed_mode == 1) return 1.0F;
   return kMaximumForwardSpeedMps;
 }
 
 float LateralLimit(std::int32_t speed_mode) {
-  if (speed_mode == 0) return 0.12F;
-  if (speed_mode == 1) return 0.2F;
+  if (speed_mode == 0) return 0.4F;
+  if (speed_mode == 1) return 0.7F;
   return kMaximumLateralSpeedMps;
 }
 
 float YawLimit(std::int32_t speed_mode) {
-  if (speed_mode == 0) return 0.25F;
-  if (speed_mode == 1) return 0.4F;
+  if (speed_mode == 0) return 0.9F;
+  if (speed_mode == 1) return 1.6F;
   return kMaximumYawSpeedRadS;
 }
 

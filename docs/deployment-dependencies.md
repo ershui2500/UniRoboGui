@@ -1,14 +1,16 @@
-# UniRoboGui G1 / R1 / GO2 通用部署与排障指南
+# UniRoboGui G1 / R1 / GO2 / A2 通用部署与排障指南
 
 **简体中文** | [English](deployment-dependencies.en.md)
 
-本文件同时覆盖 Unitree G1、R1 与 GO2。部署入口、公共构建流程和安全检查保持一致；网卡、SDK、service、相机、TTS 和附件差异集中在产品配置中，不维护两套重复教程。
+本文件同时覆盖 Unitree G1、R1、GO2 与 A2。部署入口、公共构建流程和安全检查保持一致；网卡、SDK、service、相机、TTS 和附件差异集中在产品配置中，不维护两套重复教程。
+
+A2 安装、离线依赖架构、默认 SSH 地址及 JT128/导航默认值请先看 [README 快速部署](../README.md#quick-deploy)。A2 使用 Ubuntu 22.04 amd64 / Python 3.10 wheelhouse；不使用其他产品的 arm64 / Python 3.8 包。
 
 ## 1. 唯一推荐入口
 
 先选实际机型和一种部署方式；以下命令是不同选择，不是需要整段粘贴的执行顺序。`install` / `check` 在机器人终端运行，`from-pc` 在联网电脑终端运行，均先进入已 clone 的项目根目录。
 
-Ubuntu 机器执行 clone 前先准备 Git。方式 B 的电脑需要 `git curl openssh-client rsync python3 python3-pip`，可运行 `command -v git curl ssh rsync python3` 与 `python3 -m pip --version` 检查，缺失时先安装电脑端软件包。机器人缺失的系统包必须是 Ubuntu 20.04 arm64 版本，不能复制电脑的 x86_64 包；`from-pc` 不打包整个 Ubuntu 软件源。
+Ubuntu 机器执行 clone 前先准备 Git。方式 B 的电脑需要 `git curl openssh-client rsync python3 python3-pip`，可运行 `command -v git curl ssh rsync python3` 与 `python3 -m pip --version` 检查，缺失时先安装电脑端软件包。机器人缺失的系统包必须是 Ubuntu 20.04 arm64（G1/R1/GO2）或 Ubuntu 22.04 amd64（A2） 版本，不能混用其他系统版本或架构的软件包；`from-pc` 不打包整个 Ubuntu 软件源。
 
 
 ~~~bash
@@ -16,42 +18,45 @@ Ubuntu 机器执行 clone 前先准备 Git。方式 B 的电脑需要 `git curl 
 bash scripts/deploy.sh install --product g1
 bash scripts/deploy.sh install --product r1
 bash scripts/deploy.sh install --product go2
+bash scripts/deploy.sh install --product a2
 
 # 联网电脑终端：传输并部署，只选实际产品的一条
 bash scripts/deploy.sh from-pc --product g1
 bash scripts/deploy.sh from-pc --product r1
 bash scripts/deploy.sh from-pc --product go2
+bash scripts/deploy.sh from-pc --product a2
 
 # 机器人终端：只读检查，只选实际产品的一条
 bash scripts/deploy.sh check --product g1
 bash scripts/deploy.sh check --product r1
 bash scripts/deploy.sh check --product go2
+bash scripts/deploy.sh check --product a2
 
 # 使用英文部署日志
 bash scripts/deploy.sh install --product g1 --lang en
 ~~~
 
-`--product` 必填，接受当前部署配置支持的 `g1`、`r1` 或 `go2`。`--host` 只用于 `from-pc`，三产品均为可选参数；默认地址见下表。仅在现场地址不同时覆盖，也可填写已有 SSH Host 别名。旧 `deploy_g1_*` / `install_g1*` 中英文脚本仅保留一个兼容周期，打印弃用提示后转发到 `--product g1`；旧 `--robot USER@HOST` 会转换为 `--host`。
+`--product` 必填，接受当前部署配置支持的 `g1`、`r1`、`go2` 或 `a2`。`--host` 只用于 `from-pc`，四产品均为可选参数；默认地址见下表。仅在现场地址不同时覆盖，也可填写已有 SSH Host 别名。旧 `deploy_g1_*` / `install_g1*` 中英文脚本仅保留一个兼容周期，打印弃用提示后转发到 `--product g1`；旧 `--robot USER@HOST` 会转换为 `--host`。
 
 ## 2. 产品矩阵
 
 以下是仓库默认部署配置；网卡、附件和可用能力还需现场确认。
 
-| 项目 | G1 | R1 | GO2 |
-| --- | --- | --- | --- |
-| 默认 SSH 目标 | `unitree@192.168.123.164` | `unitree@192.168.123.164` | `unitree@192.168.123.18` |
-| DDS 网卡 | `eth0` | `eth10` | `eth0`（先核对现场） |
-| SDK / CMake 前缀 | `/opt/unitree_robotics`；用户安装可用 `/home/unitree/.local/unitree_robotics` | `/usr/local`，已有安装只校验，不自动覆盖 | `/usr/local`，仅校验已有兼容 SDK，不覆盖 |
-| 动态库路径 | SDK `prefix/lib` + `/usr/local/lib`；需要时兼容已有 librealsense | `/usr/local/lib` | `/usr/local/lib` |
-| Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` |
-| systemd user unit | `deploy/g1-web-control.user.service` | `deploy/r1-web-control.user.service` | `deploy/go2-web-control.user.service` |
-| 相机 | D435i + librealsense + `g1-web-first-person-service` | R1 EDU 固定 RGB/Depth + `r1-web-camera-service` | 固定原生 RGB；深度不支持；无特权 helper |
-| TTS 默认 | Kokoro + Unitree fallback | Unitree native TTS | Kokoro FP32；无原生回退 |
-| SDK 安装策略 | 缺失时可从官方 SDK2 源码安装 | 校验现有 R1 头文件、CMake 配置和 CycloneDDS 动态库；缺失即停止 | `/usr/local`，仅校验已有兼容 SDK，不覆盖 |
-| Mid-360 / navigation | 保持现有 G1 配置与 service 默认值 | 默认不声明 Mid-360，不启用真实导航 | 默认不声明可选雷达，不启用真实导航 |
-| 二进制 | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` |
+| 项目 | G1 | R1 | GO2 | A2 |
+| --- | --- | --- | --- | --- |
+| 默认 SSH 目标 | `unitree@192.168.123.164` | `unitree@192.168.123.164` | `unitree@192.168.123.18` | `unitree@192.168.123.162`（用户开发单元） |
+| DDS 网卡 | `eth0` | `eth10` | `eth0`（先核对现场） | `eth0`（先核对现场） |
+| SDK / CMake 前缀 | `/opt/unitree_robotics`；用户安装可用 `/home/unitree/.local/unitree_robotics` | `/usr/local`，已有安装只校验，不自动覆盖 | `/usr/local`，仅校验已有兼容 SDK，不覆盖 | `/usr/local`，只校验不覆盖 |
+| 动态库路径 | SDK `prefix/lib` + `/usr/local/lib`；需要时兼容已有 librealsense | `/usr/local/lib` | `/usr/local/lib` | `/usr/local/lib` |
+| Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` | `a2-web-control.service` |
+| systemd user unit | `deploy/g1-web-control.user.service` | `deploy/r1-web-control.user.service` | `deploy/go2-web-control.user.service` | `deploy/a2-web-control.user.service` |
+| 相机 | D435i + librealsense + `g1-web-first-person-service` | R1 EDU 固定 RGB/Depth + `r1-web-camera-service` | 固定原生 RGB；深度不支持；无特权 helper | 固定原生 RGB，无深度，无特权 helper |
+| TTS 默认 | Kokoro + Unitree fallback | Unitree native TTS | Kokoro FP32；无原生回退 | Unitree 原生 + 可选 Kokoro FP32 |
+| SDK 安装策略 | 缺失时可从官方 SDK2 源码安装 | 校验现有 R1 头文件、CMake 配置和 CycloneDDS 动态库；缺失即停止 | `/usr/local`，仅校验已有兼容 SDK，不覆盖 | 校验兼容 A2 SDK，缺失即停止，不覆盖 |
+| Mid-360 / navigation | 保持现有 G1 配置与 service 默认值 | 默认不声明 Mid-360，不启用真实导航 | 默认不声明可选雷达，不启用真实导航 | JT128 / 导航入口已启用，需匹配附件及外部服务 |
+| 二进制 | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` | `build/g1_web_server --robot a2` |
 
-三种产品都使用同一代码库和同一个 `g1_web_server` 历史二进制名。产品身份由 `--robot`、`RobotRegistry`、Manifest 和 Capability 决定，不由二进制文件名决定。
+四种产品都使用同一代码库和同一个 `g1_web_server` 历史二进制名。产品身份由 `--robot`、`RobotRegistry`、Manifest 和 Capability 决定，不由二进制文件名决定。
 
 同一二进制会编译所有已注册产品，因此 GO2 的现有 SDK 也必须包含项目需要的 R1 Audio/Loco 头文件；缺失时应由维护人员提供匹配固件/ABI 的完整 SDK，不通过删掉产品代码绕过。
 
@@ -61,7 +66,7 @@ bash scripts/deploy.sh install --product g1 --lang en
 
 部署脚本按同一流程执行：
 
-1. 检查 Ubuntu 20.04 AArch64、`unitree` 用户、目标 DDS 网卡和 ROS/RMW/CycloneDDS 环境污染；
+1. 检查 G1/R1/GO2：Ubuntu 20.04 AArch64；A2：Ubuntu 22.04 x86_64、`unitree` 用户、目标 DDS 网卡和 ROS/RMW/CycloneDDS 环境污染；
 2. 检查项目源码脏状态，发现未提交业务代码时停止而不是覆盖；
 3. 根据产品配置检查或准备 SDK、相机依赖和 TTS 资源；
 4. Release 构建并运行完整 CTest；
@@ -112,7 +117,7 @@ R1 使用以下边界：
 `from-pc` 使用 rsync 传输项目时：
 
 - 不传 `.git`；
-- 不传 `AGENTS.md`、`*_AGENTS.md`、`.robot-workspace`、`.robot-backups`、`.robot-sync`、本地 G1/R1/GO2 参考资料及 `docs/GO2-*`、`docs/voice/` 内部现场记录；
+- 不传 `AGENTS.md`、`*_AGENTS.md`、`.robot-workspace`、`.robot-backups`、`.robot-sync`、本地 G1/R1/GO2/A2 参考资料及 `docs/GO2-*`、`docs/voice/` 内部现场记录；
 - 保留机器人整个 `config/`、`build/`、`tts_models/` 和 `tts_kokoro/` 运行目录；
 - 如果机器人项目 Git checkout 有未提交修改，停止部署；
 - 项目同步不使用 `--delete`，保留现场额外文件；版本已删除的旧源码由维护人员审阅后单独清理。SDK/RealSense 上游源码目录采用先备份后镜像的独立流程；
@@ -126,9 +131,10 @@ R1 使用以下边界：
 bash scripts/deploy.sh check --product g1
 bash scripts/deploy.sh check --product r1
 bash scripts/deploy.sh check --product go2
+bash scripts/deploy.sh check --product a2
 ~~~
 
-`check` 不安装软件包、不修改文件、不停止或启动 service。它检查系统、架构、目标网卡、所需包、SDK 状态、相机 helper 状态等。R1 / GO2 `check` 直接使用 `/usr/local` 进行 SDK 校验。检查通过不等于运行或运动验收通过。
+`check` 不安装软件包、不修改文件、不停止或启动 service。它检查系统、架构、目标网卡、所需包、SDK 状态、相机 helper 状态等。R1 / GO2 / A2 `check` 直接使用 `/usr/local` 进行 SDK 校验。检查通过不等于运行或运动验收通过。
 
 ## 7. 部署后验收
 
@@ -150,7 +156,7 @@ ldd /home/unitree/UniRoboGui/build/g1_web_server | grep -E 'ddsc|ddscxx|realsens
 - 8080 只有目标 Web 进程监听；
 - MainPID 命令行包含正确 `--robot` 与 `--interface`；
 - Web 进程没有 `ROS_DISTRO`、`RMW_IMPLEMENTATION`、`CYCLONEDDS_URI`、`AMENT_PREFIX_PATH`、`COLCON_PREFIX_PATH`；
-- G1/R1/GO2 CycloneDDS 动态库解析到所选产品 SDK 前缀；
+- G1/R1/GO2/A2 CycloneDDS 动态库解析到所选产品 SDK 前缀；
 - 相机 helper 的只读状态检查返回正常 active/inactive 语义。
 
 ## 8. 常见故障
@@ -163,6 +169,7 @@ ldd /home/unitree/UniRoboGui/build/g1_web_server | grep -E 'ddsc|ddscxx|realsens
 bash scripts/deploy.sh from-pc --product g1
 bash scripts/deploy.sh from-pc --product r1
 bash scripts/deploy.sh from-pc --product go2
+bash scripts/deploy.sh from-pc --product a2
 ~~~
 
 ### R1 SDK 校验失败

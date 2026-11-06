@@ -114,6 +114,7 @@ class ControlService {
   };
 
   struct VelocityRequest {
+    SteadyClock::time_point received_at{SteadyClock::now()};
     std::uint64_t sequence{0};
     float vx_m_s{0.0F};
     float vy_m_s{0.0F};
@@ -155,6 +156,7 @@ class ControlService {
   bool poll_locomotion_state_{false};
   std::atomic<bool> running_{false};
   std::atomic<bool> motion_active_{false};
+  std::atomic<bool> motion_stop_unconfirmed_{false};
   std::atomic<std::uint64_t> next_request_id_{1};
   std::atomic<std::uint64_t> next_motion_sequence_{1};
   std::thread worker_;

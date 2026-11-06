@@ -38,9 +38,17 @@ load_product_profile go2
    "$DEFAULT_HOST" == unitree@192.168.123.18 && -z "$CAMERA_HELPER" &&
    "$TTS_MODEL_NAME" == kokoro-multi-lang-v1_1 && "$TTS_MODEL_FILE" == model.onnx &&
    "$TTS_SERVICE" == go2-local-tts.service ]]
-for profile in g1 r1 go2; do
+load_product_profile a2
+[[ "$DDS_INTERFACE" == eth0 && "$WEB_SERVICE" == a2-web-control.service &&
+   "$SYSTEM_SDK_PREFIX" == /usr/local && "$SDK_POLICY" == verify_existing &&
+   "$NEEDS_KOKORO" == true && "$NEEDS_REALSENSE" == false &&
+   "$TARGET_ARCH" == x86_64 && "$TARGET_UBUNTU_VERSION" == 22.04 &&
+   "$KOKORO_PYTHON_VERSION" == 310 && "$KOKORO_PIP_PLATFORM" == manylinux2014_x86_64 &&
+   "$DEFAULT_HOST" == unitree@192.168.123.162 && "$TTS_MODEL_NAME" == kokoro-multi-lang-v1_1 &&
+   "$TTS_MODEL_FILE" == model.onnx && "$TTS_SERVICE" == a2-local-tts.service ]]
+for profile in g1 r1 go2 a2; do
   load_product_profile "$profile"
-  for other in g1 r1 go2; do
+  for other in g1 r1 go2 a2; do
     [[ "$other" == "$profile" ]] || [[ " $OTHER_WEB_SERVICE " == *" $other-web-control.service "* ]]
   done
 done
@@ -65,14 +73,14 @@ chmod +x "$TMP/repo/scripts/"*.sh
 export DEPLOY_TEST_LOG="$TMP/dispatch.log"
 
 bash "$TMP/repo/scripts/deploy.sh" --help >"$TMP/help"
-grep -q -- '--product g1|r1|go2' "$TMP/help" || fail "help does not document supported products"
+grep -q -- '--product g1|r1|go2|a2' "$TMP/help" || fail "help does not document supported products"
 grep -q -- '--host USER@HOST' "$TMP/help" || fail "help does not document --host"
 grep -q -- '--lang zh|en' "$TMP/help" || fail "help does not document --lang"
 grep -q 'install' "$TMP/help" && grep -q 'from-pc' "$TMP/help" && grep -q 'check' "$TMP/help" ||
   fail "help does not document all deployment commands"
 
 expect_rc 2 bash "$TMP/repo/scripts/deploy.sh" install
-grep -q -- '--product g1|r1|go2 is required' "$TMP/stderr" ||
+grep -q -- '--product g1|r1|go2|a2 is required' "$TMP/stderr" ||
   fail "missing product was not rejected"
 expect_rc 2 bash "$TMP/repo/scripts/deploy.sh" install --product unknown
 grep -q 'Unsupported product' "$TMP/stderr" ||
@@ -101,6 +109,12 @@ bash "$TMP/repo/scripts/deploy.sh" from-pc --product go2 --host unirobo-go2
 grep -q 'deploy_online.sh --product go2' "$DEPLOY_TEST_LOG"
 grep -q 'install.sh --product go2 --check-only' "$DEPLOY_TEST_LOG"
 grep -q 'deploy_from_pc.sh --product go2 --host unirobo-go2' "$DEPLOY_TEST_LOG"
+for command in install check from-pc; do
+  bash "$TMP/repo/scripts/deploy.sh" "$command" --product a2
+done
+grep -q 'deploy_online.sh --product a2' "$DEPLOY_TEST_LOG"
+grep -q 'install.sh --product a2 --check-only' "$DEPLOY_TEST_LOG"
+grep -q 'deploy_from_pc.sh --product a2 --host unitree@192.168.123.162' "$DEPLOY_TEST_LOG"
 
 # Invalid destinations must fail before networking, even through the internal entry.
 mkdir -p "$TMP/no-network"
@@ -131,7 +145,7 @@ ip() {
 }
 fixture_wifi_ip=""
 fixture_dds_ip=""
-for profile in g1 r1 go2; do
+for profile in g1 r1 go2 a2; do
   load_product_profile "$profile"
   address_output="$(source <(sed -n '/^robot_ip=/,$p' "$ROOT/scripts/deploy_online.sh"))"
   [[ "$address_output" == *"http://${DEFAULT_HOST#*@}:8080"* ]] || fail "$profile URL has wrong default"
@@ -247,7 +261,7 @@ unset -f ssh help_customer ok die
 
 # Execute the real resource installer with a fake venv; never download or run models.
 export INSTALL_TEST_LOG="$TMP/tts-install.log"
-for profile in g1 go2; do
+for profile in g1 go2 a2; do
   load_product_profile "$profile"
   fixture="$TMP/tts-$profile"
   mkdir -p "$fixture/tts_kokoro/bin" "$fixture/archive/$TTS_MODEL_NAME" "$fixture/tts_models"
@@ -264,13 +278,15 @@ EOF
   chmod +x "$fixture/tts_kokoro/bin/python"
   touch "$fixture/tts_kokoro/bin/pip"
   chmod +x "$fixture/tts_kokoro/bin/pip"
-  UNIROBOGUI_ROOT="$fixture" bash "$ROOT/scripts/install_kokoro_tts.sh" --product "$profile" >"$TMP/tts-out" 2>&1
+  UNIROBOGUI_ROOT="$fixture" PYTHON="$fixture/tts_kokoro/bin/python" \
+    bash "$ROOT/scripts/install_kokoro_tts.sh" --product "$profile" >"$TMP/tts-out" 2>&1
   test -f "$fixture/tts_models/$TTS_MODEL_NAME/$TTS_MODEL_FILE"
   grep -Fq "$TTS_MODEL_NAME|$TTS_MODEL_FILE" "$INSTALL_TEST_LOG"
-  if [[ "$profile" == go2 ]]; then
+  if [[ "$profile" == go2 || "$profile" == a2 ]]; then
     touch "$fixture/tts_models/$TTS_MODEL_NAME/model.int8.onnx"
-    expect_rc 1 env UNIROBOGUI_ROOT="$fixture" bash "$ROOT/scripts/install_kokoro_tts.sh" --product go2
-    grep -q 'INT8' "$TMP/stderr" || fail "GO2 mixed precision directory was accepted"
+    expect_rc 1 env UNIROBOGUI_ROOT="$fixture" PYTHON="$fixture/tts_kokoro/bin/python" \
+      bash "$ROOT/scripts/install_kokoro_tts.sh" --product "$profile"
+    grep -q 'INT8' "$TMP/stderr" || fail "$profile mixed precision directory was accepted"
   fi
 done
 expect_rc 2 bash "$ROOT/scripts/install_kokoro_tts.sh" --product r1
@@ -283,6 +299,18 @@ for unit in go2-local-tts.service go2-local-tts.user.service; do
   grep -q -- 'kokoro-multi-lang-v1_1 --sid 3 --speed 1.2 --threads 8' "$ROOT/deploy/$unit"
   ! grep -q 'kokoro-int8' "$ROOT/deploy/$unit"
 done
+for unit in a2-web-control.service a2-local-tts.service a2-local-tts.user.service; do
+  test -f "$ROOT/deploy/$unit"
+done
+grep -q -- '--robot a2' "$ROOT/deploy/a2-web-control.service"
+grep -q -- '--interface eth0' "$ROOT/deploy/a2-web-control.service"
+for unit in a2-web-control.service a2-web-control.user.service; do
+  grep -q -- '--device jt128' "$ROOT/deploy/$unit"
+  grep -q -- '--enable-navigation' "$ROOT/deploy/$unit"
+  grep -q 'pgrep -x unitree_slam' "$ROOT/deploy/$unit"
+  grep -q 'Web will start degraded' "$ROOT/deploy/$unit"
+done
+grep -q 'kokoro-multi-lang-v1_1 --sid 3 --speed 1.2 --threads 8' "$ROOT/deploy/a2-local-tts.user.service"
 
 if grep -q 'BatchMode=yes' "$ROOT/scripts/deploy_from_pc.sh"; then
   fail "from-pc must allow first-time interactive SSH authentication"
@@ -355,10 +383,16 @@ done
 
 # Project transfers preserve unrelated on-site files in every target directory.
 RSYNC_RSH=ssh
-PROJECT_DIR="$TMP/repo"
+PROJECT_DIR="$ROOT"
 ROBOT=fixture-robot
 REMOTE_PROJECT_DIR=/home/unitree/UniRoboGui
-rsync() { printf '%s\n' "$@" >"$TMP/project-rsync-args"; }
+rsync() {
+  printf '%s\n' "$@" >"$TMP/project-rsync-args"
+  local arg
+  for arg in "$@"; do
+    case "$arg" in --files-from=*) cat "${arg#--files-from=}" >"$TMP/project-files" ;; esac
+  done
+}
 source <(sed -n '/^rsync -e .* -az --info=progress2 /,/^project_revision=/{ /^project_revision=/!p; }' "$ROOT/scripts/deploy_from_pc.sh")
 [[ -s "$TMP/project-rsync-args" ]] || fail "project transfer was not exercised"
 ! grep -Fxq -- '--delete' "$TMP/project-rsync-args" || fail "project transfer deletes on-site files"
@@ -366,13 +400,21 @@ grep -Fxq '/config/' "$TMP/project-rsync-args" || fail "project transfer exposes
 for excluded in '/docs/GO2-*' '/docs/voice/' '/AGENTS.md' '/*_AGENTS.md'; do
   grep -Fxq -- "$excluded" "$TMP/project-rsync-args" || fail "project transfer includes internal files: $excluded"
 done
+grep -Fxq -- '--from0' "$TMP/project-rsync-args" || fail "project list is not NUL-delimited"
+grep -Fxq -- '--recursive' "$TMP/project-rsync-args" || fail "file-list transfer does not recurse"
+if [[ -d "$ROOT/.git" ]]; then
+  git -C "$ROOT" ls-files -z >"$TMP/expected-project-files"
+  cmp "$TMP/expected-project-files" "$TMP/project-files" || fail "transfer includes files outside Git"
+fi
 unset -f rsync
 
 # Check the publication index when running from a Git checkout (PC delivery).
 if [[ -d "$ROOT/.git" ]]; then
   while IFS= read -r -d '' tracked; do
     case "$tracked" in
-      docs/GO2-*|docs/voice/*|AGENTS.md|*_AGENTS.md|*/AGENTS.md|*/*_AGENTS.md|\
+      tests/test_a2_browser.py|tests/test_a2_i18n_browser.py|tests/test_a2_slam_browser.py|\
+      deploy/examples/a2-joint-gains-go2-experimental.json|scripts/commit_to_github.sh|\
+      docs/robot-platform-tasks/*|docs/GO2-*|docs/voice/*|AGENTS.md|*_AGENTS.md|*/AGENTS.md|*/*_AGENTS.md|\
       config/customer_voice.json|config/customer_voice.json.tmp|\
       .env|*/.env|.env.*|*/.env.*|*.pem|*.key|*.token|id_rsa|*/id_rsa|id_ed25519|*/id_ed25519)
         [[ "$tracked" == .env.example || "$tracked" == */.env.example ]] ||

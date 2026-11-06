@@ -1,4 +1,5 @@
 #include "g1_web/control_service.hpp"
+#include "g1_web/remote_keys.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +15,7 @@
 #include <unitree/idl/go2/LowCmd_.hpp>
 #include <unitree/idl/go2/WirelessController_.hpp>
 #include <unitree/idl/hg/LowCmd_.hpp>
+#include <unitree/idl/hg/LowState_.hpp>
 #include <unitree/robot/b2/motion_switcher/motion_switcher_client.hpp>
 #include <unitree/robot/b2/robot_state/robot_state_client.hpp>
 #include <unitree/robot/channel/channel_publisher.hpp>
@@ -169,6 +171,15 @@ bool LowStateFresh(const RobotSnapshot& snapshot) {
          SteadyClock::now() - source.last_update <= std::chrono::seconds(1);
 }
 
+bool JointPositionsFinite(const RobotSnapshot& snapshot,
+                          const JointSchema& schema) {
+  return std::all_of(schema.joints.begin(), schema.joints.end(),
+                     [&](const JointDescriptor& joint) {
+                       return joint.motor_slot < snapshot.motors.size() &&
+                              std::isfinite(snapshot.motors[joint.motor_slot].q);
+                     });
+}
+
 bool SportStateFresh(const ControlData& control) {
   return control.sport_state_received &&
          SteadyClock::now() - control.sport_state_last_update <=
@@ -271,6 +282,22 @@ class ControlService::JointDebugImpl {
                           .CheckCapability(owner.robot_profile_,
                                            CapabilityKey::kJointTeach, mock)
                           .allowed;
+      const bool debug_enabled = owner.safety_
+          .CheckCapability(owner.robot_profile_, CapabilityKey::kJointDebug, mock)
+          .allowed;
+      if (!debug_enabled) {
+        remote_control_ready = false;
+        remote_control_error = "joint_teach_disabled";
+        try {
+          LoadTeachActions();
+          teach_store_error.clear();
+        } catch (const std::exception& error) {
+          teach_store_error = error.what();
+        }
+        initialized = true;
+        initialization_error.clear();
+        return;
+      }
       if (!mock) {
         if (policy.UsesMotionSwitcherForLowCmd()) {
           motion_switcher =
@@ -303,22 +330,37 @@ class ControlService::JointDebugImpl {
         }
         if (teach_enabled && policy.SupportsTeachRemoteControl()) {
           try {
-            remote_subscriber = std::make_shared<unitree::robot::ChannelSubscriber<
-                unitree_go::msg::dds_::WirelessController_>>(kRemoteTopic);
-            remote_subscriber->InitChannel(
-                [this](const void* data) {
-                  HandleRemoteKeys(static_cast<const unitree_go::msg::dds_::
-                      WirelessController_*>(data)->keys());
-                },
-                1);
+            if (!policy.TeachRemoteProtocolConfirmed()) {
+              throw std::runtime_error("joint_teach_remote_protocol_unconfirmed");
+            }
+            if (policy.TeachRemoteDataSource() == TeachRemoteSource::kHgLowStateRaw40) {
+              remote_lowstate_subscriber = std::make_shared<unitree::robot::ChannelSubscriber<
+                  unitree_hg::msg::dds_::LowState_>>("rt/lowstate");
+              remote_lowstate_subscriber->InitChannel(
+                  [this](const void* data) {
+                    const auto& state = *static_cast<const unitree_hg::msg::dds_::LowState_*>(data);
+                    HandleRemoteKeys(DecodeRaw40RemoteKeys(state.wireless_remote()));
+                  }, 1);
+            } else {
+              remote_subscriber = std::make_shared<unitree::robot::ChannelSubscriber<
+                  unitree_go::msg::dds_::WirelessController_>>(kRemoteTopic);
+              remote_subscriber->InitChannel(
+                  [this](const void* data) {
+                    HandleRemoteKeys(static_cast<const unitree_go::msg::dds_::
+                        WirelessController_*>(data)->keys());
+                  },
+                  1);
+            }
             remote_control_ready = true;
             remote_control_error.clear();
           } catch (const std::exception& error) {
             remote_subscriber.reset();
+            remote_lowstate_subscriber.reset();
             remote_control_ready = false;
             remote_control_error = error.what();
           } catch (...) {
             remote_subscriber.reset();
+            remote_lowstate_subscriber.reset();
             remote_control_ready = false;
             remote_control_error = "remote_control_initialization_failed";
           }
@@ -359,6 +401,10 @@ class ControlService::JointDebugImpl {
   }
 
   void Stop() {
+    if (remote_lowstate_subscriber) {
+      remote_lowstate_subscriber->CloseChannel();
+      remote_lowstate_subscriber.reset();
+    }
     if (remote_subscriber) {
       remote_subscriber->CloseChannel();
       remote_subscriber.reset();
@@ -412,7 +458,9 @@ class ControlService::JointDebugImpl {
       std::lock_guard<std::mutex> lock(mutex);
       const std::uint16_t previous = remote_keys;
       remote_keys = keys;
-      release_hold = teach_state == "holding" &&
+      ++remote_message_count;
+      if (!mock && policy.TeachRemoteRequiresActiveSession() && !active) return;
+      release_hold = active &&
                      (keys & kRemoteStartMask) != 0 &&
                      (previous & kRemoteStartMask) == 0;
       if (teach_state == "holding" && !release_hold &&
@@ -549,7 +597,7 @@ class ControlService::JointDebugImpl {
     std::vector<Limit> parsed(schema.joints.size());
     std::size_t found = 0;
     std::size_t cursor = 0;
-    while ((cursor = xml.find("<joint ", cursor)) != std::string::npos) {
+    while ((cursor = xml.find("<joint", cursor)) != std::string::npos) {
       const auto tag_end = xml.find('>', cursor);
       const auto close = xml.find("</joint>", tag_end);
       if (tag_end == std::string::npos || close == std::string::npos) break;
@@ -743,6 +791,7 @@ class ControlService::JointDebugImpl {
   bool remote_control_ready{false};
   std::string remote_control_error;
   std::uint16_t remote_keys{0};
+  std::uint64_t remote_message_count{0};
   std::string remote_last_action;
   std::string remote_last_binding;
   bool active{false};
@@ -792,6 +841,8 @@ class ControlService::JointDebugImpl {
       unitree_go::msg::dds_::LowCmd_>> go2_lowcmd_publisher;
   std::shared_ptr<unitree::robot::ChannelSubscriber<
       unitree_go::msg::dds_::WirelessController_>> remote_subscriber;
+  std::shared_ptr<unitree::robot::ChannelSubscriber<
+      unitree_hg::msg::dds_::LowState_>> remote_lowstate_subscriber;
   std::unique_ptr<unitree::robot::b2::RobotStateClient> robot_state;
   std::unique_ptr<unitree::robot::b2::MotionSwitcherClient> motion_switcher;
 };
@@ -872,7 +923,10 @@ std::string ControlService::SerializeJointDebugStatus() {
     return WriteJson(root);
   }
   std::string service_error;
-  if (joint_debug_->initialized && !joint_debug_->IsActive())
+  const auto debug_capability = safety_
+      .CheckCapability(robot_profile_, CapabilityKey::kJointDebug, mock_);
+  const bool debug_enabled = debug_capability.allowed;
+  if (joint_debug_->initialized && debug_enabled && !joint_debug_->IsActive())
     joint_debug_->RefreshAiSport(service_error);
   const auto snapshot = store_.GetSnapshot();
   std::string limit_error;
@@ -882,13 +936,16 @@ std::string ControlService::SerializeJointDebugStatus() {
   const bool all_joints_movable = limits_ready && std::all_of(
       joint_debug_->limits.begin(), joint_debug_->limits.end(),
       [](const JointDebugImpl::Limit& limit) { return limit.movable; });
-  root["initialized"] = joint_debug_->initialized;
+  root["initialized"] = joint_debug_->initialized && debug_enabled;
+  root["metadata_ready"] = joint_debug_->initialized;
+  root["control_available"] = debug_enabled;
   root["mock"] = mock_;
   root["initialization_error"] = joint_debug_->initialization_error;
   root["teach_store_error"] = joint_debug_->teach_store_error;
   root["remote_control_ready"] = joint_debug_->remote_control_ready;
   root["remote_control_error"] = joint_debug_->remote_control_error;
   root["remote_keys"] = Json::UInt(joint_debug_->remote_keys);
+  root["remote_message_count"] = Json::UInt64(joint_debug_->remote_message_count);
   root["remote_last_action"] = joint_debug_->remote_last_action;
   root["remote_last_binding"] = joint_debug_->remote_last_binding;
   Json::Value remote_binding_options(Json::arrayValue);
@@ -927,7 +984,7 @@ std::string ControlService::SerializeJointDebugStatus() {
   root["motion_service_active"] = joint_debug_->ai_sport_active;
   root["active_motion_service"] = joint_debug_->active_motion_service;
   root["motion_mode_switch_supported"] =
-      joint_debug_->policy.UsesMotionSwitcherForLowCmd();
+      joint_debug_->policy.SupportsMotionModeSwitch();
   const auto full_body_groups =
       joint_debug_->policy.GroupsForMode("full_body");
   if (!full_body_groups.empty()) {
@@ -967,7 +1024,7 @@ std::string ControlService::SerializeJointDebugStatus() {
     if (groups.empty()) return false;
     const auto transport = joint_debug_->policy.TransportForMode(candidate);
     control_topics[candidate] = TransportTopic(transport);
-    if (!joint_debug_->initialized ||
+    if (!debug_enabled || !joint_debug_->initialized ||
         !LowStateFresh(snapshot) || !limits_ready) {
       return false;
     }
@@ -982,6 +1039,9 @@ std::string ControlService::SerializeJointDebugStatus() {
     if (transport == JointDebugTransport::kArmSdk) {
       return SportStateFresh(snapshot.control) && upper_body_fsm_allowed;
     }
+    if (IsLowCmdTransport(transport) &&
+        !JointPositionsFinite(snapshot, robot_profile_.joint_schema))
+      return false;
     if (transport == JointDebugTransport::kLowCmd && snapshot.mode_pr != 0)
       return false;
     return service_error.empty() &&
@@ -991,7 +1051,8 @@ std::string ControlService::SerializeJointDebugStatus() {
   root["full_body_allowed"] = mode_allowed("full_body") && all_joints_movable;
   root["head_allowed"] = mode_allowed("head");
   root["control_topics"] = control_topics;
-  root["error"] = !service_error.empty() ? service_error : limit_error;
+  root["error"] = !debug_enabled ? debug_capability.error :
+                  !service_error.empty() ? service_error : limit_error;
   root["last_error"] = joint_debug_->last_error;
   root["teach_state"] = joint_debug_->teach_state;
   root["teach_record_name"] = joint_debug_->record_name;
@@ -1098,6 +1159,14 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
     }
   }
 
+  // Retire the previous loop before marking a new one active; the old
+  // service monitor uses active to decide when it can exit.
+  if (!joint_debug_->IsActive()) {
+    if (joint_debug_->worker.joinable()) joint_debug_->worker.join();
+    if (joint_debug_->service_monitor.joinable())
+      joint_debug_->service_monitor.join();
+  }
+
   std::string resource_owner;
   bool teach_control = false;
   {
@@ -1200,6 +1269,11 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
     return result;
   }
   if (IsLowCmdTransport(transport) &&
+      !JointPositionsFinite(snapshot, robot_profile_.joint_schema)) {
+    result.error = "joint_state_invalid";
+    return result;
+  }
+  if (IsLowCmdTransport(transport) &&
       !joint_debug_->RefreshAiSport(error)) {
     result.error = error;
     return result;
@@ -1276,9 +1350,6 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
     }
   }
   if (start_worker) {
-    if (joint_debug_->worker.joinable()) joint_debug_->worker.join();
-    if (joint_debug_->service_monitor.joinable())
-      joint_debug_->service_monitor.join();
     try {
       if (IsLowCmdTransport(transport)) {
         joint_debug_->service_monitor =
@@ -1371,6 +1442,20 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
             impl->stopping = true;
             stopping = true;
           }
+        }
+        if (!stopping && IsLowCmdTransport(transport) &&
+            !JointPositionsFinite(snapshot, impl->policy.profile().joint_schema)) {
+          std::lock_guard<std::mutex> lock(impl->mutex);
+          impl->last_error = "joint_state_invalid";
+          impl->stopping = true;
+          stopping = true;
+        }
+        if (!stopping && transport == JointDebugTransport::kLowCmd &&
+            snapshot.mode_pr != 0) {
+          std::lock_guard<std::mutex> lock(impl->mutex);
+          impl->last_error = "pr_mode_required";
+          impl->stopping = true;
+          stopping = true;
         }
 
         if (teach_state == "recording" && !stopping) {
@@ -2024,7 +2109,7 @@ JointDebugSubmitResult ControlService::SwitchJointDebugMode(
     result.error = confirmation.error;
     return result;
   }
-  if (!joint_debug_->policy.UsesMotionSwitcherForLowCmd() ||
+  if (!joint_debug_->policy.SupportsMotionModeSwitch() ||
       (!mock_ && !joint_debug_->motion_switcher)) {
     result.error = "motion_mode_switch_unsupported";
     return result;

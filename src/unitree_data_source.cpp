@@ -46,17 +46,20 @@ bool UnitreeDataSource::Start(const std::string& network_interface,
               1);
           break;
 
-        case TelemetrySourceKind::kHgBmsState:
-          bms_ = std::make_shared<unitree::robot::ChannelSubscriber<
+        case TelemetrySourceKind::kHgBmsState: {
+          const bool secondary = source.key == TelemetrySourceKey::kSecondaryBms;
+          auto& subscriber = secondary ? secondary_bms_ : bms_;
+          subscriber = std::make_shared<unitree::robot::ChannelSubscriber<
               unitree_hg::msg::dds_::BmsState_>>(source.topic);
-          bms_->InitChannel(
-              [this](const void* data) {
+          subscriber->InitChannel(
+              [this, secondary](const void* data) {
                 store_.UpdateBms(
                     *static_cast<const unitree_hg::msg::dds_::BmsState_*>(
-                        data));
+                        data), secondary);
               },
               1);
           break;
+        }
 
         case TelemetrySourceKind::kHgImuState:
           secondary_imu_ = std::make_shared<unitree::robot::ChannelSubscriber<
@@ -85,15 +88,20 @@ bool UnitreeDataSource::Start(const std::string& network_interface,
         case TelemetrySourceKind::kGo2SportModeState:
           {
           const bool supplies_control_state = source.supplies_control_state;
+          const auto state_field = source.control_state_field;
           odometry_ = std::make_shared<unitree::robot::ChannelSubscriber<
               unitree_go::msg::dds_::SportModeState_>>(source.topic);
           odometry_->InitChannel(
-              [this, supplies_control_state](const void* data) {
+              [this, supplies_control_state, state_field](const void* data) {
                 const auto& message =
                     *static_cast<
                         const unitree_go::msg::dds_::SportModeState_*>(data);
                 if (supplies_control_state) {
-                  store_.UpdateGo2SportMode(message);
+                  if (state_field == SportControlStateField::kMode) {
+                    store_.UpdateModeSportState(message);
+                  } else {
+                    store_.UpdateGo2SportMode(message);
+                  }
                 } else {
                   store_.UpdateOdometry(message);
                 }
@@ -164,6 +172,10 @@ void UnitreeDataSource::Stop() {
     secondary_imu_->CloseChannel();
     secondary_imu_.reset();
   }
+  if (secondary_bms_) {
+    secondary_bms_->CloseChannel();
+    secondary_bms_.reset();
+  }
   if (bms_) {
     bms_->CloseChannel();
     bms_.reset();
@@ -198,6 +210,22 @@ MockDataSource::MockDataSource(SnapshotStore& store, const RobotProfile& profile
     }
     break;
   }
+  mock_audio_ = false;
+  mock_faults_ = false;
+  enabled_sources_.assign(static_cast<std::size_t>(SourceId::kCount), false);
+  for (const auto& capability : profile.capabilities) {
+    if (capability.key == CapabilityKey::kAudio) mock_audio_ = capability.available;
+    if (capability.key != CapabilityKey::kTelemetry) continue;
+    const auto declared = capability.parameters.find("declared_sources");
+    if (declared == capability.parameters.end()) continue;
+    const auto csv = "," + declared->second + ",";
+    mock_faults_ = csv.find(",faults,") != std::string::npos;
+    for (std::size_t i = 0; i < enabled_sources_.size(); ++i) {
+      const auto key = SourceName(static_cast<SourceId>(i));
+      enabled_sources_[i] = csv.find("," + std::string(key) + ",") !=
+                            std::string::npos;
+    }
+  }
   semantic_motor_slots_.reserve(profile.joint_schema.joints.size());
   for (const auto& joint : profile.joint_schema.joints) {
     semantic_motor_slots_.push_back(joint.motor_slot);
@@ -221,7 +249,7 @@ void MockDataSource::Start() {
     while (running_.load()) {
       const double elapsed =
           std::chrono::duration<double>(SteadyClock::now() - started).count();
-      store_.PopulateMock(elapsed, mode_machine_, semantic_motor_slots_);
+      store_.PopulateMock(elapsed, mode_machine_, semantic_motor_slots_, enabled_sources_, mock_audio_, mock_faults_);
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
   });

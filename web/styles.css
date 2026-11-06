@@ -23,6 +23,7 @@
 
 /* Joint debugger reuses the single URDF viewer and keeps DDS controls separate. */
 .joint-debug-workspace { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: clamp(8px, 1vw, 14px); }
+.joint-debug-workspace:has(> .capability-notice) { grid-template-rows: auto auto minmax(0, 1fr); }
 .joint-debug-content { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 7fr); align-items: stretch; gap: clamp(8px, 1vw, 14px); overflow: hidden; }
 .joint-debug-viewer, .joint-debug-viewer > .robot-viewer-panel, .joint-debug-controls { min-width: 0; }
 .joint-debug-viewer, .joint-debug-viewer > .robot-viewer-panel, .joint-debug-controls { min-height: 0; }
@@ -89,6 +90,7 @@
 .joint-debug-name strong, .joint-debug-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .joint-debug-name strong { font-size: clamp(12px, .62vw, 14px); }
 .joint-debug-name small { color: var(--muted); font: clamp(9px, .5vw, 11px) ui-monospace, monospace; }
+.joint-debug-name small.joint-debug-limit { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .joint-debug-row input[type="range"] { width: 100%; height: 32px; margin: 0; padding: 0; appearance: none; background: transparent; accent-color: var(--cyan); }
 .joint-debug-row input[type="range"]::-webkit-slider-runnable-track { height: 7px; border-radius: 99px; background: rgba(223, 239, 255, .28); box-shadow: inset 0 0 0 1px rgba(223, 239, 255, .32); }
 .joint-debug-row input[type="range"]::-webkit-slider-thumb { width: 18px; height: 18px; margin-top: -5.5px; appearance: none; border: 0; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 0 3px rgba(84, 221, 255, .12); }
@@ -537,6 +539,9 @@ h3 {
   background: rgba(255, 200, 97, .06);
   font-size: 10px;
   line-height: 1.45;
+}
+[data-capability-placeholder="true"] :is(button, input, select, textarea) {
+  opacity: .45;
 }
 
 .source-item {
@@ -7640,14 +7645,15 @@ body.joint-debug-workspace-active footer { display: none; }
   .dashboard.console-active .map-panel {
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
   .dashboard.console-active .map-panel > :not(.map-canvas) {
     flex: 0 0 auto;
   }
   .dashboard.console-active .map-canvas,
   .dashboard.console-active .perception-grid.map-expanded .map-canvas {
-    min-height: 0 !important;
+    min-height: 300px !important;
     height: auto !important;
     flex: 1 1 0 !important;
   }
@@ -7834,4 +7840,23 @@ body #robot-control #walkingModeGroups .control-button-grid { grid-template-colu
 #walkingModeGroups .control-command { min-width: 0; }
 @media (max-width: 520px) {
   body #robot-control #walkingModeGroups .control-button-grid { grid-template-columns: 1fr; }
+}
+
+/* Unsupported camera/map panels must not reserve empty console tracks. */
+.camera-column:has(#rgbCameraPanel[hidden]):has(#depthCameraPanel[hidden]) #cameraFeedback {
+  display: none;
+}
+.dashboard.console-active .perception-grid:has(#rgbCameraPanel[hidden]):has(#depthCameraPanel[hidden]):has(.map-panel[hidden]) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "robot";
+}
+.control-tabs:has(#controlTabArm[hidden]) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (min-width: 1440px) {
+  .dashboard.console-active:has(#voice-interaction[hidden]) {
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "perception control";
+  }
 }

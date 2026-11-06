@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace g1_web {
@@ -49,6 +50,17 @@ class ILocomotion {
   virtual LocomotionCommandResult ApplyVelocity(
       float vx_m_s, float vy_m_s, float vyaw_rad_s,
       std::int32_t speed_mode, bool active) = 0;
+  virtual LocomotionCommandResult ApplyVelocityGuarded(
+      float vx_m_s, float vy_m_s, float vyaw_rad_s,
+      std::int32_t speed_mode, bool active,
+      const std::function<std::string()>& before_move) {
+    if (active) {
+      const auto error = before_move();
+      if (!error.empty()) return {-1, -1, error};
+    }
+    return ApplyVelocity(vx_m_s, vy_m_s, vyaw_rad_s, speed_mode, active);
+  }
+
 };
 
 }  // namespace g1_web

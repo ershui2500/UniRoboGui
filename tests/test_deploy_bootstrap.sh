@@ -66,6 +66,16 @@ grep -q 'rsync .*kokoro-multi-lang-v1_1.tar.bz2' "$BOOTSTRAP_LOG" || fail 'FP32 
 grep -q "deploy_online.sh --product 'go2' --from-transferred-sources --wheelhouse" "$BOOTSTRAP_LOG" || fail 'robot install not reached without sudo'
 ! grep '^rsync ' "$BOOTSTRAP_LOG" | grep -q -- '--delete' || fail 'fresh destination used delete'
 
+# A2 must transfer x86_64/Python 3.10 resources through the same entry point.
+: >"$BOOTSTRAP_LOG"
+PATH="$TMP/bin:$PATH" bash "$TEST_REPO/scripts/deploy_from_pc.sh" --product a2 >"$TMP/a2.out" 2>&1 || {
+  cat "$TMP/a2.out" >&2; fail 'A2 PC flow failed';
+}
+grep -q 'rsync .*unitree@192.168.123.162:/home/unitree/UniRoboGui/' "$BOOTSTRAP_LOG" || fail 'A2 project not transferred'
+grep -q -- '--platform manylinux2014_x86_64' "$BOOTSTRAP_LOG" || fail 'A2 wheel platform incorrect'
+grep -q -- '--python-version 310' "$BOOTSTRAP_LOG" || fail 'A2 Python version incorrect'
+grep -q "deploy_online.sh --product 'a2' --from-transferred-sources --wheelhouse" "$BOOTSTRAP_LOG" || fail 'A2 installer not reached'
+
 : >"$BOOTSTRAP_LOG"
 if DIRTY_PC=true PATH="$TMP/bin:$PATH" bash "$TEST_REPO/scripts/deploy_from_pc.sh" --product go2 >"$TMP/dirty.out" 2>&1; then
   fail 'dirty PC source accepted'

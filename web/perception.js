@@ -6,6 +6,21 @@ const NAV_TASK_STORAGE_KEY = "g1-sdk2-navigation-tasks-v1";
 const MAP_NAME_PATTERN = /^test(?:[1-9]|10)\.pcd$/;
 const MAP_NAME_WARNING = "地图名称无效。\n\n为防止多个 PCD 地图文件占用过多磁盘空间，按 Unitree 官方建议，本页面只允许 test1.pcd ~ test10.pcd，并采用覆盖式保存。\n\n请修改地图名称后再继续。";
 
+function navigationMaxDistance() {
+  const limit = Number(latestStatus?.navigation_max_distance_m ||
+    window.robotManifest?.capabilities?.find((capability) => capability.key === "slam")?.parameters?.navigation_max_distance_m);
+  return Number.isFinite(limit) && limit > 0 ? limit : 10;
+}
+
+function distanceLimitText(distance, segment = false) {
+  const limit = navigationMaxDistance();
+  return segment
+    ? cameraText(`该段距离 ${distance.toFixed(2)} m，超过 ${limit} m 限制，请选择更近的下一个点。`,
+      `This segment is ${distance.toFixed(2)} m, above the ${limit} m limit. Choose a closer waypoint.`)
+    : cameraText(`目标距离 ${distance.toFixed(2)} m，超过 ${limit} m 限制，请重新选择。`,
+      `The goal is ${distance.toFixed(2)} m away, above the ${limit} m limit. Choose a closer goal.`);
+}
+
 function isSupportedMapName(value) {
   return MAP_NAME_PATTERN.test(String(value || "").trim());
 }
@@ -172,13 +187,29 @@ function cameraText(zh, en) {
   return window.UiI18n?.language === "en" ? en : zh;
 }
 
+function updateMapLoading() {
+  if (!sceneReady) return;
+  mapLoading.hidden = Boolean(liveLayer || globalLayer);
+  if (mapLoading.hidden) return;
+  const mapping = latestStatus?.mode === "mapping";
+  mapLoading.querySelector("strong").textContent = mapping
+    ? cameraText("等待建图点云", "Waiting for Mapping Points")
+    : cameraText("暂无 SLAM 点云", "No SLAM Point Cloud Yet");
+  mapLoading.querySelector("span").textContent = mapping
+    ? cameraText("SLAM 服务尚未发布建图点云", "The SLAM service has not published mapping points")
+    : cameraText("启动建图或加载地图后显示", "Start mapping or load a map to display points");
+}
+
 let renderer;
 let scene;
+let poseScene;
 let camera;
 let controls;
 let liveLayer;
 let globalLayer;
 let obstacleBoundaryLayer;
+const mapPointSources = { live: [], global: [] };
+let mapDisplayHeight = Infinity;
 let trajectoryLayer;
 let robotMarker;
 let initialMarker;
@@ -236,8 +267,8 @@ const COMMAND_META = {
   finish_mapping: ["结束并保存地图", "将调用官方 API 1802，并覆盖同名 PCD 文件。"],
   load_map: ["加载地图", "Unitree 官方只提供 API 1804 加载地图并初始化位姿；本次先用当前可用位姿作为初始猜测，没有有效位姿时使用 X:0 / Y:0 / W:0。加载成功后才开放手动重定位。"],
   initialize_pose: ["执行重定位", "当前地图已加载；将使用刚才在地图中选择的 X / Y / W 再次调用官方 API 1804 完成重定位。"],
-  navigate: ["执行位姿导航", "机器人将自主移动到所选目标。官方接口要求目标距离不超过 10 m。"],
-  navigate_route: ["执行多点导航", "将按顺序逐点调用官方 API 1102；每一段距离均不超过 10 m，到达前一点后才会发送下一点。"],
+  navigate: ["执行位姿导航", ""],
+  navigate_route: ["执行多点导航", ""],
   pause_navigation: ["暂停导航", "将调用官方 API 1201，暂停当前导航任务。"],
   resume_navigation: ["恢复导航", "机器人可能立即继续运动，请重新检查周围环境。"],
   cancel_navigation: ["取消导航", "官方没有独立取消接口：若正在行走，将先调用 API 1201 立即暂停，再清除当前单点目标或多点执行队列；已加载地图和定位保持可用。"],
@@ -302,6 +333,18 @@ function setFeedback(text, state = "") {
   feedback.className = `perception-feedback ${state}`.trim();
 }
 
+// Profiles opt in to suppressing known empty RPC replies; rejected commands stay errors.
+function isWhitelistedSlamRpc(value) {
+  const whitelist = window.robotManifest?.capabilities?.find(capability => capability.key === "slam")
+    ?.parameters?.empty_rpc_warning_whitelist?.split(",") || [];
+  if (value?.services) {
+    const code = /^slam_rpc_unverified:(\d+)$/.exec(value.services.error || "")?.[1];
+    return whitelist.includes(code);
+  }
+  return value?.accepted === true && !value.error && !value.api_response &&
+    whitelist.includes(String(value.api_result));
+}
+
 async function readCommandResponse(response) {
   const raw = await response.text();
   let result = {};
@@ -314,6 +357,12 @@ async function readCommandResponse(response) {
     }
   }
   if (!response.ok || !result.accepted) {
+    if (result.error === "slam_api_failed" && result.api_result === 3203) {
+      throw new Error(cameraText(
+        "SDK 返回 3203（API 未实现），但 SLAM 服务可能已执行请求。请勿重复提交；检查 SLAM NAV 服务安装和日志。",
+        "SDK returned 3203 (API not implemented), but the SLAM service may have executed the request. Do not retry; check the SLAM NAV installation and logs.",
+      ));
+    }
     const details = [result.error || `HTTP ${response.status}`];
     if (result.api_result !== undefined) details.push(`SDK api_result=${result.api_result}`);
     if (result.api_response) details.push(`官方返回：${result.api_response}`);
@@ -354,6 +403,8 @@ function initializeMap() {
   mapView.prepend(renderer.domElement);
 
   scene = new THREE.Scene();
+  poseScene = new THREE.Scene();
+  poseScene.add(new THREE.HemisphereLight(0xcdeeff, 0x17202c, 1.8));
   scene.fog = new THREE.FogExp2(0x050a11, 0.018);
   camera = new THREE.PerspectiveCamera(44, 1, 0.02, 180);
   camera.position.set(0, 18, 0.01);
@@ -380,11 +431,13 @@ function initializeMap() {
   scene.add(axes);
 
   robotMarker = createPoseMarker(0x54ddff, 0.3);
+  robotMarker.name = "slam_robot_heading";
+  robotMarker.userData.heightOffset = 0;
   initialMarker = createPoseMarker(0x68f5b5, 0.34);
   targetMarker = createPoseMarker(0xffc861, 0.36);
   initialMarker.visible = false;
   targetMarker.visible = false;
-  scene.add(robotMarker, initialMarker, targetMarker);
+  poseScene.add(robotMarker, initialMarker, targetMarker);
 
   new ResizeObserver(resizeMapViewport).observe(mapView);
   renderer.domElement.addEventListener("pointerdown", beginPoseDrag);
@@ -448,11 +501,18 @@ function createPoseMarker(color, size, label = "") {
     sprite.renderOrder = 12;
     group.add(sprite);
   }
+  group.traverse((object) => {
+    if (!object.material) return;
+    object.material.depthTest = false;
+    object.material.depthWrite = false;
+    object.material.transparent = true;
+    object.renderOrder = 30;
+  });
   return group;
 }
 
 function disposeMapRobot() {
-  if (mapRobotMount) scene?.remove(mapRobotMount);
+  if (mapRobotMount) poseScene?.remove(mapRobotMount);
   mapRobot?.traverse?.((object) => {
     object.geometry?.dispose?.();
     if (Array.isArray(object.material)) object.material.forEach((material) => material.dispose?.());
@@ -462,16 +522,26 @@ function disposeMapRobot() {
   mapRobotMount = null;
 }
 
+function mapDisplayPose(pose) {
+  if (latestFrame?.point_frame === "base_link" && !latestStatus?.map_loaded &&
+      latestStatus?.mode !== "mapping") return {x: 0, y: 0, z: 0, qw: 1};
+  return pose;
+}
+
 function updateMapRobotPose(pose) {
+  pose = mapDisplayPose(pose);
   if (!mapRobotMount || !pose) return;
-  mapRobotMount.position.set(Number(pose.x) || 0, 0, -(Number(pose.y) || 0));
+  mapRobotMount.position.set(Number(pose.x) || 0, Number(pose.z) || 0, -(Number(pose.y) || 0));
   mapRobotMount.rotation.y = yawFromQuaternion(pose);
+  updatePoseMarker(robotMarker, pose);
   mapRobotMount.visible = true;
 }
 
 function syncMapRobotTelemetry(telemetry) {
   latestRobotTelemetry = telemetry || latestRobotTelemetry;
-  if (!sceneReady || !latestRobotTelemetry?.robot || latestRobotTelemetry?.joints?.length !== 29) return;
+  const expectedJoints = window.robotManifest?.joints?.length;
+  if (!sceneReady || !latestRobotTelemetry?.robot || !expectedJoints ||
+      latestRobotTelemetry?.joints?.length !== expectedJoints) return;
 
   let selection;
   try {
@@ -516,15 +586,25 @@ function syncMapRobotTelemetry(telemetry) {
         return;
       }
       mapRobot = candidate;
+      mapRobot.traverse((object) => {
+        if (!object.material) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => {
+          material.depthTest = true;
+          material.depthWrite = true;
+          material.transparent = false;
+        });
+        object.renderOrder = 20;
+      });
       applyRobotJointValues(mapRobot, latestRobotTelemetry?.joints);
-      const bounds = new THREE.Box3().setFromObject(mapRobot);
-      if (!bounds.isEmpty()) mapRobot.position.y -= bounds.min.y;
+      // SLAM and raw-preview poses describe base_link, not the floor.
+      // Keep the URDF root and heading at that same body-frame origin.
 
       mapRobotMount = new THREE.Group();
       mapRobotMount.name = "slam_robot_pose";
       mapRobotMount.visible = false;
       mapRobotMount.add(mapRobot);
-      scene.add(mapRobotMount);
+      poseScene.add(mapRobotMount);
       mapRobotFile = loadedSelection.file;
       updateMapRobotPose(latestFrame?.pose || latestStatus?.pose);
       renderMap();
@@ -537,7 +617,22 @@ function syncMapRobotTelemetry(telemetry) {
 }
 
 function renderMap() {
-  if (renderer && scene && camera) renderer.render(scene, camera);
+  if (!renderer || !scene || !poseScene || !camera) return;
+  const bounds = mapRobotMount?.visible ? new THREE.Box3().setFromObject(mapRobotMount) : null;
+  const height = bounds && !bounds.isEmpty() ? bounds.max.y + 0.30 : Infinity;
+  if (height !== mapDisplayHeight &&
+      (!Number.isFinite(height) || !Number.isFinite(mapDisplayHeight) || Math.abs(height - mapDisplayHeight) >= 0.01)) {
+    mapDisplayHeight = height;
+    liveLayer = updatePointLayer(liveLayer, mapPointSources.live, "live");
+    globalLayer = updatePointLayer(globalLayer, mapPointSources.global, "global");
+    updateObstacleBoundary(mapPointSources.global);
+  }
+  renderer.render(scene, camera);
+  // A separate final pass bypasses point-cloud/obstacle depth and sorting.
+  renderer.autoClear = false;
+  renderer.clearDepth();
+  renderer.render(poseScene, camera);
+  renderer.autoClear = true;
 }
 
 function disposeLayer(layer) {
@@ -627,7 +722,7 @@ function updateObstacleBoundary(points) {
     const x = Number(point?.[0]);
     const z = -Number(point?.[1]);
     if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(height)) continue;
-    if (height < 0.05 || height > 2.6) continue;
+    if (height < 0.05 || height > Math.min(2.6, mapDisplayHeight)) continue;
     const cellX = Math.floor(x / resolution);
     const cellZ = Math.floor(z / resolution);
     const key = `${cellX},${cellZ}`;
@@ -685,8 +780,16 @@ function updateObstacleBoundary(points) {
 }
 
 function updatePointLayer(current, points, kind) {
+  mapPointSources[kind] = points;
   disposeLayer(current);
-  const count = pointCount(points);
+  // Display only: retain the full source so pose/height changes can reveal points again.
+  const visiblePoints = [];
+  for (let index = 0; index < pointCount(points); index += 1) {
+    const point = pointXyz(points, index);
+    if (point.every(Number.isFinite) && point[2] <= mapDisplayHeight) visiblePoints.push(point);
+  }
+  points = visiblePoints;
+  const count = points.length;
   if (!count) return null;
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
@@ -767,8 +870,9 @@ function updateTrajectory(points) {
 }
 
 function updatePoseMarker(marker, pose) {
+  if (marker === robotMarker) pose = mapDisplayPose(pose);
   if (!marker || !pose) return;
-  marker.position.set(Number(pose.x) || 0, Number(pose.z) || 0, -(Number(pose.y) || 0));
+  marker.position.set(Number(pose.x) || 0, (Number(pose.z) || 0) + (marker.userData.heightOffset ?? 0.12), -(Number(pose.y) || 0));
   marker.rotation.y = yawFromQuaternion(pose);
 }
 
@@ -1116,7 +1220,7 @@ function routeDistancesAllowed() {
   if (!waypoints.length || !latestStatus?.pose) return false;
   let previous = latestStatus.pose;
   return waypoints.every((pose) => {
-    const allowed = Math.hypot(pose.x - Number(previous.x || 0), pose.y - Number(previous.y || 0)) <= 10;
+    const allowed = Math.hypot(pose.x - Number(previous.x || 0), pose.y - Number(previous.y || 0)) <= navigationMaxDistance();
     previous = pose;
     return allowed;
   });
@@ -1152,7 +1256,10 @@ async function submitNavigationWaypoint(index) {
     });
     const result = await readCommandResponse(response);
     activeWaypointIndex = index;
-    setFeedback(`多点导航：正在前往第 ${index + 1} / ${waypoints.length} 个目标。`, "running");
+    setFeedback(result.execution_unverified && !isWhitelistedSlamRpc(result)
+      ? cameraText(`第 ${index + 1} 个目标已发送，RPC 回执未验证；请观察任务状态。`, `Waypoint ${index + 1} sent; RPC response unverified. Check task status.`)
+      : `多点导航：正在前往第 ${index + 1} / ${waypoints.length} 个目标。`,
+    result.execution_unverified && !isWhitelistedSlamRpc(result) ? "warning" : "running");
   } catch (error) {
     cancelMultiRoute();
     setFeedback(`多点导航提交失败：${error.message}`, "error");
@@ -1281,8 +1388,8 @@ function selectGoalFromPointer(event) {
     const previous = waypoints.length ? waypoints[waypoints.length - 1] : robotPose;
     const distance = Math.hypot(x - Number(previous.x || 0), y - Number(previous.y || 0));
     targetMarker.visible = false;
-    if (distance > 10) {
-      setFeedback(`该段距离 ${distance.toFixed(2)} m，超过官方 10 m 限制，请选择更近的下一个点。`, "error");
+    if (distance > navigationMaxDistance()) {
+      setFeedback(distanceLimitText(distance, true), "error");
       renderMap();
       return;
     }
@@ -1306,10 +1413,10 @@ function selectGoalFromPointer(event) {
   updateNavigationAvailability();
   const distance = Math.hypot(x - Number(robotPose.x || 0), y - Number(robotPose.y || 0));
   setFeedback(
-    distance > 10
-      ? `目标距离 ${distance.toFixed(2)} m，超过 10 m 限制，请重新选择。`
+    distance > navigationMaxDistance()
+      ? distanceLimitText(distance)
       : `导航目标已保存，距离机器人 ${distance.toFixed(2)} m；确认安全后点击“开始导航”。`,
-    distance > 10 ? "error" : "success",
+    distance > navigationMaxDistance() ? "error" : "success",
   );
   renderMap();
 }
@@ -1386,7 +1493,7 @@ function updateNavigationAvailability() {
     ? Math.hypot(goalPose.x - Number(robotPose.x || 0), goalPose.y - Number(robotPose.y || 0))
     : 0;
   const targetReady = navigationMode === "multi" ? waypoints.length > 0 : goalSelected;
-  const distanceAllowed = navigationMode === "multi" ? routeDistancesAllowed() : !goalSelected || goalDistance <= 10;
+  const distanceAllowed = navigationMode === "multi" ? routeDistancesAllowed() : !goalSelected || goalDistance <= navigationMaxDistance();
 
   navigateButton.disabled = !(sceneReady && targetReady && distanceAllowed && latestStatus?.navigation_enabled && poseFresh && localizedMode && !navigationBusy);
   goalPickButton.disabled = !(sceneReady && poseFresh && localizedMode && !navigationBusy);
@@ -1397,6 +1504,11 @@ function updateNavigationAvailability() {
 
   if (!sceneReady) {
     navigateButton.title = "点云地图不可用，导航已禁用";
+  } else if (!latestStatus?.navigation_enabled && latestStatus?.services?.error?.startsWith("slam_rpc_unverified:")) {
+    navigateButton.title = cameraText(
+      "SLAM RPC 回执异常，真实导航已锁定；请联系宇树技术支持核查 slam_operate 服务，不能通过添加启动参数解除。",
+      "SLAM RPC responses are invalid; real navigation is locked. Contact Unitree support to check slam_operate; startup flags cannot clear this fault.",
+    );
   } else if (latestStatus && !latestStatus.navigation_enabled) {
     navigateButton.title = "真机导航未启用：服务启动时需要 --enable-navigation";
   } else if (!poseFresh || !localizedMode) {
@@ -1404,7 +1516,9 @@ function updateNavigationAvailability() {
   } else if (!targetReady) {
     navigateButton.title = navigationMode === "multi" ? "请先添加至少一个多点导航目标" : "请先在地图选择导航目标";
   } else if (!distanceAllowed) {
-    navigateButton.title = navigationMode === "multi" ? "多点路线存在超过 10 m 的分段" : `目标距离 ${goalDistance.toFixed(2)} m，超过 10 m 限制`;
+    navigateButton.title = navigationMode === "multi"
+      ? cameraText(`多点路线存在超过 ${navigationMaxDistance()} m 的分段`, `A route segment exceeds ${navigationMaxDistance()} m`)
+      : distanceLimitText(goalDistance);
   } else if (navigationBusy) {
     navigateButton.title = "当前导航任务尚未结束";
   } else {
@@ -1445,7 +1559,7 @@ function updateWorkflowState(status, poseFresh = false) {
     : mapIsLoaded() ? "重新加载当前地图" : "先加载地图，成功后解锁重定位";
   downloadMapButton.title = downloadMapButton.disabled
     ? "仅允许 test1.pcd ~ test10.pcd"
-    : `下载机器人 PC1 上 /home/unitree/${mapName.value.trim()}`;
+    : cameraText(`下载机器人上的地图 ${mapName.value.trim()}`, `Download robot map ${mapName.value.trim()}`);
   exitMapButton.title = exitMapButton.disabled
     ? "当前没有已加载地图"
     : "退出当前地图并关闭 SLAM 定位；退出后导航锁定";
@@ -1463,7 +1577,14 @@ function updateStatus(status) {
   const poseFresh = status.pose_received && status.pose_age_ms >= 0 && status.pose_age_ms <= 1500;
   if (!ready) setBadge("SLAM 离线", "error");
   else if (status.error_code) setBadge(`错误 ${status.error_code}`, "error");
-  else if (!status.mock && status.lidar_inputs && !status.lidar_inputs.ready) setBadge("雷达/IMU等待", "warning");
+  else if (status.services?.error?.startsWith("slam_rpc_unverified:") && !isWhitelistedSlamRpc(status)) {
+    setBadge(status.navigation_enabled
+      ? cameraText("SLAM 回执异常 · 请核对任务反馈", "SLAM RPC warning · Check task feedback")
+      : cameraText("SLAM RPC 返回异常 · 导航锁定", "SLAM RPC Error · Navigation Locked"), "warning");
+  } else if (!status.mock && status.lidar_inputs && !status.lidar_inputs.ready) setBadge("雷达/IMU等待", "warning");
+  else if (["ready", "stopped"].includes(status.mode) && status.live_points > 0 && status.topics?.raw_lidar_points) {
+    setBadge(cameraText("雷达实时预览", "Live LiDAR Preview"), "online");
+  }
   else if (!poseFresh && status.mode === "ready") setBadge("等待启动建图/定位", "warning");
   else if (!poseFresh) setBadge("位姿等待中", "warning");
   else setBadge(status.mock ? "MOCK 在线" : "SLAM 在线", "online");
@@ -1485,7 +1606,9 @@ function updateStatus(status) {
       ? "Wi-Fi 压缩流"
       : "Wi-Fi 紧凑流";
   }
-  const taskLabel = status.mode === "mapping" ? "建图中"
+  const taskLabel = status.control_confirmation_pending && !isWhitelistedSlamRpc(status)
+    ? cameraText("控制请求已发送 · 回执未验证", "Control request sent · Response unverified")
+    : status.mode === "mapping" ? "建图中"
     : status.mode === "localizing" ? "定位中"
       : status.mode === "navigating" ? `导航 ${(Number(status.progress || 0) * 100).toFixed(0)}%`
         : status.mode === "paused" ? "导航已暂停"
@@ -1494,6 +1617,15 @@ function updateStatus(status) {
   slamTaskState.textContent = `${status.obstacle ? "检测到障碍" : "环境正常"} / ${taskLabel}`;
   progressBar.style.width = `${Math.max(0, Math.min(100, Number(status.progress || 0) * 100))}%`;
   rawStatus.textContent = JSON.stringify(status, null, 2);
+  if (status.services?.error?.startsWith("slam_rpc_unverified:") && !isWhitelistedSlamRpc(status)) {
+    setFeedback(status.navigation_enabled ? cameraText(
+      "SLAM 返回 3203，回执未验证；可继续手动测试，执行结果需核对新鲜数据与任务反馈。未确认的请求不要重复发送。",
+      "SLAM returned 3203; RPC responses are unverified. Manual testing remains available; check fresh data and task feedback. Do not resend unconfirmed requests.",
+    ) : cameraText(
+      "SLAM RPC 回执异常，导航未启用。请核查服务状态。",
+      "SLAM RPC responses are unverified; navigation is disabled. Check the service status.",
+    ), "warning");
+  }
   updatePoseMarker(robotMarker, status.pose);
   updateMapRobotPose(status.pose);
   const planningActive = status.mode === "navigating" || status.mode === "paused";
@@ -1550,6 +1682,7 @@ function updateStatus(status) {
   updateWorkflowState(status, poseFresh);
   updateNavigationAvailability();
   lastSlamMode = status.mode;
+  updateMapLoading();
   if (sceneReady && Number(status.global_sequence) !== lastGlobalSequence) loadGlobalMap(status.global_sequence);
   renderMap();
 }
@@ -1565,7 +1698,7 @@ async function loadGlobalMap(sequence = null, quiet = false) {
     globalLayer = updatePointLayer(globalLayer, points, "global");
     updateObstacleBoundary(points);
     lastGlobalSequence = actualSequence;
-    mapLoading.hidden = Boolean(globalLayer || liveLayer);
+    updateMapLoading();
     renderMap();
     return pointCount(points) > 0;
   } catch (error) {
@@ -1642,7 +1775,7 @@ async function pollFrame() {
         updatePoseMarker(robotMarker, frame.pose);
         updateMapRobotPose(frame.pose);
         lastFrameSequence = Number(frame.sequence);
-        mapLoading.hidden = Boolean(liveLayer || globalLayer);
+        updateMapLoading();
         renderMap();
       }
     } catch (error) {
@@ -1745,6 +1878,7 @@ function updateCameraServiceStatus(status) {
   });
 
   if (fixedPolicy) {
+    document.querySelector("#rgbCameraEmpty span").textContent = "RTP / H.264";
     const cameraName = status.device?.model ||
       window.robotManifest?.identity?.display_name ||
       cameraText("机器人摄像头", "Robot camera");
@@ -1917,7 +2051,8 @@ function buildRequest(command) {
       return null;
     }
     if (!routeDistancesAllowed()) {
-      setFeedback("多点路线存在超过 10 m 的分段，请重新选择。", "error");
+      setFeedback(cameraText(`多点路线存在超过 ${navigationMaxDistance()} m 的分段，请重新选择。`,
+        `A route segment exceeds ${navigationMaxDistance()} m. Choose closer waypoints.`), "error");
       return null;
     }
     request.waypoints = waypoints.map((pose) => ({ ...pose }));
@@ -1952,8 +2087,8 @@ function buildRequest(command) {
       return null;
     }
     const pose = latestStatus?.pose;
-    if (pose && Math.hypot(request.pose.x - pose.x, request.pose.y - pose.y) > 10) {
-      setFeedback("目标距离超过官方 10 m 限制，请选择更近的点。", "error");
+    if (pose && Math.hypot(request.pose.x - pose.x, request.pose.y - pose.y) > navigationMaxDistance()) {
+      setFeedback(distanceLimitText(Math.hypot(request.pose.x - pose.x, request.pose.y - pose.y)), "error");
       return null;
     }
   }
@@ -1989,7 +2124,15 @@ function stageCommand(command, uiAction = "") {
   const request = buildRequest(command);
   if (!request) return;
   pendingRequest = { endpoint: "/api/perception/command", feedback: "perception", ui_action: uiAction, ...request };
-  const [title, warning] = COMMAND_META[uiAction || command];
+  const [title, defaultWarning] = COMMAND_META[uiAction || command];
+  const limit = navigationMaxDistance();
+  const warning = command === "navigate"
+    ? cameraText(`机器人将自主移动到所选目标；目标距离不得超过 ${limit} m。`,
+      `The robot will move autonomously to the goal; its distance must not exceed ${limit} m.`)
+    : command === "navigate_route"
+      ? cameraText(`将逐点调用官方 API 1102；每段不得超过 ${limit} m，前一点到达后才发送下一点。`,
+        `Official API 1102 will be called for each waypoint. Each segment must be within ${limit} m; the next goal is sent only after arrival.`)
+      : defaultWarning;
   confirmTitle.textContent = title;
   confirmWarning.textContent = warning;
   confirmSafetyTitle.textContent = ["navigate", "navigate_route", "resume_navigation"].includes(command)
@@ -2194,12 +2337,23 @@ async function executePending() {
     }
     const autoStarted = [result.lidar_started && "雷达", result.slam_started && "SLAM"].filter(Boolean);
     const serviceNote = autoStarted.length ? `；已自动启动${autoStarted.join("和")}` : "；依赖服务已在线";
-    const message = `${cameraCommandMeta(metaKey)[0]}已由服务接受（请求 ${result.request_id}${feedbackTarget === "perception" ? serviceNote : ""}）${mapLoadNote}`;
+    const evidenceNote = isWhitelistedSlamRpc(result) ? "" : result.confirmed_by_topics
+      ? cameraText("；RPC 回执异常，已由新鲜任务数据确认", "; RPC response differed; confirmed by fresh task data")
+      : result.confirmed_by_map_file
+        ? cameraText("；RPC 回执异常，已由新保存的地图文件确认完成", "; RPC response differed; confirmed by the newly saved map file")
+      : result.confirmed_by_stopped_topics
+        ? cameraText("；RPC 回执异常，已由建图和定位数据停止确认关闭", "; RPC response differed; mapping and localization streams stopped")
+      : "";
+    const message = isWhitelistedSlamRpc(result) && result.execution_unverified
+      ? cameraText("请求已发送。", "Request sent.")
+      : result.execution_unverified
+      ? cameraText("请求已发送，RPC 返回 3203；执行结果未确认，可继续操作并观察机器人与任务状态。", "Request sent; RPC returned 3203. Execution is unconfirmed; controls remain available. Check the robot and task status.")
+      : `${cameraCommandMeta(metaKey)[0]}已由服务接受（请求 ${result.request_id}${feedbackTarget === "perception" ? serviceNote : ""}）${mapLoadNote}${evidenceNote}`;
     if (feedbackTarget === "camera") {
       cameraFeedback.textContent = message;
       cameraFeedback.className = "perception-feedback success";
     } else {
-      setFeedback(message, "success");
+      setFeedback(message, result.api_result === 3203 && !isWhitelistedSlamRpc(result) ? "warning" : "success");
     }
     pendingRequest = null;
   } catch (error) {
@@ -2360,7 +2514,14 @@ document.querySelectorAll("[data-native-layer]").forEach((button) => {
   });
 });
 window.addEventListener("g1:telemetry", (event) => syncMapRobotTelemetry(event.detail));
-window.addEventListener("ui-language-change", updateMapHelp);
+window.addEventListener("ui-language-change", () => {
+  updateMapHelp();
+  if (latestCameraStatus) {
+    updateCameraServiceStatus(latestCameraStatus);
+    updateCameraStatus("rgb", latestCameraStatus.rgb || {});
+    updateCameraStatus("depth", latestCameraStatus.depth || {});
+  }
+});
 window.addEventListener("unirobo:manifest", updateMapHelp);
 window.addEventListener("g1:workspace-change", (event) => {
   if (event.detail?.workspace === "console") {

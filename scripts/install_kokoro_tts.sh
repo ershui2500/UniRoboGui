@@ -10,7 +10,7 @@ show_help=false
 while (($#)); do
   case "$1" in
     --product)
-      (($# >= 2)) || { ui_err '--product 需要 g1 或 go2' '--product requires g1 or go2'; exit 2; }
+      (($# >= 2)) || { ui_err '--product 需要 g1、go2 或 a2' '--product requires g1, go2 or a2'; exit 2; }
       product="$2"; shift ;;
     -h|--help) show_help=true ;;
     *) ui_err "未知选项：$1" "Unknown option: $1"; exit 2 ;;
@@ -23,7 +23,7 @@ if ! ${NEEDS_KOKORO}; then
   exit 2
 fi
 if ${show_help}; then
-  ui_line '用法：bash scripts/install_kokoro_tts.sh [--product g1|go2]' 'Usage: bash scripts/install_kokoro_tts.sh [--product g1|go2]'
+  ui_line '用法：bash scripts/install_kokoro_tts.sh [--product g1|go2|a2]' 'Usage: bash scripts/install_kokoro_tts.sh [--product g1|go2|a2]'
   printf '%s: %s / %s\n' "$PRODUCT_ID" "$TTS_MODEL_NAME" "$TTS_MODEL_FILE"
   exit 0
 fi
@@ -55,13 +55,13 @@ pip_install() {
     if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
       cat >&2 <<EOF
 [ERROR] Kokoro Python dependency installation failed. Verify that wlan0 is connected and PyPI is reachable.
-If the robot cannot access PyPI, provide a wheelhouse for ${PRODUCT_NAME} aarch64/Python 3.8 and run:
+If the robot cannot access PyPI, provide a wheelhouse for ${PRODUCT_NAME} ${TARGET_ARCH}/Python ${KOKORO_PYTHON_DISPLAY} and run:
   KOKORO_WHEELHOUSE=/uploaded/wheelhouse bash scripts/install_kokoro_tts.sh --product ${PRODUCT_ID}
 EOF
     else
       cat >&2 <<EOF
 [提示] Kokoro Python 依赖安装失败。请先确认 wlan0 已连接且 PyPI 可访问。
-如果机器人不能访问 PyPI，请让供应方提供 ${PRODUCT_NAME} aarch64/Python 3.8 的 wheelhouse，上传后运行：
+如果机器人不能访问 PyPI，请让供应方提供 ${PRODUCT_NAME} ${TARGET_ARCH}/Python ${KOKORO_PYTHON_DISPLAY} 的 wheelhouse，上传后运行：
   KOKORO_WHEELHOUSE=/上传目录 bash scripts/install_kokoro_tts.sh --product ${PRODUCT_ID}
 EOF
     fi
@@ -69,17 +69,12 @@ EOF
   }
 }
 
-if [[ "$(uname -m)" != "aarch64" ]]; then
-  ui_err "[警告] 此安装器针对 Jetson/aarch64 调优；当前架构为 $(uname -m)，继续执行。" "[WARN] This installer is tuned for Jetson/aarch64 target; continuing on $(uname -m)."
-fi
-
-"${PYTHON}" - <<'PY'
+KOKORO_EXPECTED_PYTHON="${KOKORO_PYTHON_DISPLAY}" "${PYTHON}" - <<'PY'
 import os
 import sys
-if sys.version_info < (3, 8):
-    if os.environ.get("UNIROBOGUI_LANG") == "en":
-        raise SystemExit("Python >= 3.8 is required")
-    raise SystemExit("需要 Python >= 3.8")
+expected = tuple(map(int, os.environ["KOKORO_EXPECTED_PYTHON"].split(".")))
+if sys.version_info[:2] != expected:
+    raise SystemExit(f"Python {expected[0]}.{expected[1]} is required")
 print("Python", sys.version.split()[0])
 PY
 
@@ -150,8 +145,8 @@ EOF
   tar -xjf "${ARCHIVE}" -C "${MODEL_ROOT}"
 fi
 
-if [[ "$PRODUCT_ID" == go2 && -f "${MODEL_DIR}/model.int8.onnx" ]]; then
-  fail "GO2 FP32 模型目录混入 INT8 文件；请使用独立的官方 FP32 目录。" "GO2 FP32 model directory contains an INT8 file; use the separate official FP32 directory."
+if [[ ("$PRODUCT_ID" == go2 || "$PRODUCT_ID" == a2) && -f "${MODEL_DIR}/model.int8.onnx" ]]; then
+  fail "${PRODUCT_NAME} FP32 模型目录混入 INT8 文件；请使用独立的官方 FP32 目录。" "${PRODUCT_NAME} FP32 model directory contains an INT8 file; use the separate official FP32 directory."
 fi
 
 for required in "${model_assets[@]}"; do

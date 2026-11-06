@@ -16,6 +16,7 @@ namespace g1_web {
 enum class TelemetrySourceKey {
   kLowState,
   kBms,
+  kSecondaryBms,
   kSecondaryImu,
   kMainBoard,
   kOdometry,
@@ -34,12 +35,15 @@ enum class TelemetrySourceKind {
   kGo2ErrorList,
 };
 
+enum class SportControlStateField { kErrorCode, kMode };
+
 struct TelemetrySourceSpec {
   TelemetrySourceKey key;
   TelemetrySourceKind kind;
   std::string topic;
   bool required_for_health{false};
   bool supplies_control_state{false};
+  SportControlStateField control_state_field{SportControlStateField::kErrorCode};
 };
 
 struct TelemetrySubscriptionPlan {
@@ -54,6 +58,7 @@ struct RuntimeOptions {
   std::string network_interface{"eth0"};
   std::string web_root{"/home/unitree/UniRoboGui/web"};
   bool enable_navigation{false};
+  std::string a2_joint_gains_file;
   bool realsense{false};
   std::string rgb_camera;
   std::string depth_camera;

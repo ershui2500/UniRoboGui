@@ -58,7 +58,7 @@ expect_failure env ACTIVE_OTHER=r1-web-control.service bash "$ROOT/scripts/start
 expect_failure env TEST_PRODUCT=g1 bash "$ROOT/scripts/start_services.sh" --product go2
 expect_failure env TEST_INTERFACE=eth10 bash "$ROOT/scripts/start_services.sh" --product go2
 expect_failure env PORT_BUSY=1 bash "$ROOT/scripts/start_services.sh" --product go2
-for product in g1 r1 go2; do
+for product in g1 r1 go2 a2; do
   interface=eth0
   [[ "$product" != r1 ]] || interface=eth10
   for scope in system user; do

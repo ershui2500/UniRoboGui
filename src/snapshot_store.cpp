@@ -85,6 +85,8 @@ const char* SourceName(SourceId source) {
       return "mainboard";
     case SourceId::kOdometry:
       return "odometry";
+    case SourceId::kSecondaryBms:
+      return "secondary_bms";
     case SourceId::kCount:
       break;
   }
@@ -192,9 +194,9 @@ void SnapshotStore::UpdateGo2LowState(
 }
 
 void SnapshotStore::UpdateBms(
-    const unitree_hg::msg::dds_::BmsState_& message) {
+    const unitree_hg::msg::dds_::BmsState_& message, bool secondary) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto& battery = snapshot_.battery;
+  auto& battery = secondary ? snapshot_.secondary_battery : snapshot_.battery;
   battery.version_high = message.version_high();
   battery.version_low = message.version_low();
   battery.function_raw = message.fn();
@@ -207,7 +209,7 @@ void SnapshotStore::UpdateBms(
   battery.cycle = message.cycle();
   battery.manufacturer_date_raw = message.manufacturer_date();
   battery.state_raw = message.bmsstate();
-  TouchLocked(SourceId::kBms);
+  TouchLocked(secondary ? SourceId::kSecondaryBms : SourceId::kBms);
 }
 
 void SnapshotStore::UpdateSecondaryImu(
@@ -236,6 +238,16 @@ void SnapshotStore::UpdateOdometry(
 
 void SnapshotStore::UpdateGo2SportMode(
     const unitree_go::msg::dds_::SportModeState_& message) {
+  UpdateSportControlState(message, false);
+}
+
+void SnapshotStore::UpdateModeSportState(
+    const unitree_go::msg::dds_::SportModeState_& message) {
+  UpdateSportControlState(message, true);
+}
+
+void SnapshotStore::UpdateSportControlState(
+    const unitree_go::msg::dds_::SportModeState_& message, bool mode_field) {
   std::lock_guard<std::mutex> lock(mutex_);
   AssignGo2SportState(snapshot_.odometry, message);
   snapshot_.control.sport_state_received = true;
@@ -243,7 +255,7 @@ void SnapshotStore::UpdateGo2SportMode(
   // Go2 motion service V2 (software >= 1.1.6) reports the active motion
   // state machine through SportModeState.error_code.  The legacy `mode`
   // field is not the V2 control-state gate.
-  snapshot_.control.fsm_id = message.error_code();
+  snapshot_.control.fsm_id = mode_field ? message.mode() : message.error_code();
   snapshot_.control.fsm_mode = 0;
   snapshot_.control.task_id = 0;
   snapshot_.control.task_time_s = 0.0F;
@@ -385,7 +397,8 @@ void SnapshotStore::PopulateMock(double elapsed_seconds) {
 
 void SnapshotStore::PopulateMock(
     double elapsed_seconds, std::uint8_t mode_machine,
-    const std::vector<std::size_t>& semantic_motor_slots) {
+    const std::vector<std::size_t>& semantic_motor_slots,
+    const std::vector<bool>& enabled_sources, bool mock_audio, bool mock_faults) {
   std::lock_guard<std::mutex> lock(mutex_);
   snapshot_.dds_initialized = true;
   snapshot_.dds_error.clear();
@@ -490,6 +503,8 @@ void SnapshotStore::PopulateMock(
     snapshot_.voice.asr.received_time_ms = SystemTimeMs();
   }
 
+  if (!mock_audio) snapshot_.voice = {};
+
   const bool initialize_mock_control =
       !snapshot_.control.sport_state_received;
   snapshot_.control.sport_state_received = true;
@@ -502,11 +517,19 @@ void SnapshotStore::PopulateMock(
   }
 
   const auto now = SteadyClock::now();
-  for (auto& source : snapshot_.sources) {
-    source.received = true;
-    source.last_update = now;
+  for (std::size_t i = 0; i < snapshot_.sources.size(); ++i) {
+    auto& source = snapshot_.sources[i];
+    source.received = enabled_sources.empty()
+        ? i != static_cast<std::size_t>(SourceId::kSecondaryBms)
+        : enabled_sources.at(i);
+    if (source.received) source.last_update = now;
   }
-  snapshot_.faults.received = true;
+  if (!enabled_sources.empty() && enabled_sources.at(
+          static_cast<std::size_t>(SourceId::kSecondaryBms))) {
+    snapshot_.secondary_battery = snapshot_.battery;
+    snapshot_.secondary_battery.soc = 73;
+  }
+  snapshot_.faults.received = mock_faults;
   snapshot_.faults.last_update = now;
   snapshot_.faults.parse_valid = true;
   snapshot_.faults.parse_error.clear();

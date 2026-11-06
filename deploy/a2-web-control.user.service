@@ -1,0 +1,20 @@
+[Unit]
+Description=UniRoboGui A2 operator validation workstation (user)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/unitree/UniRoboGui
+Environment=HOME=/home/unitree
+Environment=CMAKE_PREFIX_PATH=/usr/local
+Environment=LD_LIBRARY_PATH=/usr/local/lib
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do ip link show dev eth0 >/dev/null 2>&1 && ip -4 addr show dev eth0 | grep -q "inet " && exit 0; sleep 1; done; echo "eth0 did not become ready within 30s" >&2; exit 1'
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do if pgrep -x unitree_slam >/dev/null; then sleep 3; exit 0; fi; sleep 1; done; echo "unitree_slam not ready; Web will start degraded" >&2; exit 0'
+ExecStart=/home/unitree/UniRoboGui/build/g1_web_server --interface eth0 --bind 0.0.0.0 --port 8080 --publish-hz 10 --web-root /home/unitree/UniRoboGui/web --robot a2 --device jt128 --enable-navigation --rgb-camera udp://230.1.1.1:1720
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+[Install]
+WantedBy=default.target

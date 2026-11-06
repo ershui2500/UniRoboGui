@@ -37,11 +37,18 @@ struct PerceptionRequest {
   PoseData pose{};
 };
 
+bool IsUnverifiedSlamControlResponse(const std::string& command,
+                                     std::int32_t api_result);
+
 struct PerceptionResult {
   bool accepted{false};
   bool duplicate{false};
   bool lidar_started{false};
   bool slam_started{false};
+  bool execution_unverified{false};
+  bool confirmed_by_topics{false};
+  bool confirmed_by_map_file{false};
+  bool confirmed_by_stopped_topics{false};
   std::uint64_t request_id{0};
   std::int32_t api_result{0};
   std::string error;

@@ -21,11 +21,11 @@ usage() {
   if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
     cat <<'EOF'
 Usage:
-  bash scripts/deploy_online.sh --product g1|r1|go2
+  bash scripts/deploy_online.sh --product g1|r1|go2|a2
 
 Normally no options are required. Use this entry point when the robot itself can access GitHub.
 If the robot cannot access GitHub, run this on an Ubuntu/Linux computer that can:
-  bash scripts/deploy.sh from-pc --product g1|r1|go2 --host USER@HOST
+  bash scripts/deploy.sh from-pc --product g1|r1|go2|a2 --host USER@HOST
 
 Internal options (used automatically by the offline deployment flow):
   --from-transferred-sources
@@ -34,11 +34,11 @@ EOF
   else
     cat <<'EOF'
 用法：
-  bash scripts/deploy_online.sh --product g1|r1|go2
+  bash scripts/deploy_online.sh --product g1|r1|go2|a2
 
 正常情况下不要加参数。该脚本用于“机器人本身可以访问 GitHub”的部署场景。
 如果机器人不能访问 GitHub，请在一台能访问 GitHub 的 Ubuntu/Linux 电脑上运行：
-  bash scripts/deploy.sh from-pc --product g1|r1|go2 --host USER@HOST
+  bash scripts/deploy.sh from-pc --product g1|r1|go2|a2 --host USER@HOST
 
 内部参数（由离线部署脚本自动调用）：
   --from-transferred-sources
@@ -50,7 +50,7 @@ EOF
 while (($#)); do
   case "$1" in
     --product)
-      (($# >= 2)) || { ui_err "[错误] --product 缺少 g1|r1|go2" "[ERROR] --product requires g1|r1|go2"; exit 2; }
+      (($# >= 2)) || { ui_err "[错误] --product 缺少产品 ID" "[ERROR] --product requires a product ID"; exit 2; }
       PRODUCT="$2"
       shift
       ;;
@@ -66,7 +66,7 @@ while (($#)); do
   shift
 done
 
-[[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product g1|r1|go2" "[ERROR] --product g1|r1|go2 is required"; exit 2; }
+[[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product" "[ERROR] --product is required"; exit 2; }
 load_product_profile "$PRODUCT"
 
 STEP_ZH=""
@@ -221,10 +221,12 @@ missing_system_packages() {
 check_environment() {
   [[ "${EUID}" -ne 0 ]] || die "请使用 unitree 用户运行，不要直接使用 root。" "Run this script as the unitree user, not root."
   [[ "$(id -un)" == "unitree" ]] || die "当前用户是 $(id -un)，本脚本仅支持机器人 unitree 用户。" "Current user is $(id -un); this script supports only the robot's unitree account."
-  [[ "$(uname -m)" == "aarch64" ]] || die "当前架构为 $(uname -m)，预期 ${PRODUCT_NAME} aarch64。" "Current architecture is $(uname -m); expected ${PRODUCT_NAME} aarch64."
+  [[ "$(uname -m)" == "$TARGET_ARCH" ]] || die "当前架构为 $(uname -m)，预期 ${PRODUCT_NAME} ${TARGET_ARCH}。" "Current architecture is $(uname -m); expected ${PRODUCT_NAME} ${TARGET_ARCH}."
   source /etc/os-release
-  [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "20.04" ]] ||
-    die "当前系统为 ${PRETTY_NAME:-unknown}，预期 Ubuntu 20.04。" "Current OS is ${PRETTY_NAME:-unknown}; expected Ubuntu 20.04."
+  [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "$TARGET_UBUNTU_VERSION" ]] ||
+    die "当前系统为 ${PRETTY_NAME:-unknown}，预期 Ubuntu ${TARGET_UBUNTU_VERSION}。" "Current OS is ${PRETTY_NAME:-unknown}; expected Ubuntu ${TARGET_UBUNTU_VERSION}."
+  python3 -c "import sys; raise SystemExit(sys.version_info[:2] != ($KOKORO_PYTHON_MAJOR, $KOKORO_PYTHON_MINOR))" ||
+    die "预期 Python ${KOKORO_PYTHON_DISPLAY}，当前为 $(python3 --version 2>&1)。" "Expected Python ${KOKORO_PYTHON_DISPLAY}, found $(python3 --version 2>&1)."
   [[ -z "${ROS_DISTRO:-}" && -z "${RMW_IMPLEMENTATION:-}" && -z "${CYCLONEDDS_URI:-}" ]] || {
     help_customer "重新 SSH 登录机器人；出现 ROS 环境选择时直接按回车选择 none，然后重新运行脚本。" "Open a fresh SSH session to the robot, press Enter to select none at the ROS environment prompt, then rerun the script."
     die "检测到 ROS/RMW/CycloneDDS 环境变量。本项目生产部署只能使用 Unitree SDK2 DDS。" "ROS/RMW/CycloneDDS environment variables were detected. Production deployment must use Unitree SDK2 DDS only."

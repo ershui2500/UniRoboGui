@@ -93,10 +93,12 @@ function initializeScene() {
   camera.position.set(2.5, 1.5, 2.8);
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
-  controls.enablePan = false;
+  controls.enablePan = true;
+  controls.zoomToCursor = true;
   controls.minDistance = 1;
   controls.maxDistance = 8;
   controls.target.set(0, 0.85, 0);
+  controls.update();
   controls.addEventListener("change", renderScene);
 
   scene.add(new THREE.HemisphereLight(0xbfeaff, 0x18202d, 2.2));
@@ -114,10 +116,13 @@ function initializeScene() {
   const resize = () => {
     const width = Math.max(1, viewer.clientWidth);
     const height = Math.max(1, viewer.clientHeight);
+    const nextAspect = width / height;
+    const aspectChanged = Math.abs(camera.aspect - nextAspect) > .001;
     renderer.setSize(width, height, false);
-    camera.aspect = width / height;
+    camera.aspect = nextAspect;
     camera.updateProjectionMatrix();
-    renderScene();
+    if (modelMount && aspectChanged) fitView();
+    else renderScene();
   };
   new ResizeObserver(resize).observe(viewer);
   resize();
@@ -160,19 +165,24 @@ function prepareMaterials(root) {
 }
 
 function fitView() {
-  if (!modelMount) return;
+  if (!modelMount) return false;
   modelBounds.setFromObject(modelMount);
-  if (modelBounds.isEmpty()) return;
-  const size = modelBounds.getSize(new THREE.Vector3());
-  const center = modelBounds.getCenter(new THREE.Vector3());
-  const radius = Math.max(size.x, size.y, size.z) * 0.72;
+  if (modelBounds.isEmpty()) return false;
+  const sphere = modelBounds.getBoundingSphere(new THREE.Sphere());
+  const center = sphere.center;
+  const radius = Math.max(sphere.radius, .01);
+  const verticalFov = THREE.MathUtils.degToRad(camera.fov);
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+  const distance = radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2) * 1.08;
+  const direction = new THREE.Vector3(1.7, .45, 1.9).normalize();
   controls.target.copy(center);
-  camera.position.set(center.x + radius * 1.7, center.y + radius * .45, center.z + radius * 1.9);
+  camera.position.copy(center).addScaledVector(direction, distance);
   camera.near = Math.max(.01, radius / 100);
-  camera.far = Math.max(20, radius * 20);
+  camera.far = Math.max(20, distance + radius * 4);
   camera.updateProjectionMatrix();
   controls.update();
   renderScene();
+  return true;
 }
 
 function validateJoints(candidate) {
@@ -348,6 +358,7 @@ function loadModel(robotInfo) {
 
   const manager = new THREE.LoadingManager();
   let candidate = null;
+  let pendingMeshes = 0;
   manager.onError = (url) => {
     if (generation !== loadGeneration) return;
     setModelStatus("资源加载失败", "error");
@@ -376,6 +387,14 @@ function loadModel(robotInfo) {
     }
   };
   const loader = createUrdfLoader(manager, selection);
+  const loadMesh = loader.loadMeshCb;
+  loader.loadMeshCb = (path, meshManager, material, done) => {
+    pendingMeshes++;
+    loadMesh(path, meshManager, material, (object, error) => {
+      done(object, error);
+      if (--pendingMeshes === 0 && robot && candidate === robot && generation === loadGeneration) fitView();
+    });
+  };
   loader.load(
     `${selection.assetRoot}/${file}`,
     (loaded) => { candidate = loaded; },
@@ -411,8 +430,8 @@ function applyJointValues() {
     setLoading(
       viewerText("无法同步实时姿态", "Unable to synchronize live pose"),
       viewerText(
-        "等待 GO2 rt/lowstate 恢复；不使用默认零位冒充机器人当前姿态。",
-        "Waiting for GO2 rt/lowstate; the default zero pose is not presented as the robot's current pose.",
+        "等待 rt/lowstate 恢复；不使用默认零位冒充机器人当前姿态。",
+        "Waiting for rt/lowstate; the default zero pose is not presented as the robot's current pose.",
       ),
     );
     renderScene();
@@ -546,10 +565,10 @@ window.addEventListener("g1:workspace-change", (event) => {
   if (event.detail?.workspace === "robot") requestAnimationFrame(renderScene);
 });
 window.addEventListener("g1:robot-viewer-dock-change", () => {
-  requestAnimationFrame(() => {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
     if (modelMount) fitView();
     else renderScene();
-  });
+  }));
 });
 resetButton.addEventListener("click", fitView);
 
@@ -560,13 +579,21 @@ function setDebugJointValues(values) {
 
 function getRobotJointMetadata() {
   if (!robot || !latestData?.joints) return [];
+  const quadrupedModes = window.robotManifest?.identity?.morphology === "quadruped"
+    ? (window.robotManifest?.capabilities?.find(
+      (capability) => capability?.key === "joint_debug",
+    )?.parameters?.control_modes || "").split(",").filter(Boolean)
+    : [];
   return latestData.joints.map((joint) => {
+    const descriptor = manifestJointDescriptor(joint.name);
     const urdfName = manifestUrdfJointName(joint.name);
     const urdfJoint = urdfName ? robot.joints[urdfName] : null;
     return {
       index: joint.index,
       name: joint.name,
       nameZh: joint.name_zh,
+      displayGroup: descriptor?.display_group,
+      controlModes: quadrupedModes,
       movable: urdfJoint?.jointType === "revolute",
       lower: Number(urdfJoint?.limit?.lower),
       upper: Number(urdfJoint?.limit?.upper),

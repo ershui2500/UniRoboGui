@@ -455,8 +455,8 @@ void TestRobotRegistry() {
               go2->joint_schema.joints.size() == 12,
           "registry must resolve the task-28 Go2 profile");
   const auto products = g1_web::RobotRegistry::All();
-  Require(products.size() == 3 && products[0] == g1 && products[1] == r1 &&
-              products[2] == go2,
+  Require(products.size() == 4 && products[0] == g1 && products[1] == r1 &&
+              products[2] == go2 && products[3] == g1_web::RobotRegistry::Find("a2"),
           "registry product listing must expose G1/R1/Go2 without a frontend product table");
   Require(g1_web::RobotRegistry::Find("auto") == nullptr &&
               g1_web::RobotRegistry::Find("G1") == nullptr &&
@@ -920,6 +920,7 @@ void TestR1PerceptionPolicy() {
   auto unconfigured = g1_web::CreateR1DeviceCapabilityPolicy();
   const auto& closed = unconfigured->Perception();
   Require(closed.lidar_model == "Livox Mid-360" &&
+              closed.navigation_max_distance_m == 10.0 &&
               closed.lidar_service == "mid360_driver" &&
               closed.slam_service == "unitree_slam" &&
               closed.dependencies.size() == 2 &&
@@ -1195,6 +1196,12 @@ void TestStaticAssets() {
                   std::string::npos &&
               viewer_js.find("fetchOptions = { cache: \"reload\" }") !=
                   std::string::npos &&
+              viewer_js.find("controls.enablePan = true") !=
+                  std::string::npos &&
+              viewer_js.find("controls.zoomToCursor = true") !=
+                  std::string::npos &&
+              viewer_js.find("Waiting for GO2 rt/lowstate") ==
+                  std::string::npos &&
               viewer_js.find("product_id === \"g1\"") ==
                   std::string::npos &&
               viewer_js.find("product_id === 'g1'") ==
@@ -1215,7 +1222,7 @@ void TestStaticAssets() {
               joint_debug_js.find("joint.display_group") != std::string::npos &&
               joint_debug_js.find("joint.upper_body") != std::string::npos &&
               joint_debug_js.find(
-                  "panel.dataset.capabilityState !== \"available\"") !=
+                  "capability?.implemented !== true") !=
                   std::string::npos &&
               joint_debug_js.find("product_id === \"g1\"") ==
                   std::string::npos &&
@@ -1351,6 +1358,14 @@ void TestStaticAssets() {
               app_js.find("mode_sources") != std::string::npos &&
               app_js.find("fsm_mode_unknown") != std::string::npos &&
               app_js.find("capabilityParameters(\"locomotion\").allowed_fsm") !=
+                  std::string::npos &&
+              app_js.find("capabilityAvailable(\"locomotion\")") !=
+                  std::string::npos &&
+              app_js.find("if (category === \"mode\") allowed = allowed && locomotionAvailable") !=
+                  std::string::npos &&
+              app_js.find("$(\"unlockControl\").disabled = !ready") !=
+                  std::string::npos &&
+              index_html.find("data-capability-view-when-unavailable") !=
                   std::string::npos &&
               index_html.find("data-command=\"zero_torque\"") !=
                   std::string::npos &&
@@ -2459,6 +2474,8 @@ void TestMockPerceptionSafety() {
   Require(status["initialized"].asBool(), "mock SLAM initialized");
   Require(status["navigation_enabled"].asBool(),
           "mock navigation is enabled for UI validation");
+  Require(status["navigation_max_distance_m"].asDouble() == 10.0,
+          "G1 navigation retains its 10 m limit");
   Require(status["global_points"].asUInt64() > 1000,
           "mock global point cloud is populated");
   const Json::Value frame = Parse(perception.SerializeFrame());
@@ -2547,7 +2564,7 @@ void TestMockPerceptionSafety() {
   request.command = "navigate";
   request.pose.x = localized["pose"]["x"].asDouble() + 11.0;
   request.pose.y = localized["pose"]["y"].asDouble();
-  Require(perception.Submit(request).error == "goal_over_10m",
+  Require(perception.Submit(request).error == "goal_over_limit",
           "official ten metre goal limit must be enforced");
 
   request.request_key = "slam-request-0004";

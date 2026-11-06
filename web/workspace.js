@@ -193,7 +193,8 @@ function showWorkspace(requested, updateHash = true) {
   robotViewerDock.place(workspace);
   panels.forEach((panel) => {
     if (!panel.dataset.workspace) return;
-    panel.hidden = panel.dataset.capabilityState === "unsupported" || (workspace === "console"
+    panel.hidden = (panel.dataset.capabilityState === "unsupported" &&
+      panel.dataset.capabilityPlaceholder !== "true") || (workspace === "console"
       ? !consoleRegions.has(panel.dataset.workspace)
       : panel.dataset.workspace !== workspace);
   });

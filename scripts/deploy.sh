@@ -6,7 +6,7 @@ project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 usage() {
   cat <<'EOF'
 用法 / Usage:
-  bash scripts/deploy.sh <COMMAND> --product <g1|r1|go2> [OPTIONS]
+  bash scripts/deploy.sh <COMMAND> --product <g1|r1|go2|a2> [OPTIONS]
 
 命令 / Commands:
   install    在机器人本机安装/升级；机器人需要能访问 GitHub
@@ -17,7 +17,7 @@ usage() {
              Read-only robot preflight; does not install or restart services
 
 参数 / Options:
-  --product g1|r1|go2       必填；选择 Unitree G1、R1 或 GO2 / Required; select G1, R1 or GO2
+  --product g1|r1|go2|a2    必填；选择 Unitree 产品 / Required; select a Unitree product
   --host USER@HOST      仅 from-pc；可选；默认使用产品配置地址
                         from-pc only; optional; defaults to the product profile address
   --lang zh|en          可选；输出语言，默认 zh / Optional output language; default: zh
@@ -27,19 +27,22 @@ usage() {
   bash scripts/deploy.sh install --product g1
   bash scripts/deploy.sh install --product r1
   bash scripts/deploy.sh install --product go2
+  bash scripts/deploy.sh install --product a2
   bash scripts/deploy.sh from-pc --product g1
   bash scripts/deploy.sh from-pc --product r1
   bash scripts/deploy.sh from-pc --product go2
+  bash scripts/deploy.sh from-pc --product a2
   bash scripts/deploy.sh from-pc --product g1 --host unitree@192.168.123.164
   bash scripts/deploy.sh from-pc --product r1 --host unitree@192.168.123.164
   bash scripts/deploy.sh check --product g1
   bash scripts/deploy.sh check --product r1
   bash scripts/deploy.sh check --product go2
+  bash scripts/deploy.sh check --product a2
   bash scripts/deploy.sh install --product g1 --lang en
   bash scripts/deploy.sh install --product r1 --lang en
 
-不要原样输入 <g1|r1|go2>；请根据实际机器人填写 g1、r1 或 go2。产品没有隐式默认值。
-Do not type <g1|r1|go2> literally; use g1, r1 or go2 for the actual robot. There is no implicit product default.
+不要原样输入 <g1|r1|go2|a2>；请根据实际机器人填写产品 ID。产品没有隐式默认值。
+Do not type <g1|r1|go2|a2> literally; use the actual product ID. There is no implicit product default.
 EOF
 }
 
@@ -86,7 +89,7 @@ case "$command_name" in
   *) printf 'Unknown command: %s\n' "$command_name" >&2; usage >&2; exit 2 ;;
 esac
 
-[[ -n "$product" ]] || { printf '%s\n' '--product g1|r1|go2 is required' >&2; exit 2; }
+[[ -n "$product" ]] || { printf '%s\n' '--product g1|r1|go2|a2 is required' >&2; exit 2; }
 export UNIROBOGUI_LANG="$lang"
 source "$project_dir/scripts/deploy_i18n.sh"
 source "$project_dir/scripts/deploy_product.sh"

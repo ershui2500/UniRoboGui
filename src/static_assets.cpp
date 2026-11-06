@@ -50,10 +50,10 @@ bool IsInside(const std::filesystem::path& root,
 }
 
 bool IsRootAsset(const std::string& path) {
-  static constexpr std::array<const char*, 9> kAllowed{{
+  static constexpr std::array<const char*, 11> kAllowed{{
       "index.html", "styles.css", "app.js", "i18n.js", "workspace.js",
       "imu-gauges.js", "robot-viewer.js", "perception.js",
-      "joint-debug.js",
+      "joint-debug.js", "motion-policy.js", "battery-panels.js",
   }};
   for (const char* allowed : kAllowed) {
     if (path == allowed) return true;

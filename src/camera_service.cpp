@@ -75,6 +75,9 @@ std::string BuildFixedRtpH264UdpPipeline(const CameraStreamSpec& spec) {
               ? std::string{}
               : "address=" + address + " ") +
          "port=" + std::to_string(spec.port) +
+         (spec.multicast_interface.empty()
+              ? std::string{}
+              : " multicast-iface=" + spec.multicast_interface) +
          " ! application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96"
          " ! watchdog timeout=2000"
          " ! rtph264depay ! avdec_h264 ! videoconvert ! video/x-raw,format=BGR"

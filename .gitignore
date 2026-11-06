@@ -15,6 +15,7 @@
 /G1参考资料/
 /R1参考资料/
 /GO2参考资料/
+/A2参考资料/
 /博客文章/
 /docs/robot-platform-tasks/
 /docs/GO2-*
@@ -49,3 +50,10 @@
 .DS_Store
 *.swp
 *~
+
+# Local browser checks, experimental tuning and maintainer publishing tools.
+/tests/test_a2_browser.py
+/tests/test_a2_i18n_browser.py
+/tests/test_a2_slam_browser.py
+/deploy/examples/a2-joint-gains-go2-experimental.json
+/scripts/commit_to_github.sh

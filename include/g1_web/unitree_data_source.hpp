@@ -38,6 +38,8 @@ class UnitreeDataSource {
       unitree_hg::msg::dds_::BmsState_>>
       bms_;
   std::shared_ptr<unitree::robot::ChannelSubscriber<
+      unitree_hg::msg::dds_::BmsState_>> secondary_bms_;
+  std::shared_ptr<unitree::robot::ChannelSubscriber<
       unitree_hg::msg::dds_::IMUState_>>
       secondary_imu_;
   std::shared_ptr<unitree::robot::ChannelSubscriber<
@@ -68,6 +70,9 @@ class MockDataSource {
   std::uint8_t mode_machine_{2};
   std::uint32_t initial_fsm_id_{500};
   std::vector<std::size_t> semantic_motor_slots_;
+  std::vector<bool> enabled_sources_;
+  bool mock_audio_{true};
+  bool mock_faults_{true};
   std::atomic<bool> running_{false};
   std::thread thread_;
 };

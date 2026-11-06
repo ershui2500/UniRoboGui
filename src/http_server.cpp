@@ -1090,6 +1090,10 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     response["duplicate"] = result.duplicate;
     response["lidar_started"] = result.lidar_started;
     response["slam_started"] = result.slam_started;
+    response["execution_unverified"] = result.execution_unverified;
+    response["confirmed_by_topics"] = result.confirmed_by_topics;
+    response["confirmed_by_map_file"] = result.confirmed_by_map_file;
+    response["confirmed_by_stopped_topics"] = result.confirmed_by_stopped_topics;
     response["request_id"] = Json::UInt64(result.request_id);
     response["api_result"] = result.api_result;
     response["error"] = result.error;
@@ -1103,7 +1107,7 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     } else if (result.error == "navigation_runtime_disabled") {
       Send(http::status::forbidden, "application/json; charset=utf-8", body);
     } else if (result.error == "slam_pose_stale" ||
-               result.error == "goal_over_10m" ||
+               result.error == "goal_over_limit" ||
                result.error == "slam_api_failed" ||
                result.error == "invalid_slam_state") {
       Send(http::status::conflict, "application/json; charset=utf-8", body);

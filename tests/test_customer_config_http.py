@@ -99,7 +99,7 @@ def open_websocket(port):
     )
     handshake = b""
     while b"\r\n\r\n" not in handshake:
-        handshake += websocket.recv(4096)
+        handshake += websocket.recv(1)
     assert b"101 Switching Protocols" in handshake
     return websocket
 
@@ -464,7 +464,7 @@ def assert_transport_behavior(port):
         )
         handshake = b""
         while b"\r\n\r\n" not in handshake:
-            handshake += websocket.recv(4096)
+            handshake += websocket.recv(1)
         assert b"101 Switching Protocols" in handshake
         assert b"Sec-WebSocket-Extensions: permessage-deflate" in handshake
 
@@ -507,6 +507,7 @@ def main():
                 "g1",
                 "r1",
                 "go2",
+                "a2",
             ]
 
             websocket = open_websocket(explicit_port)

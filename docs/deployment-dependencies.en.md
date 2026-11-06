@@ -1,14 +1,16 @@
-# UniRoboGui G1 / R1 / GO2 Deployment and Troubleshooting Guide
+# UniRoboGui G1 / R1 / GO2 / A2 Deployment and Troubleshooting Guide
 
 [简体中文](deployment-dependencies.md) | **English**
 
-This guide covers Unitree G1, R1 and GO2. They share one deployment entry point, build flow, and safety checks. Product-specific differences such as network interfaces, SDK paths, services, cameras, TTS, and optional attachments are kept in controlled product profiles instead of duplicated deployment guides.
+This guide covers Unitree G1, R1, GO2 and A2. They share one deployment entry point, build flow, and safety checks. Product-specific differences such as network interfaces, SDK paths, services, cameras, TTS, and optional attachments are kept in controlled product profiles instead of duplicated deployment guides.
+
+For A2 installation, default SSH address, offline architecture and JT128/navigation defaults, start with [Quick deployment in README](../README.en.md#quick-deployment). A2 uses Ubuntu 22.04 amd64 / Python 3.10 wheels; do not use arm64 / Python 3.8 packages from other products.
 
 ## 1. Recommended entry point
 
 First choose the actual product and one deployment method; the commands below are alternatives, not a sequence to paste in full. Run `install`/`check` in the robot terminal and `from-pc` in the online PC terminal, always from the cloned project root.
 
-Before cloning on Ubuntu, make sure Git is installed. The Method B PC needs `git curl openssh-client rsync python3 python3-pip`; check with `command -v git curl ssh rsync python3` and `python3 -m pip --version`. Install missing PC packages first. Robot-side missing packages must be Ubuntu 20.04 arm64 packages, not the PC’s x86_64 packages. `from-pc` does not package the complete Ubuntu repository.
+Before cloning on Ubuntu, make sure Git is installed. The Method B PC needs `git curl openssh-client rsync python3 python3-pip`; check with `command -v git curl ssh rsync python3` and `python3 -m pip --version`. Install missing PC packages first. Robot-side missing packages must be Ubuntu 20.04 arm64 (G1/R1/GO2) or Ubuntu 22.04 amd64 (A2) packages, matching the target OS and architecture. `from-pc` does not package the complete Ubuntu repository.
 
 
 ~~~bash
@@ -16,39 +18,42 @@ Before cloning on Ubuntu, make sure Git is installed. The Method B PC needs `git
 bash scripts/deploy.sh install --product g1 --lang en
 bash scripts/deploy.sh install --product r1 --lang en
 bash scripts/deploy.sh install --product go2 --lang en
+bash scripts/deploy.sh install --product a2 --lang en
 
 # Online PC terminal: deploy; choose only your product
 bash scripts/deploy.sh from-pc --product g1 --lang en
 bash scripts/deploy.sh from-pc --product r1 --lang en
 bash scripts/deploy.sh from-pc --product go2 --lang en
+bash scripts/deploy.sh from-pc --product a2 --lang en
 
 # Robot terminal: read-only preflight; choose only your product
 bash scripts/deploy.sh check --product g1 --lang en
 bash scripts/deploy.sh check --product r1 --lang en
 bash scripts/deploy.sh check --product go2 --lang en
+bash scripts/deploy.sh check --product a2 --lang en
 ~~~
 
-`--product` is required and currently accepts only `g1`, `r1`, or `go2`, as registered by the project. `--host` is optional for all three products and valid only with `from-pc`; defaults are listed below. Override it only when the actual address differs, or use an existing SSH Host alias. Legacy `deploy_g1_*` and `install_g1*` entry scripts remain for one compatibility cycle; they print a deprecation notice and forward to `--product g1`. The legacy `--robot USER@HOST` option is translated to `--host`.
+`--product` is required and currently accepts only `g1`, `r1`, `go2`, or `a2`, as registered by the project. `--host` is optional for all four products and valid only with `from-pc`; defaults are listed below. Override it only when the actual address differs, or use an existing SSH Host alias. Legacy `deploy_g1_*` and `install_g1*` entry scripts remain for one compatibility cycle; they print a deprecation notice and forward to `--product g1`. The legacy `--robot USER@HOST` option is translated to `--host`.
 
 ## 2. Product matrix
 
 These are repository deployment defaults; verify interfaces, attachments and availability on the actual robot.
 
-| Item | G1 | R1 | GO2 |
-| --- | --- | --- | --- |
-| Default SSH target | `unitree@192.168.123.164` | `unitree@192.168.123.164` | `unitree@192.168.123.18` |
-| DDS interface | `eth0` | `eth10` | `eth0` (verify on site) |
-| SDK / CMake prefix | `/opt/unitree_robotics`; user-local installs may use `/home/unitree/.local/unitree_robotics` | `/usr/local`; validate the existing installation and never overwrite it automatically | `/usr/local`; validate existing compatible SDK, never overwrite |
-| Runtime library path | SDK `prefix/lib` + `/usr/local/lib`; reuse existing librealsense when needed | `/usr/local/lib` | `/usr/local/lib` |
-| Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` |
-| systemd user unit | `deploy/g1-web-control.user.service` | `deploy/r1-web-control.user.service` | `deploy/go2-web-control.user.service` |
-| Camera | D435i + librealsense + `g1-web-first-person-service` | Fixed R1 EDU RGB/Depth sources + `r1-web-camera-service` | Fixed native RGB; depth unsupported; no privileged helper |
-| Default TTS | Kokoro + Unitree fallback | Unitree native TTS | Kokoro FP32; no native fallback |
-| SDK installation policy | Install from the official SDK2 source when missing | Validate the existing R1 headers, CMake package, and CycloneDDS libraries; stop if they are missing | `/usr/local`; validate existing compatible SDK, never overwrite |
-| Mid-360 / navigation | Keep the existing G1 configuration and service defaults | Do not declare Mid-360 or enable real navigation by default | No optional LiDAR declaration or real navigation by default |
-| Binary | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` |
+| Item | G1 | R1 | GO2 | A2 |
+| --- | --- | --- | --- | --- |
+| Default SSH target | `unitree@192.168.123.164` | `unitree@192.168.123.164` | `unitree@192.168.123.18` | `unitree@192.168.123.162` (user development unit) |
+| DDS interface | `eth0` | `eth10` | `eth0` (verify on site) | `eth0` (verify on site) |
+| SDK / CMake prefix | `/opt/unitree_robotics`; user-local installs may use `/home/unitree/.local/unitree_robotics` | `/usr/local`; validate the existing installation and never overwrite it automatically | `/usr/local`; validate existing compatible SDK, never overwrite | Existing `/usr/local`; validate only |
+| Runtime library path | SDK `prefix/lib` + `/usr/local/lib`; reuse existing librealsense when needed | `/usr/local/lib` | `/usr/local/lib` | `/usr/local/lib` |
+| Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` | `a2-web-control.service` |
+| systemd user unit | `deploy/g1-web-control.user.service` | `deploy/r1-web-control.user.service` | `deploy/go2-web-control.user.service` | `deploy/a2-web-control.user.service` |
+| Camera | D435i + librealsense + `g1-web-first-person-service` | Fixed R1 EDU RGB/Depth sources + `r1-web-camera-service` | Fixed native RGB; depth unsupported; no privileged helper | Fixed native RGB; no depth or privileged helper |
+| Default TTS | Kokoro + Unitree fallback | Unitree native TTS | Kokoro FP32; no native fallback | Unitree native + optional Kokoro FP32 |
+| SDK installation policy | Install from the official SDK2 source when missing | Validate the existing R1 headers, CMake package, and CycloneDDS libraries; stop if they are missing | `/usr/local`; validate existing compatible SDK, never overwrite | Validate compatible A2 SDK; stop if missing, never overwrite |
+| Mid-360 / navigation | Keep the existing G1 configuration and service defaults | Do not declare Mid-360 or enable real navigation by default | No optional LiDAR declaration or real navigation by default | JT128/navigation enabled; requires matching attachment and external service |
+| Binary | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` | `build/g1_web_server --robot a2` |
 
-All three products use the same source tree and the same historical `g1_web_server` binary name. Runtime product identity comes from `--robot`, `RobotRegistry`, the Manifest, and Capability state—not from the binary filename.
+All four products use the same source tree and the same historical `g1_web_server` binary name. Runtime product identity comes from `--robot`, `RobotRegistry`, the Manifest, and Capability state—not from the binary filename.
 
 The shared binary compiles all registered products. Even for GO2, the existing SDK must include the R1 Audio/Loco headers required by this project. If missing, have a maintainer provide a complete firmware/ABI-compatible SDK rather than removing product code.
 
@@ -56,9 +61,9 @@ The shared binary compiles all registered products. Even for GO2, the existing S
 
 Products using local Kokoro also check Python initialization before compilation. They reuse a working project venv, a pip wheel in the offline wheelhouse, or system ensurepip. If all three are missing, a system installation conditionally prepares `python3-venv`; a user installation stops early and asks for `KOKORO_WHEELHOUSE` containing a pip wheel or administrator installation of `python3-venv`. Thus `python3-venv` is not a mandatory system dependency when an offline pip wheel is available.
 
-The deployment scripts follow the same sequence for all three products:
+The deployment scripts follow the same sequence for all four products:
 
-1. Validate Ubuntu 20.04 AArch64, the `unitree` user, the selected DDS interface, and the absence of ROS/RMW/CycloneDDS environment contamination.
+1. Validate G1/R1/GO2: Ubuntu 20.04 AArch64; A2: Ubuntu 22.04 x86_64, the `unitree` user, the selected DDS interface, and the absence of ROS/RMW/CycloneDDS environment contamination.
 2. Check the source tree for local modifications. Stop instead of overwriting uncommitted project code.
 3. Validate or prepare SDK, camera, and TTS dependencies according to the selected product profile.
 4. Perform a Release build and run the complete CTest suite.
@@ -109,7 +114,7 @@ R1 uses these boundaries:
 When `from-pc` transfers the project with rsync:
 
 - `.git` is not transferred.
-- `AGENTS.md`, `*_AGENTS.md`, `.robot-workspace`, `.robot-backups`, `.robot-sync`, local G1/R1/GO2 reference directories, and internal field records under `docs/GO2-*` and `docs/voice/` are not transferred.
+- `AGENTS.md`, `*_AGENTS.md`, `.robot-workspace`, `.robot-backups`, `.robot-sync`, local G1/R1/GO2/A2 reference directories, and internal field records under `docs/GO2-*` and `docs/voice/` are not transferred.
 - The robot's complete `config/`, `build/`, `tts_models/` and `tts_kokoro/` directories are preserved; product model archives are transferred separately.
 - Deployment stops if the robot-side Git checkout contains uncommitted project changes.
 - Project sync does not use `--delete`; extra on-site files are preserved. A maintainer must review obsolete source files before separately removing them. Upstream SDK/RealSense source directories use a separate backup-then-mirror flow.
@@ -123,9 +128,10 @@ In the robot terminal, run only the command for your product:
 bash scripts/deploy.sh check --product g1 --lang en
 bash scripts/deploy.sh check --product r1 --lang en
 bash scripts/deploy.sh check --product go2 --lang en
+bash scripts/deploy.sh check --product a2 --lang en
 ~~~
 
-`check` does not install packages, modify files, or stop/start services. It validates the operating system, architecture, selected network interface, required packages, SDK state, camera-helper state, and other deployment prerequisites. On R1/GO2, the SDK is validated directly under `/usr/local`. A successful preflight is not runtime or motion acceptance.
+`check` does not install packages, modify files, or stop/start services. It validates the operating system, architecture, selected network interface, required packages, SDK state, camera-helper state, and other deployment prerequisites. On R1/GO2/A2, the SDK is validated directly under `/usr/local`. A successful preflight is not runtime or motion acceptance.
 
 ## 7. Post-deployment acceptance
 
@@ -147,7 +153,7 @@ Verify that:
 - Only the target Web process is listening on port 8080.
 - The MainPID command line contains the correct `--robot` and `--interface` arguments.
 - The Web process does not contain `ROS_DISTRO`, `RMW_IMPLEMENTATION`, `CYCLONEDDS_URI`, `AMENT_PREFIX_PATH`, or `COLCON_PREFIX_PATH`.
-- G1/R1/GO2 CycloneDDS libraries resolve from the SDK prefix expected for the selected product.
+- G1/R1/GO2/A2 CycloneDDS libraries resolve from the SDK prefix expected for the selected product.
 - Read-only camera-helper status checks return valid active/inactive semantics.
 
 ## 8. Troubleshooting
@@ -160,6 +166,7 @@ Do not keep retrying GitHub operations on the robot and do not modify the DDS in
 bash scripts/deploy.sh from-pc --product g1 --lang en
 bash scripts/deploy.sh from-pc --product r1 --lang en
 bash scripts/deploy.sh from-pc --product go2 --lang en
+bash scripts/deploy.sh from-pc --product a2 --lang en
 ~~~
 
 ### R1 SDK validation fails

@@ -812,15 +812,33 @@ void TestGo2MockLocomotion() {
                 command);
   }
 
-  Require(locomotion->ValidateVelocity(control, 0.2F, 0.0F, 0.1F, 0)
-              .empty() &&
-              locomotion->ValidateVelocity(control, 0.6F, 0.0F, 0.0F, 0) ==
-                  "velocity_out_of_range" &&
-              locomotion->ValidateVelocity(control, 0.3F, 0.0F, 0.0F, 1)
-                  .empty() &&
-              locomotion->ValidateVelocity(control, 0.51F, 0.0F, 0.0F, 3) ==
-                  "velocity_out_of_range",
-          "Go2 Mock velocity validation must expose three conservative Web presets within the hard limit");
+  Require(capability->parameters.at("speed_presets") ==
+              "0:0.50:0.40:0.90,1:1.00:0.70:1.60,3:1.50:1.00:2.30",
+          "Go2 Web presets must match the requested distinct speed tiers");
+  Require(capability->parameters.at("forward_hard_limit_mps") == "1.5" &&
+              capability->parameters.at("lateral_hard_limit_mps") == "1.0" &&
+              capability->parameters.at("yaw_hard_limit_radps") == "2.3",
+          "Go2 manifest hard limits must match its high speed preset");
+  const int modes[] = {0, 1, 3};
+  const float limits[][3] = {{0.50F, 0.40F, 0.90F},
+                            {1.00F, 0.70F, 1.60F},
+                            {1.50F, 1.00F, 2.30F}};
+  for (int tier = 0; tier < 3; ++tier) {
+    for (int axis = 0; axis < 3; ++axis) {
+      for (float sign : {-1.0F, 1.0F}) {
+        float velocity[3] = {};
+        velocity[axis] = sign * limits[tier][axis];
+        Require(locomotion->ValidateVelocity(control, velocity[0], velocity[1],
+                                             velocity[2], modes[tier]).empty(),
+                "Go2 must accept each signed axis at its tier limit");
+        velocity[axis] += sign * 0.01F;
+        Require(locomotion->ValidateVelocity(control, velocity[0], velocity[1],
+                                             velocity[2], modes[tier]) ==
+                    "velocity_out_of_range",
+                "Go2 must reject each signed axis above its tier limit");
+      }
+    }
+  }
   Require(locomotion->ExecuteMode("damp", 0).api_result == 0 &&
               locomotion->ExecuteMode("damp", 0).target_fsm == 1001 &&
               locomotion->ExecuteMode("balance_stand", 0).api_result == 0 &&
@@ -1233,11 +1251,11 @@ void TestGo2AssetsAndSharedDom() {
               joint_debug.find("rear_right_leg") != std::string::npos &&
               joint_debug.find("rear_left_leg") != std::string::npos &&
               joint_debug.find("supported.length <= 1") != std::string::npos &&
-              joint_debug.find("next?.teach_mode || \"upper_body\"") !=
+              joint_debug.find("next?.teach_mode || capability?.parameters?.control_mode || \"upper_body\"") !=
                   std::string::npos &&
               joint_debug.find("next?.teach_control_topic || \"rt/arm_sdk\"") !=
                   std::string::npos &&
-              joint_debug.find("remote_secondary_function_key") !=
+              joint_debug.find("remote_binding_options") !=
                   std::string::npos &&
               joint_debug.find("product_id === \"go2\"") ==
                   std::string::npos &&

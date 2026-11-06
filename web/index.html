@@ -263,7 +263,7 @@
                 </fieldset>
               </div>
             </div>
-            <section class="joint-debug-teach" id="jointDebugTeach" data-capability="joint_teach">
+            <section class="joint-debug-teach" id="jointDebugTeach" data-capability="joint_teach" data-capability-view-when-unavailable>
               <div>
                 <label for="jointTeachName">示教动作名称</label>
                 <input id="jointTeachName" maxlength="128" placeholder="例如：挥手_01">
@@ -298,8 +298,8 @@
               </div>
               <p id="jointTeachHint">开始录制后直接进入手掰状态，不再先回默认姿态；停止时可选择恢复控制权或保持最后动作。</p>
             </section>
-            <p class="joint-debug-warning" id="jointDebugWarning">正在读取后端安全状态…</p>
-            <p class="joint-debug-action-feedback" id="jointDebugActionFeedback" hidden></p>
+            <p class="joint-debug-warning" id="jointDebugWarning" role="status" aria-live="polite">正在读取后端安全状态…</p>
+            <p class="joint-debug-action-feedback" id="jointDebugActionFeedback" role="status" aria-live="polite" hidden></p>
             <div class="joint-debug-groups" id="jointDebugGroups"></div>
           </section>
         </div>
@@ -320,7 +320,7 @@
                 <div class="viewer-loading" id="viewerLoading"><span class="viewer-spinner"></span><strong>等待 URDF 模型</strong><small>收到 mode_machine 后从本地资产自动加载官方模型</small></div>
                 <div class="viewer-overlay" id="viewerOverlay" hidden>遥测已中断 · 当前为最后收到的关节姿态</div>
               </div>
-              <div class="viewer-footer"><span id="modelFile">URDF --</span><span id="robotJointCountLabel" data-i18n-skip>关节 · 拖动旋转 · 滚轮缩放</span></div>
+              <div class="viewer-footer"><span id="modelFile">URDF --</span><span id="robotJointCountLabel" data-i18n-skip>关节 · 左键旋转 · 右键平移 · 指针缩放</span></div>
             </div>
           </div>
         </article>
@@ -742,12 +742,12 @@
             <span class="tag">BMS</span>
           </div>
           <dl class="kv-grid compact">
-            <div><dt>SOC / SOH</dt><dd id="diagnosticBatteryHealth">--</dd></div>
-            <div><dt>电芯范围 raw</dt><dd id="diagnosticBatteryCellRange">--</dd></div>
-            <div><dt>电芯压差 raw</dt><dd id="diagnosticBatteryCellDelta">--</dd></div>
-            <div><dt>电流 raw</dt><dd id="diagnosticBatteryCurrent">--</dd></div>
-            <div><dt>最高温度 raw</dt><dd id="diagnosticBatteryTemp">--</dd></div>
-            <div><dt>BMS state_raw</dt><dd id="diagnosticBatteryState">--</dd></div>
+            <div><dt>SOC / SOH</dt><dd id="diagnosticBatteryHealth" data-diagnostic-field="diagnosticBatteryHealth">--</dd></div>
+            <div><dt>电芯范围 raw</dt><dd id="diagnosticBatteryCellRange" data-diagnostic-field="diagnosticBatteryCellRange">--</dd></div>
+            <div><dt>电芯压差 raw</dt><dd id="diagnosticBatteryCellDelta" data-diagnostic-field="diagnosticBatteryCellDelta">--</dd></div>
+            <div><dt>电流 raw</dt><dd id="diagnosticBatteryCurrent" data-diagnostic-field="diagnosticBatteryCurrent">--</dd></div>
+            <div><dt>最高温度 raw</dt><dd id="diagnosticBatteryTemp" data-diagnostic-field="diagnosticBatteryTemp">--</dd></div>
+            <div><dt>BMS state_raw</dt><dd id="diagnosticBatteryState" data-diagnostic-field="diagnosticBatteryState">--</dd></div>
           </dl>
         </article>
 
@@ -866,7 +866,8 @@
 
           <div class="control-tab-stage control-groups">
             <section class="control-group mode-controls control-tab-panel active" id="controlPanelMode"
-                     role="tabpanel" aria-labelledby="controlTabMode" data-control-panel="mode">
+                     role="tabpanel" aria-labelledby="controlTabMode" data-control-panel="mode"
+                     data-capability="locomotion" data-capability-view-when-unavailable>
               <div class="control-group-heading">
                 <div>
                   <p class="metric-label">FSM</p>
@@ -1230,7 +1231,7 @@
               </div>
 
               <div class="map-canvas" id="map-view" aria-label="Unitree SLAM 三维点云地图">
-                <div class="map-loading" id="mapLoading"><strong>正在连接点云</strong><span>等待 /api/perception/frame</span></div>
+                <div class="map-loading" id="mapLoading"><strong>暂无 SLAM 点云</strong><span>启动建图或加载地图后显示</span></div>
                 <div class="map-help" id="mapHelp" data-i18n-skip>平移：左键按住拖动平移地图 · 滚轮缩放；方向：长按 ↶ / ↷ 调整地图朝向；右键无地图操作。机器人 URDF + 蓝色箭头=机器人，绿色箭头=初始位姿，黄色箭头=导航目标。</div>
                 <div class="map-overlay-topbar">
                   <div class="slam-layer-legend" aria-label="Unitree SLAM 实际显示内容">
@@ -1412,11 +1413,13 @@
           <button type="button" class="secondary" id="jointDebugCancel">取消</button>
           <button type="submit" class="danger-submit" id="jointDebugConfirm">确认并执行</button>
         </div>
-        <p class="control-dialog-feedback" id="jointDebugFeedback"></p>
+        <p class="control-dialog-feedback" id="jointDebugFeedback" role="status" aria-live="polite"></p>
       </form>
     </dialog>
 
     <script src="/i18n.js"></script>
+    <script src="/motion-policy.js"></script>
+    <script src="/battery-panels.js"></script>
     <script src="/app.js"></script>
     <script type="module" src="/workspace.js"></script>
     <script type="module" src="/robot-viewer.js"></script>

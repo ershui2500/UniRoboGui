@@ -57,6 +57,7 @@ void PrintUsage(const char* program) {
       << "  --web-root <目录>    静态网页目录\n"
       << "  --robot <产品>       机器人产品，已注册: " << RegisteredProductsText()
       << "；缺省为 g1\n"
+      << "  --a2-joint-gains <文件>  A2 关节增益配置文件（仅操作员验证）\n"
       << "  --device <附件>      声明已确认安装的附件，可重复；如 mid360\n"
       << "  --mock               使用模拟数据，不初始化 DDS\n"
       << "  --read-only          只读运行；禁用实体控制能力\n"
@@ -157,6 +158,8 @@ bool ParseOptions(int argc, char** argv, Options& options) {
       options.runtime.web_root = value;
     } else if (argument == "--robot") {
       options.robot = value;
+    } else if (argument == "--a2-joint-gains") {
+      options.runtime.a2_joint_gains_file = value;
     } else if (argument == "--device") {
       if (value.empty()) {
         std::cerr << "附件标识不能为空\n";

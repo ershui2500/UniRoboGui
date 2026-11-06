@@ -59,4 +59,20 @@ assert.equal(buttons.length, commands.size);
 assert.equal(context.renderWalkingModeGroups(new Set(['start', 'zero_torque']), new Map(), new Map(), new Set()), false);
 assert.equal(host.hidden, true);
 assert.equal(host.children.length, 0);
+const a2Commands = new Set([
+  'damp', 'stand_up', 'stand_down', 'balance_stand', 'stop_move', 'recovery_stand',
+  'walk', 'run', 'climb', 'left_side_gait_on', 'left_side_gait_off',
+  'right_side_gait_on', 'right_side_gait_off', 'hand_stand_on', 'hand_stand_off',
+  'biped_stand_on', 'biped_stand_off',
+]);
+buttons.length = 0;
+assert.equal(context.renderWalkingModeGroups(a2Commands, new Map(), new Map(), new Set(['run'])), true);
+assert.deepEqual(buttons.slice(0, 4).map((button) => button.command),
+  ['stand_up', 'balance_stand', 'stop_move', 'stand_down']);
+assert.equal(buttons.length, a2Commands.size);
+assert.equal(buttons.find((button) => button.command === 'run').dangerous, true);
+assert(!buttons.some((button) => button.command === 'front_flip'));
+for (const button of buttons.filter((button) => button.command.endsWith('_on'))) {
+  assert.equal(buttons[buttons.indexOf(button) + 1].command, button.command.replace(/_on$/, '_off'));
+}
 console.log('Walking mode grouping: ordering, coverage, paired exits, warnings, language and profile reset passed.');

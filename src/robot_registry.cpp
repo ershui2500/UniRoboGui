@@ -1,5 +1,11 @@
 #include "g1_web/robot_registry.hpp"
 
+#include "g1_web/a2_profile.hpp"
+#include "g1_web/a2_audio_capability.hpp"
+#include "g1_web/a2_joint_debug_policy.hpp"
+#include "g1_web/a2_locomotion_adapter.hpp"
+#include "g1_web/a2_device_capability.hpp"
+
 #include <algorithm>
 #include <array>
 #include <stdexcept>
@@ -25,6 +31,8 @@ const char* TelemetrySourceKeyName(TelemetrySourceKey key) {
       return "low_state";
     case TelemetrySourceKey::kBms:
       return "bms";
+    case TelemetrySourceKey::kSecondaryBms:
+      return "secondary_bms";
     case TelemetrySourceKey::kSecondaryImu:
       return "secondary_imu";
     case TelemetrySourceKey::kMainBoard:
@@ -430,7 +438,7 @@ const RobotProfile& Go2Profile() {
           {"control_client", "go2_v2_sport_client"},
           {"speed_modes", "0,1,3"},
           {"speed_presets",
-           "0:0.20:0.12:0.25,1:0.35:0.20:0.40,3:0.50:0.30:0.60"},
+           "0:0.50:0.40:0.90,1:1.00:0.70:1.60,3:1.50:1.00:2.30"},
           {"allowed_fsm",
            "100,1013,1015,1016,1017,2007,2008,2009,2010,2011,2016,2017"},
           {"state_labels",
@@ -533,9 +541,9 @@ const RobotProfile& Go2Profile() {
            "dance2:100|1002|1013;front_jump:100|1002|1013;"
            "front_pounce:100|1002|1013;front_flip:100|1002|1013;"
            "left_flip:100|1002|1013;back_flip:100|1002|1013"},
-          {"forward_hard_limit_mps", "0.5"},
-          {"lateral_hard_limit_mps", "0.3"},
-          {"yaw_hard_limit_radps", "0.6"},
+          {"forward_hard_limit_mps", "1.5"},
+          {"lateral_hard_limit_mps", "1.0"},
+          {"yaw_hard_limit_radps", "2.3"},
           {"velocity_lease_seconds", "1.0"}},
          "go2_real_control_requires_operator_validation"},
         {CapabilityKey::kJointDebug, true, true,
@@ -660,6 +668,7 @@ void ApplyRuntimeCapabilityPolicy(RobotProfile& profile,
 
     if (options.read_only &&
         (capability.key == CapabilityKey::kLocomotion ||
+         capability.key == CapabilityKey::kSlam ||
          capability.key == CapabilityKey::kJointDebug ||
          capability.key == CapabilityKey::kJointTeach ||
          capability.key == CapabilityKey::kHeadControl)) {
@@ -717,6 +726,7 @@ bool SourceKindMatches(TelemetrySourceKey key, TelemetrySourceKind kind) {
     case TelemetrySourceKey::kLowState:
       return kind == TelemetrySourceKind::kHgLowState ||
              kind == TelemetrySourceKind::kGo2LowState;
+    case TelemetrySourceKey::kSecondaryBms:
     case TelemetrySourceKey::kBms:
       return kind == TelemetrySourceKind::kHgBmsState;
     case TelemetrySourceKey::kSecondaryImu:
@@ -805,6 +815,7 @@ void ValidateBundle(const RobotRuntimeBundle& bundle) {
 }  // namespace
 
 const RobotProfile* RobotRegistry::Find(const std::string& product_id) {
+  if (product_id == "a2") return &A2Profile();
   if (product_id == "g1") return &G1Profile();
   if (product_id == "r1") return &R1Profile();
   if (product_id == "go2") return &Go2Profile();
@@ -812,7 +823,7 @@ const RobotProfile* RobotRegistry::Find(const std::string& product_id) {
 }
 
 std::vector<const RobotProfile*> RobotRegistry::All() {
-  return {&G1Profile(), &R1Profile(), &Go2Profile()};
+  return {&G1Profile(), &R1Profile(), &Go2Profile(), &A2Profile()};
 }
 
 RobotRuntimeBundle RobotRegistry::CreateRuntime(
@@ -855,6 +866,33 @@ RobotRuntimeBundle RobotRegistry::CreateRuntime(
       bundle.joint_debug = CreateGo2JointDebugPolicy(Go2Profile());
     }
     bundle.devices = CreateGo2DeviceCapabilityPolicy(options.enabled_devices);
+  } else if (product_id == "a2") {
+    bundle.profile = A2Profile();
+    ValidateProfile(bundle.profile);
+    bundle.telemetry = A2TelemetryPlan();
+    ApplyTelemetryCapabilityParameters(bundle.profile, bundle.telemetry);
+    ApplyRuntimeCapabilityPolicy(bundle.profile, options);
+    A2JointGains gains;
+    const bool gains_ready = !options.a2_joint_gains_file.empty() &&
+                             LoadA2JointGains(options.a2_joint_gains_file, gains);
+    if (!options.mock && !gains_ready) {
+      for (auto& capability : bundle.profile.capabilities) {
+        if (capability.key == CapabilityKey::kJointDebug ||
+            capability.key == CapabilityKey::kJointTeach) {
+          capability.available = false;
+          if (!options.read_only) {
+            capability.reason = options.a2_joint_gains_file.empty()
+                ? "a2_joint_gains_required" : "a2_joint_gains_invalid";
+            capability.parameters["reason_zh"] = "缺少有效的 A2 关节增益配置；操作前还须手动停用运控";
+            capability.parameters["reason_en"] = "Valid A2 joint gains are required; the operator must also stop motion control manually";
+          }
+        }
+      }
+    }
+    bundle.locomotion = CreateA2LocomotionAdapter(options.mock);
+    bundle.audio = CreateA2AudioCapability(options.mock);
+    bundle.joint_debug = CreateA2JointDebugPolicy(A2Profile(), gains);
+    bundle.devices = CreateA2DeviceCapabilityPolicy(options.enabled_devices);
   } else {
     throw std::invalid_argument("unregistered_robot_product");
   }

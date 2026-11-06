@@ -27,6 +27,7 @@ enum class SourceId : std::size_t {
   kSecondaryImu,
   kMainBoard,
   kOdometry,
+  kSecondaryBms,
   kCount
 };
 
@@ -242,6 +243,7 @@ struct RobotSnapshot {
   ImuData torso_imu{};
   std::array<MotorData, kMotorSlotCount> motors{};
   BatteryData battery{};
+  BatteryData secondary_battery{};
   OdometryData odometry{};
   MainBoardData mainboard{};
   FaultData faults{};
@@ -258,11 +260,14 @@ class SnapshotStore {
   void SetDdsStatus(bool initialized, const std::string& error = {});
   void UpdateLowState(const unitree_hg::msg::dds_::LowState_& message);
   void UpdateGo2LowState(const unitree_go::msg::dds_::LowState_& message);
-  void UpdateBms(const unitree_hg::msg::dds_::BmsState_& message);
+  void UpdateBms(const unitree_hg::msg::dds_::BmsState_& message,
+                 bool secondary = false);
   void UpdateSecondaryImu(const unitree_hg::msg::dds_::IMUState_& message);
   void UpdateMainBoard(const unitree_hg::msg::dds_::MainBoardState_& message);
   void UpdateOdometry(const unitree_go::msg::dds_::SportModeState_& message);
   void UpdateGo2SportMode(
+      const unitree_go::msg::dds_::SportModeState_& message);
+  void UpdateModeSportState(
       const unitree_go::msg::dds_::SportModeState_& message);
   void UpdateGo2FaultList(const std::string& json);
   void SetVoiceState(const VoiceData& voice);
@@ -285,11 +290,15 @@ class SnapshotStore {
   void UpdateMotion(const MotionData& motion);
   void PopulateMock(double elapsed_seconds);
   void PopulateMock(double elapsed_seconds, std::uint8_t mode_machine,
-                    const std::vector<std::size_t>& semantic_motor_slots);
+                    const std::vector<std::size_t>& semantic_motor_slots,
+                    const std::vector<bool>& enabled_sources = {},
+                    bool mock_audio = true, bool mock_faults = true);
 
   RobotSnapshot GetSnapshot() const;
 
  private:
+  void UpdateSportControlState(
+      const unitree_go::msg::dds_::SportModeState_& message, bool mode_field);
   void TouchLocked(SourceId source);
 
   mutable std::mutex mutex_;

@@ -409,6 +409,10 @@ MotionSubmitResult ControlService::SubmitVelocity(
     result.error = ready.error;
     return result;
   }
+  if (active && motion_stop_unconfirmed_.load()) {
+    result.error = "motion_stop_unconfirmed";
+    return result;
+  }
   if (active) {
     const auto capability = safety_.CheckCapability(
         robot_profile_, CapabilityKey::kLocomotion, mock_);
@@ -612,18 +616,34 @@ void ControlService::WorkerLoop() {
 }
 
 void ControlService::MotionWorkerLoop() {
+  std::chrono::milliseconds lease{0};
+  const auto* capability = FindCapability(robot_profile_, CapabilityKey::kLocomotion);
+  if (capability && capability->parameters.count("velocity_timeout_policy") &&
+      capability->parameters.at("velocity_timeout_policy") == "backend_stop") {
+    const auto seconds = std::stof(capability->parameters.at("velocity_lease_seconds"));
+    lease = std::chrono::milliseconds(static_cast<int>(seconds * 1000));
+  }
+  auto deadline = SteadyClock::time_point::max();
   while (running_.load()) {
     VelocityRequest request;
     {
       std::unique_lock<std::mutex> lock(motion_mutex_);
-      motion_cv_.wait(lock, [this] {
+      const auto ready = [this] {
         return !running_.load() || velocity_pending_;
-      });
-      if (!running_.load()) {
-        break;
+      };
+      if (deadline == SteadyClock::time_point::max()) {
+        motion_cv_.wait(lock, ready);
+      } else {
+        motion_cv_.wait_until(lock, deadline, ready);
       }
-      request = pending_velocity_;
-      velocity_pending_ = false;
+      if (!running_.load()) break;
+      if (velocity_pending_) {
+        request = pending_velocity_;
+        velocity_pending_ = false;
+      } else {
+        request.sequence = next_motion_sequence_.fetch_add(1);
+        request.release_resource = true;
+      }
     }
 
     MotionData motion;
@@ -637,20 +657,29 @@ void ControlService::MotionWorkerLoop() {
     motion.updated_time_ms = SystemTimeMs();
     store_.UpdateMotion(motion);
 
+    const auto before_move = [&]() -> std::string {
+      if (motion_stop_unconfirmed_.load()) return "motion_stop_unconfirmed";
+      const auto control = store_.GetSnapshot().control;
+      const bool expired = lease.count() > 0 &&
+          SteadyClock::now() >= request.received_at + lease;
+      if (!IsFreshSportState(control) || expired) return "motion_precondition_changed";
+      auto error = locomotion_->ValidateVelocityExecution(control, request.speed_mode);
+      if (!error.empty()) return error;
+      return locomotion_->ValidateVelocity(control, request.vx_m_s,
+          request.vy_m_s, request.vyaw_rad_s, request.speed_mode);
+    };
     try {
       if (request.active) {
-        const auto control = store_.GetSnapshot().control;
-        const auto freshness = safety_.CheckFreshness(
-            IsFreshSportState(control), "motion_precondition_changed");
-        motion.error = freshness.allowed
-                           ? locomotion_->ValidateVelocityExecution(
-                                 control, request.speed_mode)
-                           : freshness.error;
+        // A completed stop may have released the submit-time reservation.
+        const auto acquired = resources_.Acquire(ControlResource::Locomotion,
+                                                 kLocomotionMotionOwner);
+        const auto resource = safety_.CheckResource(acquired);
+        if (!resource.allowed) motion.error = resource.error;
       }
       if (motion.error.empty()) {
-        const auto execution = locomotion_->ApplyVelocity(
+        const auto execution = locomotion_->ApplyVelocityGuarded(
             request.vx_m_s, request.vy_m_s, request.vyaw_rad_s,
-            request.speed_mode, request.active);
+            request.speed_mode, request.active, before_move);
         motion.api_result = execution.api_result;
         motion.error = execution.error;
       } else {
@@ -664,25 +693,42 @@ void ControlService::MotionWorkerLoop() {
       motion.error = "unknown_motion_exception";
     }
 
-    if (motion.api_result != 0 && motion.error.empty()) {
-      motion.error = "sdk_api_error";
+    bool stop_unconfirmed = false;
+    if (lease.count() > 0) {
+      const bool failed = motion.api_result != 0 || !motion.error.empty();
+      deadline = !failed && request.active
+          ? request.received_at + lease : SteadyClock::time_point::max();
+      stop_unconfirmed = failed && !request.active;
+      if (failed && request.active &&
+          resources_.Query(ControlResource::Locomotion) == kLocomotionMotionOwner) {
+        // This transport has no firmware duration parameter; stop an earlier lease too.
+        try {
+          const auto stopped = locomotion_->ApplyVelocity(0, 0, 0, 0, false);
+          stop_unconfirmed = stopped.api_result != 0 || !stopped.error.empty();
+        } catch (...) {
+          stop_unconfirmed = true;
+        }
+      }
+      if (stop_unconfirmed) {
+        deadline = SteadyClock::now() + lease;
+        std::cerr << "[WARN] velocity stop unconfirmed; retaining control resource and retrying\n";
+      }
     }
+    if (motion.api_result != 0 && motion.error.empty()) motion.error = "sdk_api_error";
     if (motion.api_result == 0 && motion.error.empty()) {
       motion.state = request.active ? "active" : "stopped";
     } else {
       motion.state = "failed";
-      motion.active = false;
+      motion.active = stop_unconfirmed;
       motion.vx_m_s = 0.0F;
       motion.vy_m_s = 0.0F;
       motion.vyaw_rad_s = 0.0F;
       motion.speed_mode = 0;
-      motion_active_.store(false);
     }
-    if (!request.active) {
-      motion_active_.store(false);
-    }
-    if ((motion.state == "failed" && request.active) ||
-        (!request.active && request.release_resource)) {
+    motion_stop_unconfirmed_.store(stop_unconfirmed);
+    motion_active_.store(stop_unconfirmed || motion.state == "active");
+    if (!stop_unconfirmed && ((motion.state == "failed" && request.active) ||
+        (!request.active && request.release_resource))) {
       safety_.CleanupControlFailure(resources_, ControlResource::Locomotion,
                                     kLocomotionMotionOwner);
     }

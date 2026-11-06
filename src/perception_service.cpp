@@ -52,7 +52,6 @@ constexpr PointCloudFilterOptions kSlamLiveFilter{
 constexpr PointCloudFilterOptions kGlobalMapFilter{
     0.08F, 0.0F, 0.0F, -3.0F, 6.0F, kMaximumGlobalPoints, false};
 constexpr double kMaximumMapCoordinateM = 45.0;
-constexpr double kMaximumNavigationDistanceM = 10.0;
 constexpr auto kPoseFreshness = std::chrono::milliseconds(1500);
 constexpr std::int64_t kLidarInputFreshnessMs = 500;
 constexpr std::int64_t kSlamTopicFreshnessMs = 1500;
@@ -394,6 +393,7 @@ struct PerceptionState {
   bool initialized{false};
   bool mock{false};
   bool navigation_enabled{false};
+  bool control_confirmation_pending{false};
   std::string initialization_error;
   bool lidar_driver_enabled{false};
   bool unitree_slam_enabled{false};
@@ -706,6 +706,13 @@ LowObstacleDetection DetectLowObstacleForSafety(
   return result;
 }
 
+bool IsUnverifiedSlamControlResponse(const std::string& command,
+                                     std::int32_t api_result) {
+  return api_result == 3203 &&
+         (command == "navigate" || command == "pause_navigation" ||
+          command == "resume_navigation" || command == "cancel_navigation");
+}
+
 class PerceptionService::Impl {
  public:
   Impl(bool mock, bool navigation_enabled,
@@ -929,8 +936,8 @@ class PerceptionService::Impl {
       }
       const double distance = std::hypot(request.pose.x - state_.pose.x,
                                          request.pose.y - state_.pose.y);
-      if (distance > kMaximumNavigationDistanceM) {
-        result.error = "goal_over_10m";
+      if (distance > device_policy_.Perception().navigation_max_distance_m) {
+        result.error = "goal_over_limit";
         return result;
       }
       parameter["data"]["targetPose"] = Json::Value(Json::objectValue);
@@ -982,7 +989,8 @@ class PerceptionService::Impl {
     result.request_id = ++state_.last_request_id;
     result.api_result = 0;
     const bool cancel_already_paused =
-        request.command == "cancel_navigation" && state_.mode == "paused";
+        request.command == "cancel_navigation" && state_.mode == "paused" &&
+        !state_.control_confirmation_pending;
     const bool stop_already_stopped =
         request.command == "stop_slam" && state_.mode == "stopped";
     if (state_.mock) {
@@ -1003,6 +1011,17 @@ class PerceptionService::Impl {
         return result;
       }
       const std::int64_t operation_started_ms = MonotonicMs();
+      const std::string saved_map_path =
+          request.command == "finish_mapping"
+              ? SafeMapPath(request.map_name)
+              : std::string{};
+      std::error_code prior_map_error;
+      const auto prior_map_write = saved_map_path.empty()
+                                       ? std::filesystem::file_time_type{}
+                                       : std::filesystem::last_write_time(
+                                             saved_map_path, prior_map_error);
+      const bool prior_map_exists = !saved_map_path.empty() &&
+                                    !prior_map_error;
       std::string response;
       result.api_result = client_->Invoke(api, JsonText(parameter), response);
       // RobotState can report the process as active before slam_operate has
@@ -1015,6 +1034,12 @@ class PerceptionService::Impl {
         response.clear();
         result.api_result = client_->Invoke(api, JsonText(parameter), response);
       }
+      if (result.api_result == 3203) {
+        if (!device_policy_.Perception().allow_unverified_control_rpc) {
+          state_.navigation_enabled = false;
+        }
+        state_.service_error = "slam_rpc_unverified:3203";
+      }
       result.response = response;
       bool response_success = result.api_result == 0;
       Json::Value response_json;
@@ -1023,6 +1048,58 @@ class PerceptionService::Impl {
         response_success = response_success && response_json["succeed"].asBool();
       }
       result.accepted = response_success;
+      if (!result.accepted && result.api_result == 3203 &&
+          result.response.empty() &&
+          request.command == "start_mapping" &&
+          WaitForOperationTopicsLocked(request.command,
+                                       operation_started_ms)) {
+        result.accepted = true;
+        result.confirmed_by_topics = true;
+      }
+      if (!result.accepted && result.api_result == 3203 &&
+          result.response.empty() &&
+          (request.command == "load_map" ||
+           request.command == "initialize_pose") &&
+          WaitForOperationTopicsLocked(request.command,
+                                       operation_started_ms, true)) {
+        result.accepted = true;
+        result.confirmed_by_topics = true;
+      }
+      if (!result.accepted && result.api_result == 3203 &&
+          result.response.empty() &&
+          request.command == "finish_mapping") {
+        for (int attempt = 0; attempt < 50; ++attempt) {
+          std::error_code size_error;
+          std::error_code time_error;
+          const auto size = std::filesystem::file_size(
+              saved_map_path, size_error);
+          const auto updated = std::filesystem::last_write_time(
+              saved_map_path, time_error);
+          if (!size_error && !time_error && size > 128 &&
+              (!prior_map_exists || updated > prior_map_write)) {
+            result.accepted = true;
+            result.confirmed_by_map_file = true;
+            break;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+      }
+      if (!result.accepted && result.api_result == 3203 &&
+          result.response.empty() && request.command == "stop_slam" &&
+          ((state_.mode != "navigating" && state_.mode != "paused") ||
+           device_policy_.Perception().allow_unverified_control_rpc) &&
+          WaitForSlamTopicsToStopLocked(operation_started_ms)) {
+        result.accepted = true;
+        result.confirmed_by_stopped_topics = true;
+      }
+      if (!result.accepted && result.response.empty() &&
+          device_policy_.Perception().allow_unverified_control_rpc &&
+          IsUnverifiedSlamControlResponse(request.command, result.api_result)) {
+        // This known RPC mismatch does not block operator controls.
+        // accepted means dispatched; execution is explicitly unverified.
+        result.accepted = true;
+        result.execution_unverified = true;
+      }
       if (!result.accepted) {
         result.error = "slam_api_failed";
         std::cerr << "[SLAM] command=" << request.command
@@ -1031,7 +1108,7 @@ class PerceptionService::Impl {
                   << " error=" << result.error
                   << " response=" << result.response << '\n';
       }
-      if (result.accepted &&
+      if (result.accepted && !result.confirmed_by_topics &&
           !WaitForOperationTopicsLocked(request.command,
                                         operation_started_ms)) {
         Json::Value stop_parameter(Json::objectValue);
@@ -1069,6 +1146,7 @@ class PerceptionService::Impl {
       }
     }
     if (result.accepted) {
+      state_.control_confirmation_pending = result.execution_unverified;
       if (request.command == "start_mapping") {
         state_.mode = "mapping";
         state_.map_loaded = false;
@@ -1127,7 +1205,7 @@ class PerceptionService::Impl {
         state_.task_stream_active = true;
       } else if (request.command == "cancel_navigation") {
         // Unitree exposes no dedicated cancel RPC. API 1201 stops motion;
-        // after it succeeds, discard the active Web goal/route while keeping
+        // after dispatch (possibly unverified), discard the Web goal while keeping
         // localization and the loaded map alive for a future new goal.
         state_.mode = "localizing";
         state_.target_set = false;
@@ -1187,6 +1265,9 @@ class PerceptionService::Impl {
     root["initialized"] = state_.initialized;
     root["mock"] = state_.mock;
     root["navigation_enabled"] = state_.navigation_enabled;
+    root["control_confirmation_pending"] = state_.control_confirmation_pending;
+    root["navigation_max_distance_m"] =
+        device_policy_.Perception().navigation_max_distance_m;
     root["initialization_error"] = state_.initialization_error;
     Json::Value services(Json::objectValue);
     const auto& deployment = device_policy_.Perception();
@@ -1719,7 +1800,8 @@ class PerceptionService::Impl {
   }
 
   bool WaitForOperationTopicsLocked(const std::string& command,
-                                    std::int64_t after_ms) const {
+                                    std::int64_t after_ms,
+                                    bool require_global_map = false) const {
     if (state_.mock) return true;
     const bool mapping = command == "start_mapping";
     const bool relocation =
@@ -1732,9 +1814,31 @@ class PerceptionService::Impl {
     for (int attempt = 0; attempt < 50; ++attempt) {
       const auto points_stamp = points->load(std::memory_order_relaxed);
       const auto odom_stamp = odom->load(std::memory_order_relaxed);
+      const auto global_stamp = global_map_last_ms_.load(
+          std::memory_order_relaxed);
       if (points_stamp >= after_ms && odom_stamp >= after_ms &&
           AtomicAgeMs(*points) <= kSlamTopicFreshnessMs &&
-          AtomicAgeMs(*odom) <= kSlamTopicFreshnessMs) {
+          AtomicAgeMs(*odom) <= kSlamTopicFreshnessMs &&
+          (!require_global_map ||
+           (global_stamp >= after_ms &&
+            AtomicAgeMs(global_map_last_ms_) <= kSlamTopicFreshnessMs))) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
+  }
+
+  bool WaitForSlamTopicsToStopLocked(std::int64_t after_ms) const {
+    const auto stale = [](const std::atomic<std::int64_t>& timestamp) {
+      const auto age = AtomicAgeMs(timestamp);
+      return age < 0 || age > kSlamTopicFreshnessMs;
+    };
+    for (int attempt = 0; attempt < 30; ++attempt) {
+      if (MonotonicMs() - after_ms > kSlamTopicFreshnessMs &&
+          stale(mapping_points_last_ms_) && stale(mapping_odom_last_ms_) &&
+          stale(relocation_points_last_ms_) &&
+          stale(relocation_odom_last_ms_)) {
         return true;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1911,6 +2015,10 @@ class PerceptionService::Impl {
       global_map_ = MakeSubscriber<PointCloudMessage>(
           deployment.global_map_topic,
           [this](const PointCloudMessage& message) {
+            if (message.width() > 0 && message.height() > 0) {
+              global_map_last_ms_.store(MonotonicMs(),
+                                        std::memory_order_relaxed);
+            }
             HandleCloud(message, "global_map", true);
           });
     }
@@ -2017,7 +2125,20 @@ class PerceptionService::Impl {
         point.z = -point.z;
       }
     }
-    const auto low_obstacle = DetectLowObstacleForSafety(decoded.points);
+    const auto& deployment = device_policy_.Perception();
+    if (!deployment.raw_lidar_frame.empty()) {
+      const auto& m = deployment.raw_lidar_to_base;
+      for (auto& point : decoded.points) {
+        const auto p = point;
+        point.x = m[0]*p.x + m[1]*p.y + m[2]*p.z + m[3];
+        point.y = m[4]*p.x + m[5]*p.y + m[6]*p.z + m[7];
+        point.z = m[8]*p.x + m[9]*p.y + m[10]*p.z + m[11];
+      }
+      decoded.frame_id = deployment.raw_lidar_frame;
+    }
+    const auto low_obstacle = deployment.low_obstacle_source.empty()
+                                  ? LowObstacleDetection{}
+                                  : DetectLowObstacleForSafety(decoded.points);
     decoded.points = FilterPointCloudForWeb(decoded.points, kRawLiveFilter);
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -2150,6 +2271,7 @@ class PerceptionService::Impl {
       state_.arrived = data.get("is_arrived", false).asBool();
       if (state_.arrived) {
         state_.mode = "arrived";
+        state_.control_confirmation_pending = false;
         state_.target_set = false;
         state_.paused = false;
         state_.progress = 1.0;
@@ -2277,7 +2399,9 @@ class PerceptionService::Impl {
           }
           state_.source_point_count = state_.live_points.size();
           state_.point_source = device_policy_.Perception().raw_point_source;
-          state_.point_frame = "livox_frame";
+          state_.point_frame = device_policy_.Perception().raw_lidar_frame.empty()
+                                   ? "livox_frame"
+                                   : device_policy_.Perception().raw_lidar_frame;
           ++state_.sequence;
         }
       }
@@ -2388,6 +2512,7 @@ class PerceptionService::Impl {
   std::atomic<std::int64_t> raw_lidar_imu_last_ms_{0};
   std::atomic<std::int64_t> mapping_points_last_ms_{0};
   std::atomic<std::int64_t> mapping_odom_last_ms_{0};
+  std::atomic<std::int64_t> global_map_last_ms_{0};
   std::atomic<std::int64_t> relocation_points_last_ms_{0};
   std::atomic<std::int64_t> relocation_odom_last_ms_{0};
   std::atomic<std::int64_t> slam_info_last_ms_{0};

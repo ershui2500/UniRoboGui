@@ -9,7 +9,7 @@ PRODUCT=""
 CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/unirobogui-deploy"
 SDK2_CACHE="$CACHE_ROOT/unitree_sdk2"
 REALSENSE_CACHE="$CACHE_ROOT/librealsense"
-WHEELHOUSE="$CACHE_ROOT/wheelhouse-aarch64-py38"
+WHEELHOUSE=""
 SHERPA_VERSION="1.13.4"
 REMOTE_PROJECT_DIR="/home/unitree/UniRoboGui"
 REMOTE_PROJECT_MARKER="$REMOTE_PROJECT_DIR/.unirobogui-managed"
@@ -22,15 +22,16 @@ usage() {
   if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
     cat <<EOF
 Usage:
-  bash scripts/deploy_from_pc.sh --product g1|r1|go2 [--host USER@HOST]
+  bash scripts/deploy_from_pc.sh --product g1|r1|go2|a2 [--host USER@HOST]
 
-Defaults: G1/R1 unitree@192.168.123.164; GO2 unitree@192.168.123.18.
+Defaults: G1/R1 unitree@192.168.123.164; GO2 unitree@192.168.123.18; A2 unitree@192.168.123.162.
 Use --host to override the selected product address.
 
 Examples:
   bash scripts/deploy.sh from-pc --product g1
   bash scripts/deploy.sh from-pc --product r1
   bash scripts/deploy.sh from-pc --product go2
+  bash scripts/deploy.sh from-pc --product a2
 
 Run this script on an Ubuntu/Linux computer that can access GitHub.
 The computer must also be able to reach the selected robot over SSH.
@@ -38,15 +39,16 @@ EOF
   else
     cat <<EOF
 用法：
-  bash scripts/deploy_from_pc.sh --product g1|r1|go2 [--host USER@HOST]
+  bash scripts/deploy_from_pc.sh --product g1|r1|go2|a2 [--host USER@HOST]
 
-默认地址：G1/R1 unitree@192.168.123.164；GO2 unitree@192.168.123.18。
+默认地址：G1/R1 unitree@192.168.123.164；GO2 unitree@192.168.123.18；A2 unitree@192.168.123.162。
 地址不同时使用 --host 覆盖。
 
 示例：
   bash scripts/deploy.sh from-pc --product g1
   bash scripts/deploy.sh from-pc --product r1
   bash scripts/deploy.sh from-pc --product go2
+  bash scripts/deploy.sh from-pc --product a2
 
 该脚本必须运行在能访问 GitHub 的 Ubuntu/Linux 电脑上。
 电脑还需要能通过 SSH 访问所选机器人。
@@ -57,7 +59,7 @@ EOF
 while (($#)); do
   case "$1" in
     --product)
-      (($# >= 2)) || { ui_err "[错误] --product 缺少 g1|r1|go2" "[ERROR] --product requires g1|r1|go2"; exit 2; }
+      (($# >= 2)) || { ui_err "[错误] --product 缺少产品 ID" "[ERROR] --product requires a product ID"; exit 2; }
       PRODUCT="$2"
       shift
       ;;
@@ -72,8 +74,9 @@ while (($#)); do
   shift
 done
 
-[[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product g1|r1|go2" "[ERROR] --product g1|r1|go2 is required"; exit 2; }
+[[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product" "[ERROR] --product is required"; exit 2; }
 load_product_profile "$PRODUCT"
+WHEELHOUSE="$CACHE_ROOT/wheelhouse-${KOKORO_WHEELHOUSE_SUFFIX}"
 MODEL_NAME="$TTS_MODEL_NAME"
 MODEL_ARCHIVE="$CACHE_ROOT/${MODEL_NAME}.tar.bz2"
 resolve_product_host "$ROBOT"
@@ -197,10 +200,11 @@ remote_preflight() {
   ssh "${SSH_ARGS[@]}" "$ROBOT" "
     set -eu
     test \"\$(id -un)\" = unitree
-    test \"\$(uname -m)\" = aarch64
+    test \"\$(uname -m)\" = '$TARGET_ARCH'
     . /etc/os-release
     test \"\$ID\" = ubuntu
-    test \"\$VERSION_ID\" = 20.04
+    test \"\$VERSION_ID\" = '$TARGET_UBUNTU_VERSION'
+    python3 -c \"import sys; raise SystemExit(sys.version_info[:2] != ($KOKORO_PYTHON_MAJOR, $KOKORO_PYTHON_MINOR))\"
     test -z \"\${ROS_DISTRO:-}\"
     test -z \"\${RMW_IMPLEMENTATION:-}\"
     test -z \"\${CYCLONEDDS_URI:-}\"
@@ -309,11 +313,11 @@ else
 fi
 
 if ${NEEDS_KOKORO}; then
-  info "准备适用于 ${PRODUCT_NAME} aarch64 + CPython 3.8 的离线 Python wheels..." "Preparing offline Python wheels for ${PRODUCT_NAME} aarch64 + CPython 3.8..."
-  help_customer "如果 pip 下载失败，先确认这台联网电脑能访问 PyPI；不要用 x86_64 wheel 代替。" "If pip download fails, verify PyPI access; do not substitute x86_64 wheels."
+  info "准备适用于 ${PRODUCT_NAME} ${TARGET_ARCH} + CPython ${KOKORO_PYTHON_DISPLAY} 的离线 Python wheels..." "Preparing offline Python wheels for ${PRODUCT_NAME} ${TARGET_ARCH} + CPython ${KOKORO_PYTHON_DISPLAY}..."
+  help_customer "如果 pip 下载失败，先确认这台联网电脑能访问 PyPI；请使用匹配目标架构和 Python 版本的 wheel。" "If pip download fails, verify PyPI access; use wheels matching the target architecture and Python version."
   python3 -m pip download --dest "$WHEELHOUSE" --only-binary=:all: \
-    --platform manylinux2014_aarch64 --python-version 38 --implementation cp \
-    --abi cp38 'pip<25' 'setuptools<76' wheel \
+    --platform "$KOKORO_PIP_PLATFORM" --python-version "$KOKORO_PYTHON_VERSION" --implementation cp \
+    --abi "$KOKORO_PYTHON_ABI" 'pip<25' 'setuptools<76' wheel \
     'numpy<2' "sherpa-onnx==${SHERPA_VERSION}"
   ok "离线 wheelhouse 已准备：$WHEELHOUSE" "Offline wheelhouse is ready: $WHEELHOUSE"
 fi
@@ -342,6 +346,7 @@ fi
 
 info "传输 UniRoboGui（不传 .git；保留机器人已有客户配置和 build 目录）..." "Transferring UniRoboGui (excluding .git while preserving robot customer configuration and build directory)..."
 rsync -e "$RSYNC_RSH" -az --info=progress2 \
+  --recursive --from0 --files-from=<(git -C "$PROJECT_DIR" ls-files -z) \
   --exclude '/.git/' \
   --exclude '/.unirobogui-managed' \
   --exclude '/.robot-workspace/' \
@@ -352,6 +357,7 @@ rsync -e "$RSYNC_RSH" -az --info=progress2 \
   --exclude '/G1参考资料/' \
   --exclude '/R1参考资料/' \
   --exclude '/GO2参考资料/' \
+  --exclude '/A2参考资料/' \
   --exclude '/docs/GO2-*' \
   --exclude '/docs/voice/' \
   --exclude '/build/' \
@@ -375,7 +381,7 @@ fi
 if ${NEEDS_KOKORO}; then
   info "传输 Kokoro 模型..." "Transferring the Kokoro model..."
   rsync -e "$RSYNC_RSH" -az --info=progress2 "$MODEL_ARCHIVE" "$ROBOT:/home/unitree/UniRoboGui/tts_models/${MODEL_NAME}.tar.bz2"
-  info "传输 ${PRODUCT_NAME} AArch64/Python 3.8 wheelhouse..." "Transferring the ${PRODUCT_NAME} AArch64/Python 3.8 wheelhouse..."
+  info "传输 ${PRODUCT_NAME} ${TARGET_ARCH}/Python ${KOKORO_PYTHON_DISPLAY} wheelhouse..." "Transferring the ${PRODUCT_NAME} ${TARGET_ARCH}/Python ${KOKORO_PYTHON_DISPLAY} wheelhouse..."
   rsync -e "$RSYNC_RSH" -az --info=progress2 "$WHEELHOUSE/" "$ROBOT:/home/unitree/unirobogui-wheelhouse/"
 fi
 ok "项目与离线依赖已全部传入机器人。" "Project and offline dependencies have been transferred to the robot."

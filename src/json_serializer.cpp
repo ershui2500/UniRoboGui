@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <sstream>
 #include <type_traits>
 #include <vector>
 
@@ -84,6 +85,27 @@ Json::Value SourcesJson(const RobotSnapshot& snapshot,
     result[SourceName(source)] = SourceJson(snapshot.sources[i], now);
   }
   return result;
+}
+
+Json::Value BatteryJson(const BatteryData& data) {
+  Json::Value battery(Json::objectValue);
+  battery["version"] =
+      std::to_string(data.version_high) + "." +
+      std::to_string(data.version_low);
+  battery["function_raw"] =
+      static_cast<Json::UInt>(data.function_raw);
+  battery["soc_pct"] = static_cast<Json::UInt>(data.soc);
+  battery["soh_pct"] = static_cast<Json::UInt>(data.soh);
+  battery["current_raw"] = Json::Int64(data.current_raw);
+  battery["cell_voltage_raw"] =
+      Array(data.cell_voltage_raw);
+  battery["voltage_raw"] = Array(data.voltage_raw);
+  battery["temperature_raw"] = Array(data.temperature_raw);
+  battery["cycle"] = data.cycle;
+  battery["manufacturer_date_raw"] =
+      data.manufacturer_date_raw;
+  battery["state_raw"] = Array(data.state_raw);
+  return battery;
 }
 
 Json::Value MotorJson(const MotorData& motor, std::size_t motor_slot,
@@ -402,24 +424,30 @@ std::string SerializeSnapshot(const RobotProfile& profile,
       static_cast<Json::UInt>(snapshot.low_state_component_state_raw);
   root["robot"] = robot;
 
-  Json::Value battery(Json::objectValue);
-  battery["version"] =
-      std::to_string(snapshot.battery.version_high) + "." +
-      std::to_string(snapshot.battery.version_low);
-  battery["function_raw"] =
-      static_cast<Json::UInt>(snapshot.battery.function_raw);
-  battery["soc_pct"] = static_cast<Json::UInt>(snapshot.battery.soc);
-  battery["soh_pct"] = static_cast<Json::UInt>(snapshot.battery.soh);
-  battery["current_raw"] = Json::Int64(snapshot.battery.current_raw);
-  battery["cell_voltage_raw"] =
-      Array(snapshot.battery.cell_voltage_raw);
-  battery["voltage_raw"] = Array(snapshot.battery.voltage_raw);
-  battery["temperature_raw"] = Array(snapshot.battery.temperature_raw);
-  battery["cycle"] = snapshot.battery.cycle;
-  battery["manufacturer_date_raw"] =
-      snapshot.battery.manufacturer_date_raw;
-  battery["state_raw"] = Array(snapshot.battery.state_raw);
-  root["battery"] = battery;
+  root["battery"] = BatteryJson(snapshot.battery);
+  Json::Value batteries(Json::arrayValue);
+  for (const auto& capability : profile.capabilities) {
+    if (capability.key != CapabilityKey::kTelemetry) continue;
+    const auto descriptors = capability.parameters.find("batteries");
+    if (descriptors == capability.parameters.end()) continue;
+    std::istringstream entries(descriptors->second);
+    std::string entry;
+    while (std::getline(entries, entry, ',')) {
+      const auto first = entry.find(':');
+      const auto second = entry.find(':', first + 1);
+      if (first == std::string::npos || second == std::string::npos) continue;
+      const auto key = entry.substr(first + 1, second - first - 1);
+      const bool secondary = key == "secondary_bms";
+      Json::Value battery = BatteryJson(secondary ? snapshot.secondary_battery : snapshot.battery);
+      battery["id"] = entry.substr(0, first);
+      battery["source"] = key;
+      battery["topic"] = entry.substr(second + 1);
+      battery["state"] = SourceJson(snapshot.sources[static_cast<std::size_t>(
+          secondary ? SourceId::kSecondaryBms : SourceId::kBms)], now);
+      batteries.append(battery);
+    }
+  }
+  root["batteries"] = batteries;
 
   Json::Value odometry(Json::objectValue);
   odometry["error_code"] = Json::UInt64(snapshot.odometry.error_code);

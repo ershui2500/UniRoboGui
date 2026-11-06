@@ -6,8 +6,8 @@ source "${script_dir}/deploy_i18n.sh"
 source "${script_dir}/deploy_product.sh"
 
 usage() {
-  ui_line '用法：bash scripts/start_services.sh --product g1|r1|go2' \
-    'Usage: bash scripts/start_services.sh --product g1|r1|go2'
+  ui_line '用法：bash scripts/start_services.sh --product g1|r1|go2|a2' \
+    'Usage: bash scripts/start_services.sh --product g1|r1|go2|a2'
   ui_line '启动已安装的对应 systemd 服务；不重新安装、不重启正在运行的服务。' \
     'Start the installed product systemd services; does not reinstall or restart running services.'
 }

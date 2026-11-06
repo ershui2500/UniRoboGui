@@ -21,3 +21,9 @@ paths so the control panel can run without an npm resolver or internet access.
 The Unitree model is rendered as supplied. The application does not infer or
 display dexterous-hand joint telemetry that is absent from its 29-joint data
 schema.
+
+## Unitree A2 model
+
+Official A2 URDF and referenced meshes are distributed under the BSD 3-Clause
+license in `unitree/a2_description/LICENSE.unitree_ros`. See
+`unitree/a2_description/SOURCE.md` for the pinned upstream commit.

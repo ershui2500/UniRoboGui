@@ -29,7 +29,7 @@ SYSTEM_PACKAGES=(
 usage() {
   if [[ "$UNIROBOGUI_LANG" == "en" ]]; then
     cat <<'EOF'
-Usage: bash scripts/install.sh --product g1|r1|go2 [options]
+Usage: bash scripts/install.sh --product g1|r1|go2|a2 [options]
 
 Options:
   --sdk2-source DIR     Install a transferred SDK2 source tree when SDK2 is missing
@@ -45,7 +45,7 @@ Options:
 EOF
   else
     cat <<'EOF'
-用法：bash scripts/install.sh --product g1|r1|go2 [选项]
+用法：bash scripts/install.sh --product g1|r1|go2|a2 [选项]
 
 选项：
   --sdk2-source DIR     SDK2 缺失时，从已传入的 SDK2 源码目录安装
@@ -65,7 +65,7 @@ EOF
 while (($#)); do
   case "$1" in
     --product)
-      (($# >= 2)) || { ui_err "错误：--product 需要 g1、r1 或 go2" "ERROR: --product requires g1, r1 or go2"; exit 2; }
+      (($# >= 2)) || { ui_err "错误：--product 需要产品 ID" "ERROR: --product requires a product ID"; exit 2; }
       product="$2"; shift ;;
     --sdk2-source)
       (($# >= 2)) || { ui_err "错误：--sdk2-source 需要目录参数" "ERROR: --sdk2-source requires a directory"; exit 2; }
@@ -85,7 +85,7 @@ while (($#)); do
   shift
 done
 
-[[ -n "${product}" ]] || { ui_err "错误：必须显式指定 --product g1|r1|go2" "ERROR: --product g1|r1|go2 is required"; exit 2; }
+[[ -n "${product}" ]] || { ui_err "错误：必须显式指定 --product" "ERROR: --product is required"; exit 2; }
 load_product_profile "${product}"
 ${NEEDS_REALSENSE} || without_realsense=true
 ${NEEDS_KOKORO} || without_kokoro=true
@@ -254,7 +254,7 @@ install_system_packages() {
 
   warn "缺少 Ubuntu 系统包：${missing[*]}" "Missing Ubuntu system packages: ${missing[*]}"
   if [[ "${install_scope}" == "user" ]]; then
-    fail "用户级安装不能补装缺失的 Ubuntu 系统包。请在交互终端进行系统级安装，或先安装上面列出的 Ubuntu 20.04 arm64 软件包。" "User-local install cannot add missing Ubuntu packages. Rerun in an interactive terminal for system install, or install the listed arm64 Ubuntu 20.04 packages first."
+    fail "用户级安装不能补装缺失的 Ubuntu 系统包。请在交互终端进行系统级安装，或先安装上面列出的 Ubuntu ${TARGET_UBUNTU_VERSION} ${TARGET_ARCH} 软件包。" "User-local install cannot add missing Ubuntu packages. Rerun in an interactive terminal for system install, or install the listed Ubuntu ${TARGET_UBUNTU_VERSION} ${TARGET_ARCH} packages first."
   fi
   sudo -v
   if ! sudo apt-get update \
@@ -262,7 +262,7 @@ install_system_packages() {
     -o Dir::Etc::sourceparts="-" \
     -o APT::Get::List-Cleanup="0"; then
     wifi_help
-    fail "缺少必要软件包且 APT 更新失败。请保持 ${DDS_INTERFACE} 不变，让 wlan0 连接 Ubuntu 20.04 软件源。" "APT update failed while packages are missing. Keep ${DDS_INTERFACE} unchanged and connect wlan0 to an Ubuntu 20.04 mirror."
+    fail "缺少必要软件包且 APT 更新失败。请保持 ${DDS_INTERFACE} 不变，让 wlan0 连接 Ubuntu ${TARGET_UBUNTU_VERSION} 软件源。" "APT update failed while packages are missing. Keep ${DDS_INTERFACE} unchanged and connect wlan0 to an Ubuntu ${TARGET_UBUNTU_VERSION} mirror."
   fi
   sudo apt-get install -y --no-install-recommends "${missing[@]}"
 }
@@ -294,7 +294,7 @@ install_sdk2() {
   if [[ "${SDK_POLICY}" == "verify_existing" ]]; then
     [[ -f "${config}" ]] ||
       fail "${PRODUCT_NAME} 要求复用 ${sdk_prefix} 的现有 SDK2；未找到 ${config}，不会自动覆盖安装。" "${PRODUCT_NAME} reuses the existing SDK2 under ${sdk_prefix}; ${config} is missing and will not be installed automatically."
-    if [[ "$PRODUCT_ID" == r1 || "$PRODUCT_ID" == go2 ]]; then
+    if [[ "$PRODUCT_ID" == r1 || "$PRODUCT_ID" == go2 || "$PRODUCT_ID" == a2 ]]; then
       [[ -f "${sdk_prefix}/include/unitree/robot/r1/audio/audio_client.hpp" &&
          -f "${sdk_prefix}/include/unitree/robot/r1/loco/r1_loco_client.hpp" ]] ||
         fail "${sdk_prefix} 的 SDK2 缺少共享二进制需要的 R1 Audio/Loco 头文件；请安装兼容 SDK。" "SDK2 under ${sdk_prefix} lacks the R1 Audio/Loco headers required by the shared binary. Install a firmware/ABI-compatible SDK first."
@@ -303,6 +303,11 @@ install_sdk2() {
       [[ -f "${sdk_prefix}/include/unitree/robot/go2/vui/vui_client.hpp" &&
          -f "${sdk_prefix}/include/unitree/robot/go2/sport/sport_client.hpp" ]] ||
         fail "SDK2 缺少 GO2 VUI/Sport 头文件。" "SDK2 is missing GO2 VUI/Sport headers."
+    fi
+    if [[ "$PRODUCT_ID" == a2 ]]; then
+      [[ -f "${sdk_prefix}/include/unitree/robot/a2/audio/audio_client.hpp" &&
+         -f "${sdk_prefix}/include/unitree/robot/a2/sport/sport_client.hpp" ]] ||
+        fail "SDK2 缺少 A2 Audio/Sport 头文件。" "SDK2 is missing A2 Audio/Sport headers."
     fi
     compgen -G "${sdk_prefix}/lib/libddsc.so*" >/dev/null &&
       compgen -G "${sdk_prefix}/lib/libddscxx.so*" >/dev/null ||
@@ -562,11 +567,13 @@ stop_current_user_services() {
 [[ "${EUID}" -ne 0 ]] || fail "请以 unitree 用户运行，不要直接使用 root；脚本只在需要时调用 sudo。" "Run this script as unitree, not root; it uses sudo only when needed."
 [[ "$(id -un)" == "unitree" ]] || fail "此安装器仅支持 unitree 账号。" "This installer supports the unitree account only."
 [[ "${repo_dir}" == "${expected_repo}" ]] || fail "请把仓库 clone 到 ${expected_repo}；当前路径为 ${repo_dir}。" "Clone the repository to ${expected_repo}; current path is ${repo_dir}."
-[[ "$(uname -m)" == "aarch64" ]] || fail "预期 ${PRODUCT_NAME} 计算机为 aarch64，当前为 $(uname -m)。" "Expected the ${PRODUCT_NAME} computer to be aarch64, found $(uname -m)."
+[[ "$(uname -m)" == "${TARGET_ARCH}" ]] || fail "预期 ${PRODUCT_NAME} 计算机为 ${TARGET_ARCH}，当前为 $(uname -m)。" "Expected the ${PRODUCT_NAME} computer to be ${TARGET_ARCH}, found $(uname -m)."
 
 source /etc/os-release
-[[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "20.04" ]] ||
-  fail "预期 ${PRODUCT_NAME} 使用 Ubuntu 20.04，当前为 ${PRETTY_NAME:-unknown}。" "Expected Ubuntu 20.04 on ${PRODUCT_NAME}, found ${PRETTY_NAME:-unknown}."
+[[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "${TARGET_UBUNTU_VERSION}" ]] ||
+  fail "预期 ${PRODUCT_NAME} 使用 Ubuntu ${TARGET_UBUNTU_VERSION}，当前为 ${PRETTY_NAME:-unknown}。" "Expected Ubuntu ${TARGET_UBUNTU_VERSION} on ${PRODUCT_NAME}, found ${PRETTY_NAME:-unknown}."
+python3 -c "import sys; raise SystemExit(sys.version_info[:2] != (${KOKORO_PYTHON_MAJOR}, ${KOKORO_PYTHON_MINOR}))" ||
+  fail "预期 Python ${KOKORO_PYTHON_DISPLAY}，当前为 $(python3 --version 2>&1)。" "Expected Python ${KOKORO_PYTHON_DISPLAY}, found $(python3 --version 2>&1)."
 [[ -z "${ROS_DISTRO:-}" && -z "${RMW_IMPLEMENTATION:-}" &&
    -z "${CYCLONEDDS_URI:-}" ]] ||
   fail "请重新建立 SSH 会话，并在 ROS 环境提示时直接按回车；不要加载 ROS/RMW/CycloneDDS。" "Open a fresh SSH session and press Enter at the ROS prompt; do not load ROS/RMW/CycloneDDS."
@@ -578,7 +585,7 @@ if ${check_only}; then
     ui_line "[OK] 所需 Ubuntu 系统包已全部安装。" "[OK] Required Ubuntu system packages are already installed."
   else
     warn "缺少 Ubuntu 系统包：${missing_packages[*]}" "Missing Ubuntu system packages: ${missing_packages[*]}"
-    warn "正式安装需要访问 Ubuntu 20.04 软件源，或先安装这些软件包。" "A real installation will need access to the Ubuntu 20.04 package mirror, or these packages must be installed first."
+    warn "正式安装需要访问 Ubuntu ${TARGET_UBUNTU_VERSION} 软件源，或先安装这些软件包。" "A real installation will need access to the Ubuntu ${TARGET_UBUNTU_VERSION} package mirror, or these packages must be installed first."
   fi
   if [[ "${SDK_POLICY}" == verify_existing ]]; then
     sdk_prefix="${SYSTEM_SDK_PREFIX}"
@@ -693,6 +700,8 @@ if ! ${without_kokoro}; then
 else
   if [[ "$PRODUCT_ID" == go2 ]]; then
     warn "已跳过本地 TTS；GO2 没有原生 TTS 回退，文本播报不可用。" "Local TTS skipped; GO2 has no native TTS fallback and text-to-speech is unavailable."
+  elif [[ "$PRODUCT_ID" == a2 ]]; then
+    warn "已跳过 Kokoro；仍可使用 A2 Unitree 原生 TTS。" "Kokoro was skipped; A2 native Unitree TTS remains available."
   else
     warn "已跳过 Kokoro 安装；仍可使用 Unitree TTS。" "Kokoro installation skipped; Unitree TTS remains available."
   fi
@@ -811,6 +820,8 @@ ui_line "安装范围：${install_scope}（SDK2：${sdk_prefix}）" "Install sco
 ui_line "访问：http://${robot_ip}:8080" "Open: http://${robot_ip}:8080"
 if [[ "${PRODUCT_ID}" == g1 ]]; then
   ui_line "g1-web-control.service 保持现有导航默认值；Web 安全确认与 10 m 目标距离限制仍然生效。" "g1-web-control.service keeps its existing navigation default; Web safety confirmation and the 10 m goal limit still apply."
+elif [[ "${PRODUCT_ID}" == a2 ]]; then
+  ui_line "${WEB_SERVICE} 已启用 JT128 / 导航入口；需要匹配附件与外部 unitree_slam 服务，真实运动由现场操作员验收。" "${WEB_SERVICE} enables JT128 / navigation entry points; matching hardware and the external unitree_slam service are required, and physical motion requires operator validation."
 else
   ui_line "${WEB_SERVICE} 默认不声明 Mid-360，也不启用真实导航。" "${WEB_SERVICE} does not declare Mid-360 or enable real navigation by default."
 fi

@@ -18,6 +18,12 @@ find_path(UNITREE_SDK2_R1_INCLUDE_DIR
 if(NOT UNITREE_SDK2_R1_INCLUDE_DIR)
     message(FATAL_ERROR "Current Unitree SDK2 R1 locomotion/audio headers are required")
 endif()
+find_path(UNITREE_SDK2_A2_INCLUDE_DIR
+    unitree/robot/a2/sport/sport_client.hpp
+    HINTS ${UNITREE_SDK2_R1_INCLUDE_DIR})
+if(NOT UNITREE_SDK2_A2_INCLUDE_DIR)
+    message(FATAL_ERROR "Current Unitree SDK2 A2 sport headers are required")
+endif()
 find_package(CURL QUIET)
 find_package(OpenCV QUIET COMPONENTS core imgproc imgcodecs videoio)
 find_package(realsense2 QUIET)
@@ -30,6 +36,11 @@ if(NOT realsense2_FOUND AND
 endif()
 
 add_library(g1_web_core
+    src/a2_audio_capability.cpp
+    src/a2_joint_debug_policy.cpp
+    src/a2_profile.cpp
+    src/a2_locomotion_adapter.cpp
+    src/a2_device_capability.cpp
     src/camera_service.cpp
     src/control_service.cpp
     src/device_capability.cpp
@@ -63,6 +74,7 @@ target_include_directories(g1_web_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${UNITREE_SDK2_R1_INCLUDE_DIR}
+        ${UNITREE_SDK2_A2_INCLUDE_DIR}
     PRIVATE
         ${JSONCPP_INCLUDE_DIRS}
 )
@@ -129,11 +141,25 @@ if(BUILD_TESTING)
     target_link_directories(g1_web_tests PRIVATE ${JSONCPP_LIBRARY_DIRS})
     target_link_libraries(g1_web_tests PRIVATE g1_web_core ${JSONCPP_LIBRARIES})
     add_test(NAME g1_web_core_tests COMMAND g1_web_tests)
+    add_executable(g1_web_a2_tests tests/test_a2.cpp)
+    target_include_directories(g1_web_a2_tests PRIVATE ${JSONCPP_INCLUDE_DIRS})
+    target_link_libraries(g1_web_a2_tests PRIVATE g1_web_core ${JSONCPP_LIBRARIES})
+    add_test(NAME g1_web_a2_tests COMMAND g1_web_a2_tests)
     add_executable(g1_web_go2_tests tests/test_go2.cpp)
     target_include_directories(g1_web_go2_tests PRIVATE ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(g1_web_go2_tests PRIVATE ${JSONCPP_LIBRARY_DIRS})
     target_link_libraries(g1_web_go2_tests PRIVATE g1_web_core ${JSONCPP_LIBRARIES})
     add_test(NAME g1_web_go2_tests COMMAND g1_web_go2_tests)
+    add_test(NAME g1_web_a2_http_tests
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_a2_http.py
+                     $<TARGET_FILE:g1_web_server> ${CMAKE_CURRENT_SOURCE_DIR}/web)
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE)
+        add_test(NAME unirobo_a2_console_tests COMMAND ${NODE_EXECUTABLE} tests/test_a2_console.js)
+        add_test(NAME unirobo_walking_modes_tests COMMAND ${NODE_EXECUTABLE} tests/test_walking_modes.js)
+        set_tests_properties(unirobo_a2_console_tests unirobo_walking_modes_tests
+            PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
     add_test(NAME g1_web_customer_config_http_tests
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_customer_config_http.py
                      $<TARGET_FILE:g1_web_server> ${CMAKE_CURRENT_SOURCE_DIR}/web)

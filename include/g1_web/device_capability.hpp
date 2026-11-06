@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -41,11 +42,14 @@ struct PerceptionDependency {
 
 struct PerceptionDeploymentPolicy {
   std::string lidar_model;
+  double navigation_max_distance_m{10.0};
   std::string lidar_service;
   std::string slam_service;
   std::vector<PerceptionDependency> dependencies;
   std::string raw_lidar_points_topic;
   std::string raw_lidar_imu_topic;
+  std::string raw_lidar_frame;
+  std::array<float, 12> raw_lidar_to_base{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
   std::string mapping_points_topic;
   std::string mapping_odom_topic;
   std::string relocation_points_topic;
@@ -59,6 +63,7 @@ struct PerceptionDeploymentPolicy {
   bool attachment_required{false};
   bool attachment_declared{true};
   bool raw_input_required{true};
+  bool allow_unverified_control_rpc{false};
   bool rotate_raw_lidar_x_180{false};
 };
 
@@ -85,6 +90,7 @@ struct CameraStreamSpec {
   unsigned int height{0};
   unsigned int fps{0};
   bool allow_runtime_dimensions{false};
+  std::string multicast_interface{};
 };
 
 struct CameraDeploymentPolicy {

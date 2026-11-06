@@ -11,6 +11,8 @@
 
 namespace g1_web {
 
+enum class TeachRemoteSource { kWirelessController, kHgLowStateRaw40 };
+
 enum class JointDebugTransport { kArmSdk, kLowCmd, kGo2LowCmd };
 
 struct JointDebugGain {
@@ -49,6 +51,9 @@ class IJointDebugPolicy {
     return {"ai_sport"};
   }
   virtual bool UsesMotionSwitcherForLowCmd() const { return false; }
+  virtual bool SupportsMotionModeSwitch() const {
+    return UsesMotionSwitcherForLowCmd();
+  }
   virtual bool LowLevelEntryPoseReached(
       const std::vector<float>&) const { return false; }
   virtual bool HighLevelRecoveryPoseReached(
@@ -66,6 +71,11 @@ class IJointDebugPolicy {
   virtual float ArmSdkPeriodSeconds() const { return 0.02F; }
   virtual float ArmSdkWeightRatePerSecond() const { return 0.5F; }
   virtual bool SupportsTeachRemoteControl() const { return true; }
+  virtual TeachRemoteSource TeachRemoteDataSource() const {
+    return TeachRemoteSource::kWirelessController;
+  }
+  virtual bool TeachRemoteProtocolConfirmed() const { return true; }
+  virtual bool TeachRemoteRequiresActiveSession() const { return false; }
   virtual std::string TeachRemoteSecondaryKeyLabel() const { return "F3"; }
   virtual bool SupportsArmActions() const { return false; }
   virtual bool SupportsCustomArmActions() const { return false; }
