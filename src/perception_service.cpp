@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -159,7 +160,9 @@ std::string SafeMapPath(const std::string& name) {
 
 std::string SafeMapDownloadPath(const std::string& name) {
   if (SafeMapPath(name).empty()) return {};
-  return "/home/unitree/.cache/g1-web-control/maps/" + name;
+  const char* home = std::getenv("HOME");
+  return (std::filesystem::path(home && *home ? home : "/home/unitree") /
+          ".cache/g1-web-control/maps" / name).string();
 }
 
 std::string BuildWebMapPcd(const std::vector<PointSample>& points) {

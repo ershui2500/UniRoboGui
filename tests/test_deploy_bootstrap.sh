@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# CTest may inherit the installer's selected paths; fixtures must remain isolated.
+unset UNIROBOGUI_INSTALL_DIR UNIROBOGUI_SDK_PREFIX UNIROBOGUI_SDK2_SOURCE \
+  UNIROBOGUI_REALSENSE_SOURCE UNIROBOGUI_REALSENSE_PREFIX UNIROBOGUI_INSTALL_SDK2
+
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'deployment bootstrap regression: %s\n' "$*" >&2; exit 1; }
 export BOOTSTRAP_LOG="$TMP/bootstrap.log"
-mkdir -p "$TMP/bin" "$TMP/repo/scripts" "$TMP/repo/.git"
-cp "$ROOT/scripts/"{deploy_from_pc.sh,deploy_i18n.sh,deploy_product.sh} "$TMP/repo/scripts/"
+mkdir -p "$TMP/bin" "$TMP/repo with spaces/scripts" "$TMP/repo with spaces/.git"
+cp "$ROOT/scripts/"{deploy_from_pc.sh,deploy_i18n.sh,deploy_product.sh} "$TMP/repo with spaces/scripts/"
 
 # Invoke the complete real from-pc script. These stubs never connect or download.
 cat >"$TMP/bin/git" <<'STUB'
@@ -32,6 +36,7 @@ cat >"$TMP/bin/ssh" <<'STUB'
 #!/usr/bin/env bash
 printf 'ssh %s\n' "$*" >>"$BOOTSTRAP_LOG"
 case "$*" in
+  *'printf "%s" "$HOME"'*) printf '/home/unitree' ;;
   *'stat -c %Y'*) date +%s; date +%s ;;
   *'sudo -n true'*) exit 1 ;;
   *'test -e '*|*'test -d '*|*'test -f '*) exit 1 ;;
@@ -52,7 +57,7 @@ printf 'python3 %s\n' "$*" >>"$BOOTSTRAP_LOG"
 [[ "$*" == '-m pip '* ]] || exit 99
 STUB
 chmod +x "$TMP/bin/"*
-export TEST_REPO="$TMP/repo"
+export TEST_REPO="$TMP/repo with spaces"
 export XDG_CACHE_HOME="$TMP/cache"
 cache="$XDG_CACHE_HOME/unirobogui-deploy"
 mkdir -p "$cache" "$TMP/model/kokoro-multi-lang-v1_1"
@@ -63,7 +68,7 @@ PATH="$TMP/bin:$PATH" bash "$TEST_REPO/scripts/deploy_from_pc.sh" --product go2 
 }
 grep -q 'rsync .*unitree@192.168.123.18:/home/unitree/UniRoboGui/' "$BOOTSTRAP_LOG" || fail 'GO2 project not transferred'
 grep -q 'rsync .*kokoro-multi-lang-v1_1.tar.bz2' "$BOOTSTRAP_LOG" || fail 'FP32 archive not transferred'
-grep -q "deploy_online.sh --product 'go2' --from-transferred-sources --wheelhouse" "$BOOTSTRAP_LOG" || fail 'robot install not reached without sudo'
+grep -q "deploy_online.sh --product 'go2' --from-transferred-sources .*--wheelhouse" "$BOOTSTRAP_LOG" || fail 'robot install not reached without sudo'
 ! grep '^rsync ' "$BOOTSTRAP_LOG" | grep -q -- '--delete' || fail 'fresh destination used delete'
 
 # A2 must transfer x86_64/Python 3.10 resources through the same entry point.
@@ -74,7 +79,24 @@ PATH="$TMP/bin:$PATH" bash "$TEST_REPO/scripts/deploy_from_pc.sh" --product a2 >
 grep -q 'rsync .*unitree@192.168.123.162:/home/unitree/UniRoboGui/' "$BOOTSTRAP_LOG" || fail 'A2 project not transferred'
 grep -q -- '--platform manylinux2014_x86_64' "$BOOTSTRAP_LOG" || fail 'A2 wheel platform incorrect'
 grep -q -- '--python-version 310' "$BOOTSTRAP_LOG" || fail 'A2 Python version incorrect'
-grep -q "deploy_online.sh --product 'a2' --from-transferred-sources --wheelhouse" "$BOOTSTRAP_LOG" || fail 'A2 installer not reached'
+grep -q "deploy_online.sh --product 'a2' --from-transferred-sources .*--wheelhouse" "$BOOTSTRAP_LOG" || fail 'A2 installer not reached'
+
+# Custom destination and dependency paths reach the robot as single, quoted arguments.
+: >"$BOOTSTRAP_LOG"
+custom_project="/home/developer/robot apps/UniRoboGui"
+PATH="$TMP/bin:$PATH" bash "$TEST_REPO/scripts/deploy_from_pc.sh" --product a2 \
+  --host developer@fixture --install-dir "$custom_project" \
+  --install-sdk2 --sdk-prefix "/opt/customer sdk" --sdk2-source "/home/developer/sdk sources" \
+  --realsense-prefix "/opt/custom realsense" >"$TMP/custom.out" 2>&1 || {
+  cat "$TMP/custom.out" >&2; fail 'custom directory PC flow failed';
+}
+grep -Fq "developer@fixture:$custom_project/" "$BOOTSTRAP_LOG" || fail 'custom destination lost'
+grep -Fq "cd '$custom_project'" "$BOOTSTRAP_LOG" || fail 'remote cd is not quoted'
+grep -Fq -- "--sdk-prefix '/opt/customer sdk'" "$BOOTSTRAP_LOG" || fail 'SDK prefix lost remotely'
+grep -Fq -- "--sdk2-source '/home/developer/sdk sources'" "$BOOTSTRAP_LOG" || fail 'SDK sources lost remotely'
+grep -Fq -- "--realsense-prefix '/opt/custom realsense'" "$BOOTSTRAP_LOG" || fail 'RealSense prefix lost remotely'
+grep -Fq -- '--install-sdk2' "$BOOTSTRAP_LOG" || fail 'explicit SDK install lost remotely'
+grep '^rsync ' "$BOOTSTRAP_LOG" | grep -q -- '--protect-args' || fail 'rsync path argument protection missing'
 
 : >"$BOOTSTRAP_LOG"
 if DIRTY_PC=true PATH="$TMP/bin:$PATH" bash "$TEST_REPO/scripts/deploy_from_pc.sh" --product go2 >"$TMP/dirty.out" 2>&1; then

@@ -28,7 +28,7 @@ if ${show_help}; then
   exit 0
 fi
 
-ROOT="${UNIROBOGUI_ROOT:-/home/unitree/UniRoboGui}"
+ROOT="${UNIROBOGUI_ROOT:-$(cd -- "$script_dir/.." && pwd -P)}"
 PYTHON="${PYTHON:-python3}"
 VENV="${KOKORO_VENV:-${ROOT}/tts_kokoro}"
 MODEL_ROOT="${KOKORO_MODEL_ROOT:-${ROOT}/tts_models}"

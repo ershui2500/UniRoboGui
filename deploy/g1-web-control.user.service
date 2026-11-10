@@ -1,3 +1,4 @@
+# Installer renders paths and account; do not copy this default template directly.
 [Unit]
 Description=UniRoboGui G1 Web control and perception workstation (user)
 After=default.target

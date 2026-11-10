@@ -1,3 +1,4 @@
+# Installer renders paths and account; do not copy this default template directly.
 [Unit]
 Description=UniRoboGui local Kokoro TTS service
 After=network.target sound.target

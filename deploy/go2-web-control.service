@@ -1,3 +1,4 @@
+# Installer renders paths and account; do not copy this default template directly.
 [Unit]
 Description=UniRoboGui GO2 Web workstation
 After=network.target

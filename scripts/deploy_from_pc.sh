@@ -11,8 +11,8 @@ SDK2_CACHE="$CACHE_ROOT/unitree_sdk2"
 REALSENSE_CACHE="$CACHE_ROOT/librealsense"
 WHEELHOUSE=""
 SHERPA_VERSION="1.13.4"
-REMOTE_PROJECT_DIR="/home/unitree/UniRoboGui"
-REMOTE_PROJECT_MARKER="$REMOTE_PROJECT_DIR/.unirobogui-managed"
+REMOTE_PROJECT_DIR="${UNIROBOGUI_INSTALL_DIR:-/home/unitree/UniRoboGui}"
+
 STEP_ZH=""
 STEP_EN=""
 LAST_HELP_ZH=""
@@ -54,10 +54,20 @@ EOF
 电脑还需要能通过 SSH 访问所选机器人。
 EOF
   fi
+  print_dependency_help
 }
 
 while (($#)); do
   case "$1" in
+    --install-dir)
+      (($# >= 2)) || { printf '%s\n' '--install-dir requires a directory' >&2; exit 2; }
+      UNIROBOGUI_INSTALL_DIR="$(normalize_deploy_path "$2")" || exit 2
+      export UNIROBOGUI_INSTALL_DIR
+      shift ;;
+    --sdk-prefix|--sdk2-source|--realsense-source|--realsense-prefix)
+      parse_dependency_option "$@" || exit 2
+      shift ;;
+    --install-sdk2) parse_dependency_option "$1" ;;
     --product)
       (($# >= 2)) || { ui_err "[错误] --product 缺少产品 ID" "[ERROR] --product requires a product ID"; exit 2; }
       PRODUCT="$2"
@@ -76,6 +86,11 @@ done
 
 [[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product" "[ERROR] --product is required"; exit 2; }
 load_product_profile "$PRODUCT"
+REMOTE_PROJECT_DIR="$(normalize_deploy_path "${UNIROBOGUI_INSTALL_DIR:-$REMOTE_PROJECT_DIR}")" || exit 2
+REMOTE_PROJECT_MARKER="$REMOTE_PROJECT_DIR/.unirobogui-managed"
+REMOTE_WHEELHOUSE="$(dirname "$REMOTE_PROJECT_DIR")/unirobogui-wheelhouse"
+[[ "${UNIROBOGUI_INSTALL_SDK2:-0}" != 1 ]] || SDK_POLICY=install_if_missing
+
 WHEELHOUSE="$CACHE_ROOT/wheelhouse-${KOKORO_WHEELHOUSE_SUFFIX}"
 MODEL_NAME="$TTS_MODEL_NAME"
 MODEL_ARCHIVE="$CACHE_ROOT/${MODEL_NAME}.tar.bz2"
@@ -199,7 +214,7 @@ remote_preflight() {
   help_customer "如果 SSH 连接失败，请把联网电脑接入机器人的 192.168.123.0/24 网络，确认机器人 IP，并确保能执行：ssh $ROBOT。首次连接需要确认主机指纹，密码请只在 SSH 提示中输入。" "If SSH fails, connect this computer to the robot's 192.168.123.0/24 network, verify the robot IP, and make sure this works: ssh $ROBOT. On first connection, confirm the host fingerprint and enter passwords only at the SSH prompt."
   ssh "${SSH_ARGS[@]}" "$ROBOT" "
     set -eu
-    test \"\$(id -un)\" = unitree
+    test \"\$(id -u)\" -ne 0
     test \"\$(uname -m)\" = '$TARGET_ARCH'
     . /etc/os-release
     test \"\$ID\" = ubuntu
@@ -226,26 +241,44 @@ remote_preflight() {
   if [[ ! -t 0 ]] && ! ssh "${SSH_ARGS[@]}" "$ROBOT" 'sudo -n true' >/dev/null 2>&1; then
     warn "当前无交互 sudo；安装器将检查用户级 systemd、Linger=yes 和系统包是否齐全，不满足时会停止。" "Interactive sudo is unavailable; the installer will require user systemd, Linger=yes and all system packages, and stop if any prerequisite is missing."
   fi
+  local remote_home
+  remote_home="$(ssh "${SSH_ARGS[@]}" "$ROBOT" 'printf "%s" "$HOME"')"
+  remote_home="$(normalize_deploy_path "$remote_home")" || die '无法识别远端 HOME' 'Cannot resolve remote HOME'
+  REMOTE_SDK2_DIR="${UNIROBOGUI_SDK2_SOURCE:-$remote_home/unitree_sdk2}"
+  REMOTE_REALSENSE_DIR="${UNIROBOGUI_REALSENSE_SOURCE:-$remote_home/librealsense}"
+  local source_dir destination
+  for source_dir in "$REMOTE_SDK2_DIR" "$REMOTE_REALSENSE_DIR"; do
+    for destination in "$REMOTE_PROJECT_DIR" "${UNIROBOGUI_SDK_PREFIX:-$SYSTEM_SDK_PREFIX}" "${UNIROBOGUI_REALSENSE_PREFIX:-/usr/local}" "$remote_home"; do
+      [[ "$destination" != "$source_dir" && "$destination" != "$source_dir/"* ]] || \
+        die "源码传输目录不能包含项目、SDK 前缀或 HOME：$source_dir" "Source transfer directory must not contain the project, SDK prefix or HOME: $source_dir"
+    done
+  done
+  [[ "$REMOTE_SDK2_DIR" != "$REMOTE_REALSENSE_DIR" && "$REMOTE_SDK2_DIR" != "$REMOTE_REALSENSE_DIR/"* && "$REMOTE_REALSENSE_DIR" != "$REMOTE_SDK2_DIR/"* ]] || \
+    die 'SDK2 与 librealsense 源码传输目录不能相互包含。' 'SDK2 and librealsense source transfer directories must not overlap.'
   ok "SSH 已连接机器人，${PRODUCT_NAME} 基础环境检查通过。" "SSH connected and the ${PRODUCT_NAME} base environment check passed."
 }
 
 prepare_remote_target() {
   local path="$1" name="$2" dependency="$3" expected="${4:-}"
-  ssh "${SSH_ARGS[@]}" "$ROBOT" "test -e '$path'" || return 0
+  ssh "${SSH_ARGS[@]}" "$ROBOT" "test -e $(remote_quote "$path")" || return 0
 
   if [[ "$dependency" == "true" ]]; then
     local needs_backup=false dirty=""
-    if ! ssh "${SSH_ARGS[@]}" "$ROBOT" "test -d '$path/.git'"; then
+    if ! ssh "${SSH_ARGS[@]}" "$ROBOT" "test -d $(remote_quote "$path/.git")"; then
+      local header=include/unitree/robot/channel/channel_subscriber.hpp
+      [[ "$expected" != realsenseai/librealsense ]] || header=include/librealsense2/rs.hpp
+      ssh "${SSH_ARGS[@]}" "$ROBOT" "test -f $(remote_quote "$path/CMakeLists.txt") && test -f $(remote_quote "$path/$header")" || \
+        die "源码传输目录已有无法识别的内容；请选择空目录：$path" "Source destination contains unrecognized data; choose an empty directory: $path"
       warn "机器人端 $name 不是 Git 仓库，将先完整备份再传入最新官方源码。" "Robot-side $name is not a Git repository; it will be fully backed up before the latest official source is transferred."
       needs_backup=true
     else
       local remote
-      remote="$(ssh "${SSH_ARGS[@]}" "$ROBOT" "git -C '$path' remote get-url origin 2>/dev/null" || true)"
+      remote="$(ssh "${SSH_ARGS[@]}" "$ROBOT" "git -C $(remote_quote "$path") remote get-url origin 2>/dev/null" || true)"
       if [[ -n "$expected" && "$remote" != *"$expected"* ]]; then
         warn "机器人端 $name 的 origin 不是预期官方仓库：$remote" "Robot-side $name origin is not the expected official repository: $remote"
         needs_backup=true
       fi
-      dirty="$(ssh "${SSH_ARGS[@]}" "$ROBOT" "git -C '$path' status --short" || true)"
+      dirty="$(ssh "${SSH_ARGS[@]}" "$ROBOT" "git -C $(remote_quote "$path") status --short" || true)"
       if [[ -n "$dirty" ]]; then
         warn "机器人端 $name 有现场修改/删除，将先完整备份再传入最新官方源码。" "Robot-side $name has local modifications/deletions; it will be fully backed up before the latest official source is transferred."
         echo "$dirty" | head -40 >&2
@@ -255,15 +288,15 @@ prepare_remote_target() {
     if $needs_backup; then
       local stamp
       stamp="$(date +%Y%m%d-%H%M%S)"
-      ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p /home/unitree/.unirobogui-deploy-backups && mv '$path' '/home/unitree/.unirobogui-deploy-backups/$(basename "$path")-$stamp'"
-      ok "$name 旧源码已备份到机器人 /home/unitree/.unirobogui-deploy-backups/" "Previous $name source was backed up on the robot under /home/unitree/.unirobogui-deploy-backups/"
+      ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p \"\$HOME/.unirobogui-deploy-backups\" && mv -- $(remote_quote "$path") \"\$HOME/.unirobogui-deploy-backups/\"$(remote_quote "$(basename "$path")-$stamp")"
+      ok "$name 旧源码已备份到机器人登录账号的 ~/.unirobogui-deploy-backups/" "Previous $name source was backed up under the robot login account’s ~/.unirobogui-deploy-backups/"
     fi
     return 0
   fi
 
-  if ssh "${SSH_ARGS[@]}" "$ROBOT" "test -d '$path/.git'"; then
+  if ssh "${SSH_ARGS[@]}" "$ROBOT" "test -d $(remote_quote "$path/.git")"; then
     local dirty
-    dirty="$(ssh "${SSH_ARGS[@]}" "$ROBOT" "git -C '$path' status --short" || true)"
+    dirty="$(ssh "${SSH_ARGS[@]}" "$ROBOT" "git -C $(remote_quote "$path") status --short" || true)"
     if [[ -n "$dirty" ]]; then
       echo "$dirty" >&2
       die "机器人端 $name 项目源码有未提交修改。为避免覆盖业务代码，请先备份/提交后重试。" "Robot-side $name project source has uncommitted changes. Back up or commit them before retrying to avoid overwriting project code."
@@ -323,29 +356,29 @@ if ${NEEDS_KOKORO}; then
 fi
 
 step "6/8 检查机器人现场源码" "6/8 Check robot-side source trees"
-prepare_remote_target "/home/unitree/UniRoboGui" "UniRoboGui" false
+prepare_remote_target "$REMOTE_PROJECT_DIR" "UniRoboGui" false
 if [[ "$SDK_POLICY" != verify_existing ]]; then
-  prepare_remote_target "/home/unitree/unitree_sdk2" "Unitree SDK2" true "unitreerobotics/unitree_sdk2"
+  prepare_remote_target "$REMOTE_SDK2_DIR" "Unitree SDK2" true "unitreerobotics/unitree_sdk2"
 fi
 if ${NEEDS_REALSENSE}; then
-  prepare_remote_target "/home/unitree/librealsense" "librealsense2" true "realsenseai/librealsense"
+  prepare_remote_target "$REMOTE_REALSENSE_DIR" "librealsense2" true "realsenseai/librealsense"
 fi
 
 step "7/8 通过 SSH/rsync 传输项目和全部 GitHub/PyPI 资源" "7/8 Transfer the project and GitHub/PyPI resources via SSH/rsync"
 help_customer "传输过程中如果断线，请检查电脑与机器人网线/交换机连接；重新运行脚本会继续同步，不需要重新下载全部资源。" "If the transfer disconnects, check the Ethernet/switch connection between the computer and robot. Rerunning continues synchronization without redownloading all resources."
-ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p /home/unitree/UniRoboGui"
+ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p -- $(remote_quote "$REMOTE_PROJECT_DIR")"
 if ${NEEDS_KOKORO}; then
-  ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p /home/unitree/UniRoboGui/tts_models /home/unitree/unirobogui-wheelhouse"
+  ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p -- $(remote_quote "$REMOTE_PROJECT_DIR/tts_models") $(remote_quote "$REMOTE_WHEELHOUSE")"
 fi
 if [[ "$SDK_POLICY" != verify_existing ]]; then
-  ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p /home/unitree/unitree_sdk2"
+  ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p -- $(remote_quote "$REMOTE_SDK2_DIR")"
 fi
 if ${NEEDS_REALSENSE}; then
-  ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p /home/unitree/librealsense"
+  ssh "${SSH_ARGS[@]}" "$ROBOT" "mkdir -p -- $(remote_quote "$REMOTE_REALSENSE_DIR")"
 fi
 
 info "传输 UniRoboGui（不传 .git；保留机器人已有客户配置和 build 目录）..." "Transferring UniRoboGui (excluding .git while preserving robot customer configuration and build directory)..."
-rsync -e "$RSYNC_RSH" -az --info=progress2 \
+rsync -e "$RSYNC_RSH" -az --protect-args --info=progress2 \
   --recursive --from0 --files-from=<(git -C "$PROJECT_DIR" ls-files -z) \
   --exclude '/.git/' \
   --exclude '/.unirobogui-managed' \
@@ -366,35 +399,45 @@ rsync -e "$RSYNC_RSH" -az --info=progress2 \
   --exclude '/tts_kokoro/' \
   "$PROJECT_DIR/" "$ROBOT:$REMOTE_PROJECT_DIR/"
 project_revision="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
-ssh "${SSH_ARGS[@]}" "$ROBOT" "printf '%s\\n' '$project_revision' > '$REMOTE_PROJECT_MARKER'"
+ssh "${SSH_ARGS[@]}" "$ROBOT" "printf '%s\\n' '$project_revision' > $(remote_quote "$REMOTE_PROJECT_MARKER")"
 
 if [[ "$SDK_POLICY" != verify_existing ]]; then
   info "传输最新 Unitree SDK2..." "Transferring the latest Unitree SDK2..."
-  rsync -e "$RSYNC_RSH" -az --delete --info=progress2 --exclude '/build-g1/' "$SDK2_CACHE/" "$ROBOT:/home/unitree/unitree_sdk2/"
+  rsync -e "$RSYNC_RSH" -az --protect-args --delete --info=progress2 --exclude '/build-g1/' "$SDK2_CACHE/" "$ROBOT:$REMOTE_SDK2_DIR/"
 fi
 
 if ${NEEDS_REALSENSE}; then
   info "传输最新 librealsense2..." "Transferring the latest librealsense2..."
-  rsync -e "$RSYNC_RSH" -az --delete --info=progress2 --exclude '/build-g1/' "$REALSENSE_CACHE/" "$ROBOT:/home/unitree/librealsense/"
+  rsync -e "$RSYNC_RSH" -az --protect-args --delete --info=progress2 --exclude '/build-g1/' "$REALSENSE_CACHE/" "$ROBOT:$REMOTE_REALSENSE_DIR/"
 fi
 
 if ${NEEDS_KOKORO}; then
   info "传输 Kokoro 模型..." "Transferring the Kokoro model..."
-  rsync -e "$RSYNC_RSH" -az --info=progress2 "$MODEL_ARCHIVE" "$ROBOT:/home/unitree/UniRoboGui/tts_models/${MODEL_NAME}.tar.bz2"
+  rsync -e "$RSYNC_RSH" -az --protect-args --info=progress2 "$MODEL_ARCHIVE" "$ROBOT:$REMOTE_PROJECT_DIR/tts_models/${MODEL_NAME}.tar.bz2"
   info "传输 ${PRODUCT_NAME} ${TARGET_ARCH}/Python ${KOKORO_PYTHON_DISPLAY} wheelhouse..." "Transferring the ${PRODUCT_NAME} ${TARGET_ARCH}/Python ${KOKORO_PYTHON_DISPLAY} wheelhouse..."
-  rsync -e "$RSYNC_RSH" -az --info=progress2 "$WHEELHOUSE/" "$ROBOT:/home/unitree/unirobogui-wheelhouse/"
+  rsync -e "$RSYNC_RSH" -az --protect-args --info=progress2 "$WHEELHOUSE/" "$ROBOT:$REMOTE_WHEELHOUSE/"
 fi
 ok "项目与离线依赖已全部传入机器人。" "Project and offline dependencies have been transferred to the robot."
 
 step "8/8 在机器人端自动编译、安装并验收" "8/8 Build, install, and verify automatically on the robot"
-ui_line "[信息] 后续日志来自机器人端。sudo 需要密码时，请按终端提示输入机器人 unitree 用户密码。" "[INFO] The following logs come from the robot. If sudo requests a password, enter the robot unitree user's password at the terminal prompt."
+ui_line "[信息] 后续日志来自机器人端。sudo 需要密码时，请按终端提示输入机器人登录账号密码。" "[INFO] The following logs come from the robot. If sudo requests a password, enter the robot login account password at the terminal prompt."
 help_customer "如果远程部署失败，请直接查看下方机器人脚本输出；它会标出具体步骤、失败命令和需要处理的问题。" "If remote deployment fails, inspect the robot-side script output below; it identifies the step, failed command, and required corrective action."
 remote_args="--product '$PRODUCT_ID' --from-transferred-sources"
+remote_args+=" --sdk2-source $(remote_quote "$REMOTE_SDK2_DIR") --realsense-source $(remote_quote "$REMOTE_REALSENSE_DIR")"
+for option in SDK_PREFIX REALSENSE_PREFIX; do
+  variable="UNIROBOGUI_$option"
+  value="${!variable:-}"
+  if [[ -n "$value" ]]; then
+    flag="${option,,}"
+    remote_args+=" --${flag//_/-} $(remote_quote "$value")"
+  fi
+done
+[[ "${UNIROBOGUI_INSTALL_SDK2:-0}" != 1 ]] || remote_args+=" --install-sdk2"
 if ${NEEDS_KOKORO}; then
-  remote_args+=" --wheelhouse /home/unitree/unirobogui-wheelhouse"
+  remote_args+=" --wheelhouse $(remote_quote "$REMOTE_WHEELHOUSE")"
 fi
 ssh -t "${SSH_ARGS[@]}" "$ROBOT" \
-  "cd /home/unitree/UniRoboGui && UNIROBOGUI_LANG='$UNIROBOGUI_LANG' bash scripts/deploy_online.sh $remote_args"
+  "cd $(remote_quote "$REMOTE_PROJECT_DIR") && UNIROBOGUI_LANG='$UNIROBOGUI_LANG' bash scripts/deploy_online.sh $remote_args"
 
 echo
 line

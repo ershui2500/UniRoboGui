@@ -152,7 +152,7 @@ Supported commands:
 | `from-pc` | Ubuntu/Linux PC that can reach GitHub and SSH to the robot | When the robot cannot reach GitHub: prepare resources on the PC, transfer them with SSH/rsync, then automatically install and verify on the robot | Yes |
 | `check` | Robot | Check OS/architecture, DDS interface, packages, SDK, helpers, and other deployment prerequisites | No; it does not install or restart services |
 
-Supported options:
+Supported options (see [custom paths](#custom-project-and-dependency-paths) for directory and dependency options):
 
 | Option | Required | Accepted values | Default / scope | Meaning |
 | --- | --- | --- | --- | --- |
@@ -185,7 +185,7 @@ Legacy `deploy_g1_*` / `install_g1*` Chinese and English scripts remain for one 
 
 ### 3.1 Before deployment
 
-Before cloning, the machine running `git clone` needs Git. For Method B, the online PC also needs `curl`, OpenSSH client, `rsync`, `python3` and `python3 -m pip`. On that PC, check with `command -v git curl ssh rsync python3` and `python3 -m pip --version`. If missing, install Ubuntu packages `git curl openssh-client rsync python3 python3-pip` on the PC first. Do not run robot commands in the PC terminal: a robot terminal means an SSH session logged in as `unitree` (or a terminal on the robot itself).
+Before cloning, the machine running `git clone` needs Git. For Method B, the online PC also needs `curl`, OpenSSH client, `rsync`, `python3` and `python3 -m pip`. On that PC, check with `command -v git curl ssh rsync python3` and `python3 -m pip --version`. If missing, install Ubuntu packages `git curl openssh-client rsync python3 python3-pip` on the PC first. Do not run robot commands in the PC terminal: a robot terminal means an SSH session logged in with a regular robot account (examples default to `unitree`) (or a terminal on the robot itself).
 
 Method B transfers upstream sources/models/wheels, not Ubuntu system packages. Before an offline install, arrange any missing Ubuntu 20.04 arm64 (G1/R1/GO2) or Ubuntu 22.04 amd64 (A2) packages on the robot; the robot-side `check` lists missing prerequisites.
 
@@ -196,11 +196,11 @@ Target environment:
 | --- | --- |
 | Robot | Unitree G1 / R1 / GO2 / A2 currently registered in RobotRegistry |
 | PC2 OS | G1/R1/GO2: Ubuntu 20.04 AArch64; A2: Ubuntu 22.04 x86_64 |
-| User | `unitree` |
+| User | Regular account; examples default to `unitree` |
 | DDS interface | G1: `eth0`; R1: `eth10`; GO2 / A2: default `eth0`, verify on site |
-| SDK prefix | G1: `/opt/unitree_robotics` or user prefix; R1/GO2/A2: existing `/usr/local` |
+| SDK prefix | G1: `/opt/unitree_robotics` or user prefix; R1/GO2/A2: default `/usr/local`, customizable |
 | Web service | G1: `g1-web-control.service`; R1: `r1-web-control.service`; GO2: `go2-web-control.service`; A2: `a2-web-control.service` |
-| Project directory | `/home/unitree/UniRoboGui` |
+| Project directory | Recommended `/home/unitree/UniRoboGui`; any accessible directory is supported |
 | Camera | G1 D435i/librealsense; R1 EDU fixed camera chain/helper; GO2 / A2 fixed RGB, no depth |
 | Browser client | Computer/tablet with network reachability to the robot |
 
@@ -208,8 +208,8 @@ When SSH login displays a ROS environment selection prompt, press Enter and sele
 
 The installer chooses one of two service scopes:
 
-- **Interactive sudo available:** install the selected product's system service and controlled camera helper. G1 can install/reuse SDK2; R1/GO2/A2 only validate and reuse `/usr/local` and never overwrites it automatically.
-- **Interactive sudo unavailable:** user services are allowed only when system packages are complete, `systemctl --user` works, and `Linger=yes`. G1 may use a user SDK prefix; R1/GO2/A2 still reuse `/usr/local`.
+- **Interactive sudo available:** install the selected product's system service and controlled camera helper. G1 can install/reuse SDK2; R1/GO2/A2 validate and reuse the selected SDK by default; all products support custom prefixes and explicit source installation without overwriting an existing SDK.
+- **Interactive sudo unavailable:** user services are allowed only when system packages are complete, `systemctl --user` works, and `Linger=yes`. G1 may use a user SDK prefix; all products can reuse custom SDK prefixes or explicitly install into writable prefixes.
 
 External resources differ by method:
 
@@ -217,6 +217,51 @@ External resources differ by method:
 - **R1:** defaults to Unitree native TTS, does not install Kokoro, does not declare Mid-360, and does not enable real navigation.
 - **GO2:** reuses existing `/usr/local` SDK, installs Kokoro FP32 and its own TTS unit, and skips RealSense/helpers, optional LiDAR and real navigation. Complete the [GO2 prerequisites](docs/go2-guide.en.md#3-deployment), especially clock and actual DDS interface checks, before either method.
 - **A2:** targets the legged A2 user development unit (Ubuntu 22.04 x86_64 / Python 3.10). Deploy with `--product a2`, reusing the existing `/usr/local` SDK; native Unitree TTS is the default, with Kokoro FP32 installed as an option. Current service templates enable JT128/navigation and require the matching attachment and external `unitree_slam` service.
+
+### Custom project and dependency paths
+
+`/home/unitree/UniRoboGui` is a recommended default, not a requirement. Any regular account with access to the selected directories can deploy. System services require sudo; user services still require complete system packages and `Linger=yes`.
+
+**Deploy on the robot** from any checkout location. The script detects its project root independently of the current working directory:
+
+```bash
+PROJECT_DIR="$HOME/robot apps/UniRoboGui"
+git clone https://github.com/ershui2500/UniRoboGui.git "$PROJECT_DIR"
+bash "$PROJECT_DIR/scripts/deploy.sh" install --product a2 --lang en
+```
+
+**Deploy from a PC** using an absolute robot destination and the actual SSH account or alias:
+
+```bash
+bash scripts/deploy.sh from-pc --product a2 --host developer@robot \
+  --install-dir "/home/developer/robot apps/UniRoboGui" \
+  --sdk-prefix /opt/customer-sdk --lang en
+```
+
+Without `--install-dir`, the destination remains `/home/unitree/UniRoboGui`. Replace the example product, account, host and paths with your own values.
+
+| Option | Meaning |
+| --- | --- |
+| `--install-dir DIR` | `from-pc` only: robot project directory; local deployment uses the script's checkout |
+| `--sdk-prefix DIR` | Installed SDK2 prefix or a new installation prefix, not the SDK source tree |
+| `--sdk2-source DIR` | SDK2 sources on the robot; defaults to the login account's `$HOME/unitree_sdk2`; `from-pc` transfers its PC cache here when SDK installation is requested |
+| `--install-sdk2` | Allow source installation for all products when missing; reuse complete SDKs and refuse to overwrite incomplete installations |
+| `--realsense-source DIR` | G1 librealsense sources on the robot; `from-pc` transfers prepared sources here |
+| `--realsense-prefix DIR` | librealsense installation/search prefix; default `/usr/local` |
+
+Without an explicit SDK prefix, deployment checks product defaults, the current account's user prefix, common locations and `CMAKE_PREFIX_PATH`. Interactive installation asks for a prefix when no SDK is found. Installing a missing R1/GO2/A2 SDK requires confirmation, or `--install-sdk2` for unattended use. G1 keeps its existing install-if-missing behavior.
+
+For example, install SDK2 into a separate prefix on the robot:
+
+```bash
+bash scripts/deploy.sh install --product a2 --lang en \
+  --install-sdk2 --sdk-prefix "$HOME/.local/unitree_sdk2" \
+  --sdk2-source "$HOME/sources/unitree_sdk2"
+```
+
+Use absolute paths and quote spaces. Root directories, control characters, colons and semicolons are rejected. Path options on `from-pc` always refer to the robot; PC download caches are managed automatically. Pass the same dependency options again on subsequent deployments; script self-updates preserve them. Use `deploy.sh check --product a2 --sdk-prefix /path/to/sdk --lang en` for a read-only preflight.
+
+The installer renders systemd units with the actual account, project root and library paths. Do not copy default `deploy/` templates directly. `KOKORO_VENV` and `KOKORO_MODEL_ROOT` remain supported and otherwise follow the project directory. Redeploy after moving an installation; existing build directories and virtual environments are not portable artifacts. The external SLAM service's `/home/unitree/testN.pcd` convention is independent of the project location.
 
 ### 3.2 Method A: the robot can access GitHub
 
@@ -251,7 +296,7 @@ Then run **only the command for your robot**:
 | GO2 | `bash scripts/deploy.sh install --product go2 --lang en` |
 | A2 | `bash scripts/deploy.sh install --product a2 --lang en` |
 
-The script validates the selected product's Ubuntu version, CPU architecture and `unitree` account, DDS interface, and clean ROS/RMW state; protects dirty source trees; handles SDK/camera/TTS dependencies according to the product profile; then performs a Release build, full CTest, `ldd`, exact service installation, and read-only runtime acceptance. G1 keeps the existing SDK2/librealsense/Kokoro flow; R1 validates the existing `/usr/local` SDK and skips automatic librealsense/Kokoro installation.
+The script validates the selected product's Ubuntu version, CPU architecture and regular deployment account, DDS interface, and clean ROS/RMW state; protects dirty source trees; handles SDK/camera/TTS dependencies according to the product profile; then performs a Release build, full CTest, `ldd`, exact service installation, and read-only runtime acceptance. G1 keeps the existing SDK2/librealsense/Kokoro flow; R1 validates the selected SDK prefix by default and skips automatic librealsense/Kokoro installation.
 
 If the first step shows that GitHub is unreachable, the script stops and tells you to use Method B.
 
@@ -425,14 +470,14 @@ These are repository deployment defaults; verify interfaces, attachments and ava
 | --- | --- | --- | --- | --- |
 | Semantic joints | 29 | 26 | 12 | 12 |
 | DDS interface | `eth0` | `eth10` | `eth0` (verify on site) | `eth0` (verify on site) |
-| SDK prefix | `/opt/unitree_robotics` or user prefix | existing `/usr/local`; validate only, never auto-overwrite | `/usr/local`; validate existing compatible SDK, never overwrite | Existing `/usr/local`; validate only |
+| SDK prefix | `/opt/unitree_robotics` or user prefix | default `/usr/local`; customizable, explicit source install supported | default `/usr/local`; customizable, no SDK overwrite | default `/usr/local`; customizable, no SDK overwrite |
 | Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` | `a2-web-control.service` |
 | Camera | D435i/librealsense + G1 helper | fixed R1 EDU RGB/Depth + R1 helper | Fixed native RGB; depth unsupported; no privileged helper | Fixed native RGB; no depth or privileged helper |
 | Default TTS | Kokoro + Unitree fallback | Unitree native TTS | Kokoro FP32; no native fallback | Unitree native + optional Kokoro FP32 |
 | LiDAR/navigation default | existing G1 Mid-360/navigation configuration | no Mid-360 declaration and no real navigation | No optional LiDAR declaration or real navigation by default | JT128/navigation enabled; requires attachment and external service |
 | Binary | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` | `build/g1_web_server --robot a2` |
 
-G1/R1/GO2 use Ubuntu 20.04 AArch64; A2 uses Ubuntu 22.04 x86_64. All four share the `unitree` account, `/home/unitree/UniRoboGui`, and a modern Chromium-class browser. Runtime Manifest/Capability state and field hardware remain the source of truth for actual availability.
+G1/R1/GO2 use Ubuntu 20.04 AArch64; A2 uses Ubuntu 22.04 x86_64. All four support regular deployment accounts and custom project directories; examples default to `unitree` and `/home/unitree/UniRoboGui`. Use a modern Chromium-class browser. Runtime Manifest/Capability state and field hardware remain the source of truth for actual availability.
 
 Robot firmware, SDK2, LiDAR services, device nodes, and network addresses can differ by robot batch and field configuration. Verify against the actual robot.
 

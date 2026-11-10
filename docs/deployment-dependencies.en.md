@@ -1,5 +1,11 @@
 # UniRoboGui G1 / R1 / GO2 / A2 Deployment and Troubleshooting Guide
 
+## Custom paths and accounts
+
+The project location is detected from the script. `/home/unitree/UniRoboGui`, `/opt/unitree_robotics` and `/usr/local` are defaults, not mandatory locations. Other regular accounts are supported. See [custom deployment paths](../README.en.md#custom-project-and-dependency-paths) for `--install-dir`, `--sdk-prefix`, `--sdk2-source`, `--install-sdk2` and RealSense options. These options also work through legacy wrappers.
+
+SDK reuse is the default. R1/GO2/A2 can explicitly install a missing SDK using `--install-sdk2`; an incompatible or incomplete existing SDK is never overwritten. Build/link/runtime verification uses the selected prefix. Firmware compatibility and on-robot validation remain required.
+
 [简体中文](deployment-dependencies.md) | **English**
 
 This guide covers Unitree G1, R1, GO2 and A2. They share one deployment entry point, build flow, and safety checks. Product-specific differences such as network interfaces, SDK paths, services, cameras, TTS, and optional attachments are kept in controlled product profiles instead of duplicated deployment guides.
@@ -43,13 +49,13 @@ These are repository deployment defaults; verify interfaces, attachments and ava
 | --- | --- | --- | --- | --- |
 | Default SSH target | `unitree@192.168.123.164` | `unitree@192.168.123.164` | `unitree@192.168.123.18` | `unitree@192.168.123.162` (user development unit) |
 | DDS interface | `eth0` | `eth10` | `eth0` (verify on site) | `eth0` (verify on site) |
-| SDK / CMake prefix | `/opt/unitree_robotics`; user-local installs may use `/home/unitree/.local/unitree_robotics` | `/usr/local`; validate the existing installation and never overwrite it automatically | `/usr/local`; validate existing compatible SDK, never overwrite | Existing `/usr/local`; validate only |
+| SDK / CMake prefix | Default `/opt/unitree_robotics` or `$HOME/.local/unitree_robotics`; customizable | Default `/usr/local`; customizable | Default `/usr/local`; customizable | Default `/usr/local`; customizable |
 | Runtime library path | SDK `prefix/lib` + `/usr/local/lib`; reuse existing librealsense when needed | `/usr/local/lib` | `/usr/local/lib` | `/usr/local/lib` |
 | Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` | `a2-web-control.service` |
 | systemd user unit | `deploy/g1-web-control.user.service` | `deploy/r1-web-control.user.service` | `deploy/go2-web-control.user.service` | `deploy/a2-web-control.user.service` |
 | Camera | D435i + librealsense + `g1-web-first-person-service` | Fixed R1 EDU RGB/Depth sources + `r1-web-camera-service` | Fixed native RGB; depth unsupported; no privileged helper | Fixed native RGB; no depth or privileged helper |
 | Default TTS | Kokoro + Unitree fallback | Unitree native TTS | Kokoro FP32; no native fallback | Unitree native + optional Kokoro FP32 |
-| SDK installation policy | Install from the official SDK2 source when missing | Validate the existing R1 headers, CMake package, and CycloneDDS libraries; stop if they are missing | `/usr/local`; validate existing compatible SDK, never overwrite | Validate compatible A2 SDK; stop if missing, never overwrite |
+| SDK installation policy | Reuse first, install if missing | Reuse first; explicit `--install-sdk2` for source install | Reuse first; explicit `--install-sdk2` for source install | Reuse first; explicit `--install-sdk2` for source install |
 | Mid-360 / navigation | Keep the existing G1 configuration and service defaults | Do not declare Mid-360 or enable real navigation by default | No optional LiDAR declaration or real navigation by default | JT128/navigation enabled; requires matching attachment and external service |
 | Binary | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` | `build/g1_web_server --robot a2` |
 
@@ -63,7 +69,7 @@ Products using local Kokoro also check Python initialization before compilation.
 
 The deployment scripts follow the same sequence for all four products:
 
-1. Validate G1/R1/GO2: Ubuntu 20.04 AArch64; A2: Ubuntu 22.04 x86_64, the `unitree` user, the selected DDS interface, and the absence of ROS/RMW/CycloneDDS environment contamination.
+1. Validate G1/R1/GO2: Ubuntu 20.04 AArch64; A2: Ubuntu 22.04 x86_64, a regular deployment account, the selected DDS interface, and the absence of ROS/RMW/CycloneDDS environment contamination.
 2. Check the source tree for local modifications. Stop instead of overwriting uncommitted project code.
 3. Validate or prepare SDK, camera, and TTS dependencies according to the selected product profile.
 4. Perform a Release build and run the complete CTest suite.
@@ -94,8 +100,8 @@ G1 keeps the existing baseline:
 R1 uses these boundaries:
 
 - The DDS interface is fixed to `eth10`.
-- The SDK/CMake prefix is fixed to `/usr/local`.
-- The deployer validates only the R1 Audio/Loco headers required by this project, the `unitree_sdk2` CMake package, and the `libddsc` / `libddscxx` runtime libraries. If any are missing, deployment stops instead of overwriting `/usr/local`.
+- The SDK/CMake prefix defaults to `/usr/local`; override it with `--sdk-prefix`.
+- The deployer validates the required headers, `unitree_sdk2` CMake package and CycloneDDS libraries in the selected prefix. Missing SDKs require a path or explicit `--install-sdk2`; existing incompatible SDKs are not overwritten.
 - Unitree native TTS is the default; Kokoro is not installed.
 - System-level installation uses `r1-web-camera-service`. If a user-level deployment has no helper, the related Camera Capability is downgraded according to runtime evidence.
 - `r1-web-control.service` explicitly includes `--robot r1` and does not include `--device mid360` or `--enable-navigation`.
@@ -104,7 +110,7 @@ R1 uses these boundaries:
 ### GO2 deployment notes
 
 - Confirm the development-capable model, reliable clock and actual wired DDS interface using the [GO2 guide](go2-guide.en.md#3-deployment). The repository defaults to `eth0`; there is no `--interface` deploy option.
-- Reuse the existing compatible `/usr/local` SDK; missing Go2 headers/CMake/DDS libraries stop deployment.
+- Reuse a compatible SDK at the selected prefix (default `/usr/local`); missing SDKs require another path or explicit `--install-sdk2`.
 - Install `go2-web-control.service` and `go2-local-tts.service` in the selected system/user scope. The default model is FP32 `kokoro-multi-lang-v1_1/model.onnx`, not the G1 INT8 model.
 - Do not install RealSense/camera helpers or enable optional LiDAR/navigation by default. Depth and ASR/native TTS/built-in LLM are unavailable.
 - The PC flow transfers the model and AArch64/Python 3.8 wheelhouse, but does not bundle every Ubuntu system package. Missing arm64 system packages still require a compatible package source.
@@ -131,7 +137,7 @@ bash scripts/deploy.sh check --product go2 --lang en
 bash scripts/deploy.sh check --product a2 --lang en
 ~~~
 
-`check` does not install packages, modify files, or stop/start services. It validates the operating system, architecture, selected network interface, required packages, SDK state, camera-helper state, and other deployment prerequisites. On R1/GO2/A2, the SDK is validated directly under `/usr/local`. A successful preflight is not runtime or motion acceptance.
+`check` does not install packages, modify files, or stop/start services. It validates the operating system, architecture, selected network interface, required packages, SDK state, camera-helper state, and other deployment prerequisites. On R1/GO2/A2, the SDK is validated at the selected prefix (default `/usr/local`). A successful preflight is not runtime or motion acceptance.
 
 ## 7. Post-deployment acceptance
 
@@ -142,7 +148,7 @@ curl --noproxy '*' -fsS http://127.0.0.1:8080/api/health
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/robot/manifest
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/control/status
 ss -ltnp 'sport = :8080'
-ldd /home/unitree/UniRoboGui/build/g1_web_server | grep -E 'ddsc|ddscxx|realsense|not found'
+ldd ./build/g1_web_server | grep -E 'ddsc|ddscxx|realsense|not found'
 ~~~
 
 Verify that:
@@ -171,7 +177,7 @@ bash scripts/deploy.sh from-pc --product a2 --lang en
 
 ### R1 SDK validation fails
 
-If the required R1 headers, `unitree_sdk2Config.cmake`, `libddsc`, or `libddscxx` are missing under `/usr/local`, deployment stops. The generic deployer intentionally does not reinstall or overwrite `/usr/local`; restore an SDK compatible with the robot firmware/ABI first.
+If SDK validation fails, verify the selected `--sdk-prefix` (default `/usr/local`). Use a firmware/ABI-compatible SDK; to install into a separate prefix, add `--install-sdk2 --sdk-prefix /new/prefix`. Existing SDK files are not overwritten.
 
 ### `undefined symbol: ddsi_sertype_v0`
 

@@ -153,7 +153,7 @@ bash scripts/deploy.sh <命令> --product <g1|r1|go2|a2> [可选参数]
 | `from-pc` | 能访问 GitHub 且能 SSH 到机器人的 Ubuntu/Linux 电脑 | 机器人不能访问 GitHub时，由电脑准备资源并通过 SSH/rsync 传给机器人，再自动完成机器人端安装与验收 | 是 |
 | `check` | 机器人本机 | 只检查系统、架构、DDS 网卡、软件包、SDK 和 helper 等部署条件 | 否，不安装、不重启服务 |
 
-支持的参数：
+支持的参数（自定义目录和依赖参数详见下方[路径说明](#自定义安装目录和依赖路径)）：
 
 | 参数 | 是否必填 | 可填写内容 | 默认值 / 适用范围 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -186,7 +186,7 @@ bash scripts/deploy.sh from-pc --product <PRODUCT>
 
 ### 3.1 部署前确认
 
-执行 clone 的机器先要安装 Git。方式 B 的联网电脑还需 `curl`、OpenSSH客户端、`rsync`、`python3` 和 `python3 -m pip`；可在电脑运行 `command -v git curl ssh rsync python3` 与 `python3 -m pip --version` 检查。缺失时先在电脑安装 Ubuntu 软件包 `git curl openssh-client rsync python3 python3-pip`。文中的“机器人终端”指已通过 SSH 登录为 `unitree` 的终端，或机器人本机终端；不要在电脑本地终端执行机器人命令。
+执行 clone 的机器先要安装 Git。方式 B 的联网电脑还需 `curl`、OpenSSH客户端、`rsync`、`python3` 和 `python3 -m pip`；可在电脑运行 `command -v git curl ssh rsync python3` 与 `python3 -m pip --version` 检查。缺失时先在电脑安装 Ubuntu 软件包 `git curl openssh-client rsync python3 python3-pip`。文中的“机器人终端”指已通过 SSH 登录机器人普通账号（默认示例为 `unitree`）的终端，或机器人本机终端；不要在电脑本地终端执行机器人命令。
 
 方式 B 搬运上游源码、模型和 wheels，不包含 Ubuntu 系统包。机器人完全离线前，需准备缺失的 Ubuntu 20.04 arm64（G1/R1/GO2）或 Ubuntu 22.04 amd64（A2） 系统依赖；在机器人运行 `check` 可列出缺项。
 
@@ -197,11 +197,11 @@ bash scripts/deploy.sh from-pc --product <PRODUCT>
 | --- | --- |
 | 机器人 | Unitree G1 / R1 / GO2 / A2（当前 Registry 登记产品） |
 | PC2 系统 | G1/R1/GO2：Ubuntu 20.04 AArch64；A2：Ubuntu 22.04 x86_64 |
-| 用户 | `unitree` |
+| 用户 | 普通账号，默认示例为 `unitree` |
 | DDS 网卡 | G1：`eth0`；R1：`eth10`；GO2 / A2：默认 `eth0`，先现场确认 |
-| SDK 前缀 | G1：`/opt/unitree_robotics` 或用户前缀；R1 / GO2 / A2：复用 `/usr/local` |
+| SDK 前缀 | G1：`/opt/unitree_robotics` 或用户前缀；R1 / GO2 / A2：默认 `/usr/local`，可自定义 |
 | Web service | G1：`g1-web-control.service`；R1：`r1-web-control.service`；GO2：`go2-web-control.service`；A2：`a2-web-control.service` |
-| 项目目录 | `/home/unitree/UniRoboGui` |
+| 项目目录 | 建议 `/home/unitree/UniRoboGui`；支持任意有权限的目录 |
 | 相机 | G1：D435i/librealsense；R1：R1 EDU 固定相机链路与 helper；GO2 / A2：固定 RGB，无深度 |
 | 浏览器访问 | 与机器人网络互通的电脑 / 平板 |
 
@@ -210,13 +210,58 @@ SSH 登录机器人时，如果出现 ROS 环境选择，请直接按回车选�
 
 部署时，安装器会根据产品配置处理各自依赖，并自动选择服务安装范围：
 
-- **有交互 sudo**：安装所选产品的系统级 service 与受控相机 helper；G1 可安装/复用 SDK2，R1 / GO2 / A2 只校验并复用 `/usr/local`，不会自动覆盖。
-- **没有可交互 sudo**：仅当系统包已齐全、`systemctl --user` 可用且 `Linger=yes` 时使用用户级 service。G1 可使用用户 SDK 前缀；R1 / GO2 / A2 仍只复用 `/usr/local`。
+- **有交互 sudo**：安装所选产品的系统级 service 与受控相机 helper；G1 可安装/复用 SDK2，R1 / GO2 / A2 默认校验并复用已有 SDK；所有产品均支持自定义前缀和显式源码安装，不覆盖已有 SDK。
+- **没有可交互 sudo**：仅当系统包已齐全、`systemctl --user` 可用且 `Linger=yes` 时使用用户级 service。G1 可使用用户 SDK 前缀；所有产品可复用自定义 SDK 前缀，或显式安装到可写前缀。
 
 - **G1**：保持现有 D435i/librealsense、Kokoro 和导航默认值。
 - **R1**：默认使用 Unitree 原生 TTS，不安装 Kokoro；不声明 Mid-360，也不启用真实导航。
 - **GO2**：复用已有 `/usr/local` SDK，安装 Kokoro FP32 与专属 TTS unit；默认不安装 RealSense/helper、可选雷达或真实导航。先完成 [GO2 部署前检查](docs/go2-guide.md#3-部署步骤)，尤其是可信时钟与实际 DDS 网卡。
 - **A2**：面向普通足式 A2 用户开发单元（Ubuntu 22.04 x86_64 / Python 3.10），使用 `--product a2` 部署，复用已有 `/usr/local` SDK；默认使用 Unitree 原生 TTS，并安装 Kokoro FP32 供选用。当前服务模板启用 JT128 / 导航入口，需要对应附件与外部 `unitree_slam` 服务；功能与配置说明见 [A2 使用说明](docs/a2-guide.md)。
+
+### 自定义安装目录和依赖路径
+
+`/home/unitree/UniRoboGui` 只是推荐目录，不是安装要求。可以用有相应目录权限的普通账号部署；系统级服务需要 sudo，用户级服务仍要求系统包齐全和 `Linger=yes`。
+
+**在机器人本机部署**：clone 到自己选择的位置，然后运行项目里的脚本。脚本根据自身位置识别项目根目录，与启动命令时所在目录无关。
+
+```bash
+PROJECT_DIR="$HOME/robot apps/UniRoboGui"
+git clone https://github.com/ershui2500/UniRoboGui.git "$PROJECT_DIR"
+bash "$PROJECT_DIR/scripts/deploy.sh" install --product a2
+```
+
+**从电脑部署到机器人**：`--install-dir` 指定机器人上的绝对路径，`--host` 可以使用其他普通账号或 SSH 别名：
+
+```bash
+bash scripts/deploy.sh from-pc --product a2 --host developer@robot \
+  --install-dir "/home/developer/robot apps/UniRoboGui" \
+  --sdk-prefix /opt/customer-sdk
+```
+
+未指定 `--install-dir` 时仍部署到 `/home/unitree/UniRoboGui`。请把示例中的产品、账号、主机名和路径换成自己的值。
+
+| 参数 | 含义 |
+| --- | --- |
+| `--install-dir DIR` | 仅 `from-pc`：机器人项目目录；本机部署直接使用当前脚本所属项目 |
+| `--sdk-prefix DIR` | 已安装 SDK2 的前缀，或新 SDK 的安装前缀；不是 SDK 源码目录 |
+| `--sdk2-source DIR` | 机器人上的 SDK2 源码目录，默认登录账号的 `$HOME/unitree_sdk2`；`from-pc` 在需要安装 SDK 时把电脑缓存传到这里 |
+| `--install-sdk2` | 所有产品均可在 SDK 缺失时从源码安装；已有完整 SDK 只验证复用，不覆盖；发现残缺 SDK 时要求换目录 |
+| `--realsense-source DIR` | G1 的 librealsense 源码目录；`from-pc` 将准备的源码传到这里 |
+| `--realsense-prefix DIR` | librealsense 安装/查找前缀，默认 `/usr/local` |
+
+不传 SDK 前缀时，先查产品默认前缀、当前账号的用户前缀、常见安装位置及 `CMAKE_PREFIX_PATH`。找不到时，交互安装会询问 SDK 前缀；R1/GO2/A2 新装 SDK 需要确认，非交互部署使用 `--install-sdk2` 明确选择。G1 保留原有缺失时安装策略。
+
+例如，在机器人上把 SDK 安装到独立目录：
+
+```bash
+bash scripts/deploy.sh install --product a2 \
+  --install-sdk2 --sdk-prefix "$HOME/.local/unitree_sdk2" \
+  --sdk2-source "$HOME/sources/unitree_sdk2"
+```
+
+路径使用绝对路径，含空格时加引号；不接受根目录、控制字符、冒号和分号。`from-pc` 的路径参数始终指机器人上的路径，电脑下载缓存仍自动管理。再次部署时带上相同依赖参数；脚本自更新重入时会保留参数。可先运行 `deploy.sh check --product a2 --sdk-prefix /path/to/sdk` 做只读检查。
+
+安装器生成包含实际账号、项目路径和动态库路径的 systemd unit，不要直接复制 `deploy/` 中的默认模板。`KOKORO_VENV`、`KOKORO_MODEL_ROOT` 仍可覆盖 TTS 位置，默认随项目目录。搬动已部署项目后需重新部署；已有 build/虚拟环境不能当作可直接搬迁的产物。SLAM 外部服务的 `/home/unitree/testN.pcd` 是独立约定，不会随项目目录迁移。
 
 ### 3.2 方式 A：机器人可以访问 GitHub
 
@@ -251,7 +296,7 @@ cd /home/unitree/UniRoboGui
 | GO2 | `bash scripts/deploy.sh install --product go2` |
 | A2 | `bash scripts/deploy.sh install --product a2` |
 
-脚本会自动检查所选产品的 Ubuntu 版本、CPU 架构和 `unitree` 用户、DDS 网卡和无 ROS/RMW 污染，保护未提交源码，按产品策略处理 SDK/相机/TTS 依赖，完成 Release 构建、完整 CTest、`ldd`、精确 service 安装和只读运行验收。G1 会按现有流程处理 SDK2、librealsense 与 Kokoro；R1 只校验 `/usr/local` SDK，跳过 librealsense/Kokoro 自动安装。
+脚本会自动检查所选产品的 Ubuntu 版本、CPU 架构和普通部署账号、DDS 网卡和无 ROS/RMW 污染，保护未提交源码，按产品策略处理 SDK/相机/TTS 依赖，完成 Release 构建、完整 CTest、`ldd`、精确 service 安装和只读运行验收。G1 会按现有流程处理 SDK2、librealsense 与 Kokoro；R1 默认校验所选前缀的 SDK，跳过 librealsense/Kokoro 自动安装。
 
 如果第一步发现机器人无法访问 GitHub，脚本会停止并提示改用方式 B。
 
@@ -426,14 +471,14 @@ Web 页面本身没有身份认证，因此不应暴露到不可信网络或公�
 | --- | --- | --- | --- | --- |
 | 语义关节 | 29 | 26 | 12 | 12 |
 | DDS 网卡 | `eth0` | `eth10` | `eth0`（先核对现场） | `eth0`（先核对现场） |
-| SDK 前缀 | `/opt/unitree_robotics` 或用户前缀 | 现有 `/usr/local`，只校验不自动覆盖 | `/usr/local`，仅校验已有兼容 SDK，不覆盖 | `/usr/local`，只校验不覆盖 |
+| SDK 前缀 | `/opt/unitree_robotics` 或用户前缀 | 默认 `/usr/local`，可自定义，显式允许源码安装 | 默认 `/usr/local`，可自定义，不覆盖已有 SDK | 默认 `/usr/local`，可自定义，不覆盖已有 SDK |
 | Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` | `a2-web-control.service` |
 | 相机 | D435i / librealsense + G1 helper | R1 EDU 固定 RGB/Depth + R1 helper | 固定原生 RGB；深度不支持；无特权 helper | 固定原生 RGB，无深度，无特权 helper |
 | TTS 默认 | Kokoro + Unitree fallback | Unitree 原生 TTS | Kokoro FP32；无原生回退 | Unitree 原生 + 可选 Kokoro FP32 |
 | LiDAR / 导航默认 | 保持现有 G1 Mid-360 / 导航配置 | 不声明 Mid-360，不启用真实导航 | 默认不声明可选雷达，不启用真实导航 | JT128 / 导航入口已启用，需匹配附件及外部服务 |
 | 二进制 | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` | `build/g1_web_server --robot a2` |
 
-G1/R1/GO2 使用 Ubuntu 20.04 AArch64，A2 使用 Ubuntu 22.04 x86_64；四种产品共用 `unitree` 用户、`/home/unitree/UniRoboGui` 项目目录和现代 Chromium 系浏览器。产品能力是否真正可用仍以运行时 Manifest/Capability 和现场设备状态为准。
+G1/R1/GO2 使用 Ubuntu 20.04 AArch64，A2 使用 Ubuntu 22.04 x86_64；四种产品均支持普通部署账号及自定义项目目录；默认示例为 `unitree` 和 `/home/unitree/UniRoboGui`，浏览器使用现代 Chromium 系浏览器。产品能力是否真正可用仍以运行时 Manifest/Capability 和现场设备状态为准。
 
 机器人固件、SDK2、LiDAR 服务版本、设备节点和网络地址可能随机器人批次或现场环境变化，
 应以实际机器人状态为准。

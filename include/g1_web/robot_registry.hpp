@@ -56,7 +56,7 @@ struct RuntimeOptions {
   bool mock{false};
   bool read_only{false};
   std::string network_interface{"eth0"};
-  std::string web_root{"/home/unitree/UniRoboGui/web"};
+  std::string web_root{"web"};
   bool enable_navigation{false};
   std::string a2_joint_gains_file;
   bool realsense{false};

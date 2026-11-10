@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-expected_repo="/home/unitree/UniRoboGui"
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${repo_dir}/scripts/deploy_i18n.sh"
 source "${repo_dir}/scripts/deploy_product.sh"
 project_dir="${repo_dir}"
-legacy_project="/home/unitree/unitree_interface/g1_web_control"
+legacy_project="$HOME/unitree_interface/g1_web_control"
 product=""
 without_realsense=false
 with_wifi_watchdog=false
 without_kokoro=false
 check_only=false
-sdk2_source="/home/unitree/unitree_sdk2"
-realsense_source=""
+sdk2_source="${UNIROBOGUI_SDK2_SOURCE:-$HOME/unitree_sdk2}"
+realsense_source="${UNIROBOGUI_REALSENSE_SOURCE:-}"
+realsense_prefix="${UNIROBOGUI_REALSENSE_PREFIX:-/usr/local}"
 offline_mode="${UNIROBOGUI_OFFLINE:-0}"
 install_scope_request="${UNIROBOGUI_INSTALL_SCOPE:-auto}"
 install_scope=""
-sdk_prefix=""
+sdk_prefix="${UNIROBOGUI_SDK_PREFIX:-}"
 SYSTEM_PACKAGES=(
   build-essential cmake pkg-config git curl bzip2
   python3
@@ -60,19 +60,18 @@ EOF
   -h, --help            显示帮助
 EOF
   fi
+  print_dependency_help
 }
 
 while (($#)); do
   case "$1" in
+    --sdk-prefix|--sdk2-source|--realsense-source|--realsense-prefix)
+      parse_dependency_option "$@" || exit 2
+      shift ;;
+    --install-sdk2) parse_dependency_option "$1" ;;
     --product)
       (($# >= 2)) || { ui_err "错误：--product 需要产品 ID" "ERROR: --product requires a product ID"; exit 2; }
       product="$2"; shift ;;
-    --sdk2-source)
-      (($# >= 2)) || { ui_err "错误：--sdk2-source 需要目录参数" "ERROR: --sdk2-source requires a directory"; exit 2; }
-      sdk2_source="$2"; shift ;;
-    --realsense-source)
-      (($# >= 2)) || { ui_err "错误：--realsense-source 需要目录参数" "ERROR: --realsense-source requires a directory"; exit 2; }
-      realsense_source="$2"; shift ;;
     --without-realsense) without_realsense=true ;;
     --without-kokoro) without_kokoro=true ;;
     --with-wifi-watchdog) with_wifi_watchdog=true ;;
@@ -134,20 +133,20 @@ github_help() {
     cat >&2 <<EOF
 [TIP] A working Wi-Fi link does not guarantee GitHub access. Do not retry indefinitely.
 Download on a computer that can access GitHub, then transfer over the actual robot Ethernet/LAN link:
-  - project -> /home/unitree/UniRoboGui
-  - latest unitree_sdk2 source -> /home/unitree/unitree_sdk2
-  - librealsense source (only if the robot lacks usable librealsense2) -> /home/unitree/librealsense
-  - ${TTS_MODEL_NAME}.tar.bz2 -> /home/unitree/UniRoboGui/tts_models/
+  - project -> ${project_dir}
+  - latest unitree_sdk2 source -> ${sdk2_source}
+  - librealsense source (only if the robot lacks usable librealsense2) -> ${realsense_source:-$HOME/librealsense}
+  - ${TTS_MODEL_NAME}.tar.bz2 -> ${project_dir}/tts_models/
 See docs/deployment-dependencies.en.md for copy-ready offline transfer commands.
 EOF
   else
     cat >&2 <<EOF
 [提示] Wi-Fi 连上不等于能访问 GitHub，国内网络经常会超时。不要反复重试。
 请在一台能访问 GitHub 的电脑下载，再通过实际机器人的有线/局域网地址传到机器人：
-  - 项目目录 -> /home/unitree/UniRoboGui
-  - unitree_sdk2 最新源码 -> /home/unitree/unitree_sdk2
-  - librealsense 源码（仅机器人缺少可用 librealsense2 时需要）-> /home/unitree/librealsense
-  - ${TTS_MODEL_NAME}.tar.bz2 -> /home/unitree/UniRoboGui/tts_models/
+  - 项目目录 -> ${project_dir}
+  - unitree_sdk2 最新源码 -> ${sdk2_source}
+  - librealsense 源码（仅机器人缺少可用 librealsense2 时需要）-> ${realsense_source:-$HOME/librealsense}
+  - ${TTS_MODEL_NAME}.tar.bz2 -> ${project_dir}/tts_models/
 docs/deployment-dependencies.md 给出了可直接复制的离线传包命令。
 EOF
   fi
@@ -155,6 +154,11 @@ EOF
 
 github_available=false
 have_realsense() {
+  if [[ -n "${UNIROBOGUI_REALSENSE_PREFIX:-}" ]]; then
+    [[ -f "${realsense_prefix}/lib/cmake/realsense2/realsense2Config.cmake" ]]
+    return
+  fi
+  [[ -f "${realsense_prefix}/lib/cmake/realsense2/realsense2Config.cmake" ]] ||
   pkg-config --exists realsense2 2>/dev/null ||
     [[ -f /usr/local/lib/cmake/realsense2/realsense2Config.cmake ]] ||
     [[ -f /usr/local/lib/aarch64-linux-gnu/cmake/realsense2/realsense2Config.cmake ]] ||
@@ -182,7 +186,7 @@ configure_install_scope() {
 
   if [[ "${install_scope_request}" != "user" ]] && sudo -n true >/dev/null 2>&1; then
     install_scope=system
-    sdk_prefix="${SYSTEM_SDK_PREFIX}"
+    sdk_prefix="${sdk_prefix:-$SYSTEM_SDK_PREFIX}"
     ui_line "[OK] sudo 可免交互使用；采用系统级安装。" "[OK] sudo access is available without an interactive password prompt; using system install."
     return
   fi
@@ -193,7 +197,7 @@ configure_install_scope() {
     ui_line "[信息] 长时间编译前先验证 sudo 权限..." "[INFO] Verifying sudo access before long builds..."
     if sudo -v; then
       install_scope=system
-      sdk_prefix="${SYSTEM_SDK_PREFIX}"
+      sdk_prefix="${sdk_prefix:-$SYSTEM_SDK_PREFIX}"
       ui_line "[OK] sudo 权限验证通过；采用系统级安装。" "[OK] sudo access verified; using system install."
       return
     fi
@@ -211,7 +215,7 @@ configure_install_scope() {
   ${with_wifi_watchdog} &&
     fail "--with-wifi-watchdog 会管理系统级定时器，因此只能用于系统级安装。" "--with-wifi-watchdog requires a system install because it manages a system timer."
   install_scope=user
-  sdk_prefix="${USER_SDK_PREFIX}"
+  sdk_prefix="${sdk_prefix:-$USER_SDK_PREFIX}"
   ui_line "[OK] 无交互 sudo；采用持久用户级安装（systemctl --user，Linger=yes）。" "[OK] Interactive sudo is unavailable; using persistent user-local install (systemctl --user, Linger=yes)."
 }
 
@@ -289,16 +293,57 @@ check_network() {
   probe_github
 }
 
+resolve_sdk_prefix() {
+  sdk_prefix="${UNIROBOGUI_SDK_PREFIX:-${sdk_prefix:-}}"
+  sdk2_source="${UNIROBOGUI_SDK2_SOURCE:-$sdk2_source}"
+  realsense_source="${UNIROBOGUI_REALSENSE_SOURCE:-$realsense_source}"
+  realsense_prefix="${UNIROBOGUI_REALSENSE_PREFIX:-$realsense_prefix}"
+  if [[ -z "$sdk_prefix" ]]; then
+    local candidate
+    local candidates=("$SYSTEM_SDK_PREFIX" "$USER_SDK_PREFIX" /usr/local /opt/unitree_robotics "$HOME/.local/unitree_robotics" "$HOME/.local/unitree_sdk2")
+    local -a cmake_candidates=()
+    IFS=: read -r -a cmake_candidates <<< "${CMAKE_PREFIX_PATH:-}"
+    for candidate in "${candidates[@]}" "${cmake_candidates[@]}"; do
+      if [[ -f "$candidate/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" ]]; then
+        sdk_prefix="$candidate"
+        break
+      fi
+    done
+  fi
+  if [[ -z "$sdk_prefix" && -t 0 ]] && ! ${check_only}; then
+    ui_line '未找到 SDK2。输入已有 SDK 前缀，或输入新的安装前缀；回车使用产品默认值：' \
+      'SDK2 was not found. Enter an existing SDK prefix or a new installation prefix; Enter uses the product default:'
+    read -r sdk_prefix
+  fi
+  if [[ "$SDK_POLICY" == verify_existing ]]; then
+    sdk_prefix="${sdk_prefix:-$SYSTEM_SDK_PREFIX}"
+  fi
+  [[ -z "$sdk_prefix" ]] || sdk_prefix="$(normalize_deploy_path "$sdk_prefix")"
+  if [[ "${UNIROBOGUI_INSTALL_SDK2:-0}" == 1 ]]; then
+    SDK_POLICY=install_if_missing
+  fi
+  if [[ "$SDK_POLICY" == verify_existing && ! -f "$sdk_prefix/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" && ! -t 0 ]]; then
+    fail '未找到 SDK2；请使用 --sdk-prefix /path/to/sdk，或 --install-sdk2 --sdk-prefix /new/prefix。' \
+      'SDK2 not found; use --sdk-prefix /path/to/sdk, or --install-sdk2 --sdk-prefix /new/prefix.'
+  fi
+  if [[ "$SDK_POLICY" == verify_existing && ! -f "$sdk_prefix/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" && -t 0 ]] && ! ${check_only}; then
+    local answer
+    ui_line "在 $sdk_prefix 安装官方 SDK2？输入 yes 确认；其他输入退出。" \
+      "Install official SDK2 in $sdk_prefix? Type yes to confirm; anything else exits."
+    read -r answer
+    [[ "$answer" == yes ]] || fail '已取消 SDK2 安装。' 'SDK2 installation cancelled.'
+    SDK_POLICY=install_if_missing
+  fi
+}
+
 install_sdk2() {
   local config="${sdk_prefix}/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake"
-  if [[ "${SDK_POLICY}" == "verify_existing" ]]; then
+  if [[ -f "${config}" || "${SDK_POLICY}" == "verify_existing" ]]; then
     [[ -f "${config}" ]] ||
-      fail "${PRODUCT_NAME} 要求复用 ${sdk_prefix} 的现有 SDK2；未找到 ${config}，不会自动覆盖安装。" "${PRODUCT_NAME} reuses the existing SDK2 under ${sdk_prefix}; ${config} is missing and will not be installed automatically."
-    if [[ "$PRODUCT_ID" == r1 || "$PRODUCT_ID" == go2 || "$PRODUCT_ID" == a2 ]]; then
-      [[ -f "${sdk_prefix}/include/unitree/robot/r1/audio/audio_client.hpp" &&
-         -f "${sdk_prefix}/include/unitree/robot/r1/loco/r1_loco_client.hpp" ]] ||
-        fail "${sdk_prefix} 的 SDK2 缺少共享二进制需要的 R1 Audio/Loco 头文件；请安装兼容 SDK。" "SDK2 under ${sdk_prefix} lacks the R1 Audio/Loco headers required by the shared binary. Install a firmware/ABI-compatible SDK first."
-    fi
+      fail "${PRODUCT_NAME} 要求复用 ${sdk_prefix} 的现有 SDK2；未找到 ${config}，不会自动覆盖安装；使用 --sdk-prefix /path/to/sdk 或 --install-sdk2 --sdk-prefix /new/prefix。" "${PRODUCT_NAME} reuses the existing SDK2 under ${sdk_prefix}; ${config} is missing; use --sdk-prefix /path/to/sdk or --install-sdk2 --sdk-prefix /new/prefix."
+    [[ -f "${sdk_prefix}/include/unitree/robot/r1/audio/audio_client.hpp" &&
+       -f "${sdk_prefix}/include/unitree/robot/r1/loco/r1_loco_client.hpp" ]] ||
+      fail "${sdk_prefix} 的 SDK2 缺少共享二进制需要的 R1 Audio/Loco 头文件；请安装兼容 SDK。" "SDK2 under ${sdk_prefix} lacks the R1 Audio/Loco headers required by the shared binary. Install a firmware/ABI-compatible SDK first."
     if [[ "$PRODUCT_ID" == go2 ]]; then
       [[ -f "${sdk_prefix}/include/unitree/robot/go2/vui/vui_client.hpp" &&
          -f "${sdk_prefix}/include/unitree/robot/go2/sport/sport_client.hpp" ]] ||
@@ -309,16 +354,16 @@ install_sdk2() {
          -f "${sdk_prefix}/include/unitree/robot/a2/sport/sport_client.hpp" ]] ||
         fail "SDK2 缺少 A2 Audio/Sport 头文件。" "SDK2 is missing A2 Audio/Sport headers."
     fi
-    compgen -G "${sdk_prefix}/lib/libddsc.so*" >/dev/null &&
-      compgen -G "${sdk_prefix}/lib/libddscxx.so*" >/dev/null ||
-      fail "${sdk_prefix}/lib 缺少 SDK2 所需的 CycloneDDS 动态库；不会自动覆盖 /usr/local。" "Required CycloneDDS shared libraries are missing under ${sdk_prefix}/lib; /usr/local will not be overwritten automatically."
+    [[ -f "${sdk_prefix}/lib/libddsc.so" && -f "${sdk_prefix}/lib/libddscxx.so" &&
+       -f "${sdk_prefix}/lib/libunitree_sdk2.a" ]] ||
+      fail "${sdk_prefix}/lib 缺少 SDK2 静态库或 CycloneDDS 动态库；不会自动覆盖。" "SDK2 archive or required CycloneDDS shared libraries are missing under ${sdk_prefix}/lib; the selected SDK will not be overwritten."
     ui_line "[OK] 已验证并复用 ${PRODUCT_NAME} 现有 SDK2：${sdk_prefix}" "[OK] Reusing the verified existing ${PRODUCT_NAME} SDK2: ${sdk_prefix}"
     return 0
   fi
-  [[ ! -f "${config}" ]] || {
-    ui_line "[OK] SDK2 已安装在 ${sdk_prefix}。" "[OK] SDK2 is already installed in ${sdk_prefix}."
-    return 0
-  }
+  for existing in "${sdk_prefix}/include/unitree" "${sdk_prefix}/lib/cmake/unitree_sdk2" \
+      "${sdk_prefix}/lib/"libunitree_sdk2.* "${sdk_prefix}/lib/"libddsc*; do
+    [[ ! -e "$existing" && ! -L "$existing" ]] || fail "SDK 前缀存在不完整的安装，拒绝覆盖：${sdk_prefix}；请选择空目录。" "SDK prefix contains an incomplete installation; refusing to overwrite ${sdk_prefix}. Choose an empty prefix."
+  done
 
   if [[ ! -f "${sdk2_source}/CMakeLists.txt" ]]; then
     if ${github_available}; then
@@ -335,7 +380,7 @@ install_sdk2() {
 
   ui_line "[信息] 正在从 ${sdk2_source} 安装 SDK2 到 ${sdk_prefix}..." "[INFO] Installing SDK2 from ${sdk2_source} into ${sdk_prefix}..."
   cmake -S "${sdk2_source}" -B "${sdk2_source}/build-g1" \
-    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${sdk_prefix}" \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${sdk_prefix}" -DCMAKE_INSTALL_LIBDIR=lib \
     -DBUILD_EXAMPLES=OFF
   cmake --build "${sdk2_source}/build-g1" --parallel 2
   if [[ "${install_scope}" == "system" ]]; then
@@ -345,6 +390,8 @@ install_sdk2() {
     cmake --install "${sdk2_source}/build-g1"
   fi
   [[ -f "${config}" ]] || fail "SDK2 编译完成，但未安装 ${config}。" "SDK2 build finished, but ${config} was not installed."
+  SDK_POLICY=verify_existing
+  install_sdk2
 }
 
 install_realsense() {
@@ -369,7 +416,7 @@ install_realsense() {
 
   ui_line "[信息] 正在从 ${realsense_source} 编译 librealsense2..." "[INFO] Building librealsense2 from ${realsense_source}..."
   cmake -S "${realsense_source}" -B "${realsense_source}/build-g1" \
-    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${realsense_prefix}" -DCMAKE_INSTALL_LIBDIR=lib \
     -DBUILD_EXAMPLES=OFF -DBUILD_GRAPHICAL_EXAMPLES=OFF \
     -DBUILD_PYTHON_BINDINGS=OFF -DFORCE_RSUSB_BACKEND=ON
   cmake --build "${realsense_source}/build-g1" --parallel 2
@@ -564,9 +611,7 @@ stop_current_user_services() {
   fi
 }
 
-[[ "${EUID}" -ne 0 ]] || fail "请以 unitree 用户运行，不要直接使用 root；脚本只在需要时调用 sudo。" "Run this script as unitree, not root; it uses sudo only when needed."
-[[ "$(id -un)" == "unitree" ]] || fail "此安装器仅支持 unitree 账号。" "This installer supports the unitree account only."
-[[ "${repo_dir}" == "${expected_repo}" ]] || fail "请把仓库 clone 到 ${expected_repo}；当前路径为 ${repo_dir}。" "Clone the repository to ${expected_repo}; current path is ${repo_dir}."
+[[ "${EUID}" -ne 0 ]] || fail "请以普通用户运行，不要直接使用 root；脚本只在需要时调用 sudo。" "Run this script as a regular user, not root; it uses sudo only when needed."
 [[ "$(uname -m)" == "${TARGET_ARCH}" ]] || fail "预期 ${PRODUCT_NAME} 计算机为 ${TARGET_ARCH}，当前为 $(uname -m)。" "Expected the ${PRODUCT_NAME} computer to be ${TARGET_ARCH}, found $(uname -m)."
 
 source /etc/os-release
@@ -579,6 +624,15 @@ python3 -c "import sys; raise SystemExit(sys.version_info[:2] != (${KOKORO_PYTHO
   fail "请重新建立 SSH 会话，并在 ROS 环境提示时直接按回车；不要加载 ROS/RMW/CycloneDDS。" "Open a fresh SSH session and press Enter at the ROS prompt; do not load ROS/RMW/CycloneDDS."
 ip link show dev "${DDS_INTERFACE}" >/dev/null 2>&1 || fail "缺少 DDS 网卡 ${DDS_INTERFACE}。" "DDS interface ${DDS_INTERFACE} is missing."
 
+sdk2_source="${UNIROBOGUI_SDK2_SOURCE:-$sdk2_source}"
+realsense_source="${UNIROBOGUI_REALSENSE_SOURCE:-$realsense_source}"
+realsense_prefix="${UNIROBOGUI_REALSENSE_PREFIX:-$realsense_prefix}"
+project_dir="$(normalize_deploy_path "$project_dir")"
+sdk2_source="$(normalize_deploy_path "$sdk2_source")"
+realsense_prefix="$(normalize_deploy_path "$realsense_prefix")"
+[[ -z "$realsense_source" ]] || realsense_source="$(normalize_deploy_path "$realsense_source")"
+resolve_sdk_prefix
+
 if ${check_only}; then
   mapfile -t missing_packages < <(missing_system_packages)
   if ((${#missing_packages[@]} == 0)); then
@@ -587,14 +641,13 @@ if ${check_only}; then
     warn "缺少 Ubuntu 系统包：${missing_packages[*]}" "Missing Ubuntu system packages: ${missing_packages[*]}"
     warn "正式安装需要访问 Ubuntu ${TARGET_UBUNTU_VERSION} 软件源，或先安装这些软件包。" "A real installation will need access to the Ubuntu ${TARGET_UBUNTU_VERSION} package mirror, or these packages must be installed first."
   fi
-  if [[ "${SDK_POLICY}" == verify_existing ]]; then
-    sdk_prefix="${SYSTEM_SDK_PREFIX}"
+  sdk_prefix="${sdk_prefix:-$SYSTEM_SDK_PREFIX}"
+  if [[ -f "$sdk_prefix/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" || "$SDK_POLICY" == verify_existing ]]; then
+    SDK_POLICY=verify_existing
     install_sdk2
   fi
-  if [[ -f "${SYSTEM_SDK_PREFIX}/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" ]]; then
-    ui_line "[OK] SDK2 已安装在 ${SYSTEM_SDK_PREFIX}。" "[OK] SDK2 is installed in ${SYSTEM_SDK_PREFIX}."
-  elif [[ -f "${USER_SDK_PREFIX}/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" ]]; then
-    ui_line "[OK] SDK2 已安装在 ${USER_SDK_PREFIX}。" "[OK] SDK2 is installed in ${USER_SDK_PREFIX}."
+  if [[ -f "${sdk_prefix}/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" ]]; then
+    ui_line "[OK] SDK2 已安装在 ${sdk_prefix}。" "[OK] SDK2 is installed in ${sdk_prefix}."
   elif [[ -f "${sdk2_source}/CMakeLists.txt" ]]; then
     ui_line "[OK] SDK2 尚未安装，但已传入源码可用：${sdk2_source}" "[OK] SDK2 is not installed yet, but transferred source is ready: ${sdk2_source}"
   else
@@ -652,11 +705,14 @@ fi
 install_sdk2
 install_realsense
 
-export CMAKE_PREFIX_PATH="${sdk_prefix}"
-if [[ "${PRODUCT_ID}" == g1 ]]; then
-  export LD_LIBRARY_PATH="${sdk_prefix}/lib:/usr/local/lib:/opt/ros/noetic/lib/aarch64-linux-gnu"
-else
-  export LD_LIBRARY_PATH="${sdk_prefix}/lib"
+export CMAKE_PREFIX_PATH="${sdk_prefix}:${realsense_prefix}"
+if ! ${without_realsense} && [[ -n "${UNIROBOGUI_REALSENSE_PREFIX:-}" ]]; then
+  [[ -f "${realsense_prefix}/lib/cmake/realsense2/realsense2Config.cmake" ]] || \
+    fail "指定的 librealsense 前缀不可用：${realsense_prefix}" "Selected librealsense prefix is unavailable: ${realsense_prefix}"
+fi
+export LD_LIBRARY_PATH="${sdk_prefix}/lib:${realsense_prefix}/lib:/usr/local/lib"
+if [[ "$PRODUCT_ID" == g1 ]]; then
+  export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/opt/ros/noetic/lib/aarch64-linux-gnu"
 fi
 
 node_major=0
@@ -673,8 +729,15 @@ else
   ui_line "[警告] Node.js >= 14 不可用；跳过可选前端语法检查。" "[WARN] Node.js >= 14 is unavailable; skipping the optional frontend syntax check."
 fi
 
+cmake_options=(-Urealsense2_DIR)
+if ! ${without_realsense} && [[ -n "${UNIROBOGUI_REALSENSE_PREFIX:-}" ]]; then
+  cmake_options+=("-Drealsense2_DIR=${realsense_prefix}/lib/cmake/realsense2")
+fi
 cmake -S "${project_dir}" -B "${project_dir}/build" \
-  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+  -Dunitree_sdk2_DIR="${sdk_prefix}/lib/cmake/unitree_sdk2" \
+  -UUNITREE_SDK2_R1_INCLUDE_DIR -UUNITREE_SDK2_A2_INCLUDE_DIR \
+  "${cmake_options[@]}"
 cmake --build "${project_dir}/build" --parallel 2
 (cd "${project_dir}/build" && ctest --output-on-failure)
 
@@ -686,7 +749,7 @@ fi
 dds_ldd="$(grep -E 'libddsc(xx)?\.so' <<<"${ldd_output}" || true)"
 [[ -n "${dds_ldd}" ]] ||
   fail "Web 二进制没有链接 SDK2 CycloneDDS。" "The Web binary is not linked to SDK2 CycloneDDS."
-if grep -v "${sdk_prefix}/lib/" <<<"${dds_ldd}" | grep -q .; then
+if grep -Fv "${sdk_prefix}/lib/" <<<"${dds_ldd}" | grep -q .; then
   printf '%s\n' "${dds_ldd}" >&2
   fail "CycloneDDS 动态库未全部解析到所选产品 SDK 前缀 ${sdk_prefix}/lib。" "CycloneDDS libraries did not all resolve from the selected SDK prefix ${sdk_prefix}/lib."
 fi
@@ -695,7 +758,7 @@ if ! ${without_realsense}; then
 fi
 
 if ! ${without_kokoro}; then
-  UNIROBOGUI_ROOT=/home/unitree/UniRoboGui \
+  UNIROBOGUI_ROOT="${project_dir}" \
     bash "${project_dir}/scripts/install_kokoro_tts.sh" --product "${PRODUCT_ID}"
 else
   if [[ "$PRODUCT_ID" == go2 ]]; then
@@ -719,6 +782,20 @@ for name in customer_voice.json joint_teach_actions.json; do
   [[ ! -f "${new_file}" ]] || chmod 600 "${new_file}"
 done
 
+rendered_units="$(mktemp -d)"
+trap 'rm -rf -- "$rendered_units"' EXIT
+export USER="$(id -un)" UNIROBOGUI_GROUP="$(id -gn)"
+[[ "$USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*\$?$ && "$UNIROBOGUI_GROUP" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*\$?$ ]] || \
+  fail '账号或组名无法安全写入服务配置。' 'Account or group name cannot be safely used in service configuration.'
+for template in "$WEB_SYSTEM_UNIT" "$WEB_USER_UNIT" "$TTS_SYSTEM_UNIT" "$TTS_USER_UNIT"; do
+  python3 "$project_dir/scripts/render_deploy_unit.py" "$project_dir/$template" \
+    "$rendered_units/$(basename "$template")" --project "$project_dir" \
+    --sdk "$sdk_prefix" --libraries "$LD_LIBRARY_PATH"
+done
+if [[ -n "$CAMERA_SUDOERS" ]]; then
+  sed "s/^unitree /$USER /" "$project_dir/scripts/$CAMERA_SUDOERS" > "$rendered_units/$CAMERA_SUDOERS"
+fi
+
 if [[ "${install_scope}" == "system" ]]; then
   assert_no_other_product_service
   if systemctl is-active --quiet "${WEB_SERVICE}"; then
@@ -733,8 +810,8 @@ if [[ "${install_scope}" == "system" ]]; then
   if [[ -n "${CAMERA_HELPER}" ]]; then
     sudo install -m 0755 "${project_dir}/scripts/${CAMERA_HELPER}" \
       "/usr/local/sbin/${CAMERA_HELPER}"
-    sudo visudo -cf "${project_dir}/scripts/${CAMERA_SUDOERS}"
-    sudo install -m 0440 "${project_dir}/scripts/${CAMERA_SUDOERS}" \
+    sudo visudo -cf "${rendered_units}/${CAMERA_SUDOERS}"
+    sudo install -m 0440 "${rendered_units}/${CAMERA_SUDOERS}" \
       "/etc/sudoers.d/${CAMERA_SUDOERS%.sudoers}"
     helper_rc=0
     helper_action=is-active
@@ -747,10 +824,10 @@ if [[ "${install_scope}" == "system" ]]; then
   fi
 
   if ${NEEDS_KOKORO}; then
-    sudo install -m 0644 "${project_dir}/${TTS_SYSTEM_UNIT}" \
+    sudo install -m 0644 "${rendered_units}/$(basename "${TTS_SYSTEM_UNIT}")" \
       "/etc/systemd/system/${TTS_SERVICE}"
   fi
-  sudo install -m 0644 "${project_dir}/${WEB_SYSTEM_UNIT}" \
+  sudo install -m 0644 "${rendered_units}/$(basename "${WEB_SYSTEM_UNIT}")" \
     "/etc/systemd/system/${WEB_SERVICE}"
 
   if ${with_wifi_watchdog}; then
@@ -783,12 +860,12 @@ else
   fi
 
   stop_current_user_services
-  mkdir -p /home/unitree/.config/systemd/user
-  install -m 0644 "${project_dir}/${WEB_USER_UNIT}" \
-    "/home/unitree/.config/systemd/user/${WEB_SERVICE}"
+  mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  install -m 0644 "${rendered_units}/$(basename "${WEB_USER_UNIT}")" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${WEB_SERVICE}"
   if ${NEEDS_KOKORO}; then
-    install -m 0644 "${project_dir}/${TTS_USER_UNIT}" \
-      "/home/unitree/.config/systemd/user/${TTS_SERVICE}"
+    install -m 0644 "${rendered_units}/$(basename "${TTS_USER_UNIT}")" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${TTS_SERVICE}"
   fi
   systemctl --user daemon-reload
   if ! ${without_kokoro}; then

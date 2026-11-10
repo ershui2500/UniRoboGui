@@ -1651,12 +1651,15 @@ void TestStaticAssets() {
               perception_js.find("MAP_NAME_WARNING") != std::string::npos &&
               perception_js.find("cancel_navigation") != std::string::npos,
           "SLAM UI must expose map download/exit, navigation cancel, and the fixed map-name warning");
+  const char* map_cache_home = std::getenv("HOME");
+  const auto map_cache_root = std::filesystem::path(
+      map_cache_home && *map_cache_home ? map_cache_home : "/home/unitree");
   Require(g1_web::ResolvePerceptionMapPath("test1.pcd") ==
               "/home/unitree/test1.pcd" &&
               g1_web::ResolvePerceptionMapPath("test10.pcd") ==
                   "/home/unitree/test10.pcd" &&
               g1_web::ResolvePerceptionMapDownloadPath("test1.pcd") ==
-                  "/home/unitree/.cache/g1-web-control/maps/test1.pcd" &&
+                  (map_cache_root / ".cache/g1-web-control/maps/test1.pcd").string() &&
               g1_web::ResolvePerceptionMapPath("test1").empty() &&
               g1_web::ResolvePerceptionMapPath("test11.pcd").empty() &&
               g1_web::ResolvePerceptionMapDownloadPath("office.pcd").empty(),

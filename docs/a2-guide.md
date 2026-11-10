@@ -1,5 +1,7 @@
 # A2 控制台使用说明
 
+项目目录和 SDK 前缀均可自定义，`/home/unitree/UniRoboGui` 和 `/usr/local` 只是默认值。具体见 [自定义路径与账号](../README.md#自定义安装目录和依赖路径)。远程部署用 `--install-dir`，已有 SDK 用 `--sdk-prefix`，新装 SDK 显式加 `--install-sdk2`。
+
 本项目支持普通足式 A2 的控制台：产品选择、官方三维模型、12 关节状态、双电池、运动模式、速度控制、Mock 全身关节调试、语音交互和 JT128 建图导航。综合工作台按 GO2 单摄像头布局显示 RGB 画面与关节姿态。真机关节调试需提供增益配置并由现场操作员验证；机器人端运动与导航入口供现场操作员逐项验证，`mock_verified` 不代表真实控制已验收。
 
 部署安装以 [README 快速部署](../README.md#quick-deploy) 为主：统一使用 `scripts/deploy.sh`，选择 `--product a2`。本文补充功能和安全互锁。

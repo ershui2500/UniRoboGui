@@ -1,3 +1,4 @@
+# Installer renders paths and account; do not copy this default template directly.
 [Unit]
 Description=Unitree G1 Web control and perception workstation
 After=network-online.target

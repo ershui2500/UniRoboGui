@@ -1,5 +1,7 @@
 # GO2 deployment and Web guide
 
+Project directory and SDK prefix are configurable; `/home/unitree/UniRoboGui` and `/usr/local` are defaults. See [custom paths and accounts](../README.en.md#custom-project-and-dependency-paths). Use `--install-dir` for a remote destination and `--sdk-prefix` for an existing SDK; explicitly add `--install-sdk2` to install a missing SDK.
+
 [简体中文](go2-guide.md) · [Shared deployment guide](deployment-dependencies.en.md)
 
 Applies to the registered development-capable GO2 variant: `product_id=go2`, internal `variant=go2_edu`. The display name Unitree GO2 does not change protocol identifiers. Confirm the actual model, firmware, SDK and attachments before use.
@@ -44,7 +46,7 @@ The model and service must both be installed. Old GitHub revisions, older instal
 
 ### 3.1 Prerequisites and clock
 
-Use a development-capable GO2 expansion computer running Ubuntu 20.04 AArch64 as `unitree`, with a compatible SDK2 already installed under `/usr/local`. The default SSH target is `unitree@192.168.123.18` (expansion computer). Verify the actual address and wired DDS interface; override only if different, and do not use a motion-controller address. Do not source ROS environments.
+Use a development-capable GO2 expansion computer running Ubuntu 20.04 AArch64 with a regular deployment account (default `unitree`) and a compatible SDK2 (default `/usr/local`, customizable or explicitly installed). The default SSH target is `unitree@192.168.123.18` (expansion computer). Verify the actual address and wired DDS interface; override only if different, and do not use a motion-controller address. Do not source ROS environments.
 
 Run `ip -br -4 addr` on the robot. The repository defaults to `eth0`. If the actual DDS interface differs, have a maintainer align `scripts/deploy_product.sh` and both `deploy/go2-web-control{,.user}.service` templates before installation. The deployment CLI has no `--interface` option.
 
@@ -101,7 +103,7 @@ If the PC needs a proxy, configure its real proxy address only on the PC. Includ
 
 ### 3.4 TTS resources only
 
-In the robot terminal, from `/home/unitree/UniRoboGui`, prepare only TTS resources:
+In the robot terminal, from the actual project directory (default `/home/unitree/UniRoboGui`), prepare only TTS resources:
 
 ```bash
 bash scripts/install_kokoro_tts.sh --product go2

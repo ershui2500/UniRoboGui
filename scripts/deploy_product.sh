@@ -23,7 +23,7 @@ load_product_profile() {
       WEB_SYSTEM_UNIT="deploy/g1-web-control.service"
       WEB_USER_UNIT="deploy/g1-web-control.user.service"
       SYSTEM_SDK_PREFIX="/opt/unitree_robotics"
-      USER_SDK_PREFIX="/home/unitree/.local/unitree_robotics"
+      USER_SDK_PREFIX="${HOME}/.local/unitree_robotics"
       SDK_POLICY=install_if_missing
       NEEDS_REALSENSE=true
       NEEDS_KOKORO=true
@@ -132,4 +132,60 @@ resolve_product_host() {
       '--host must be an SSH Host alias, hostname or USER@IPv4/hostname; options and commands are not allowed.'
     return 2
   fi
+}
+
+# Paths are data, never shell fragments. Remote paths must already be absolute.
+normalize_deploy_path() {
+  local value="$1"
+  [[ "$value" == /* && ! "$value" =~ [[:cntrl:]] && "$value" != *:* && "$value" != *\;* ]] || {
+    ui_err '路径必须是绝对路径，不能包含控制字符、冒号或分号。' \
+      'Use an absolute path without control characters, colon or semicolon.'
+    return 2
+  }
+  value="$(realpath -ms -- "$value")" || return 2
+  [[ "$value" != / && "$value" != //* ]] || {
+    ui_err '不能使用根目录。' 'The filesystem root is not a deployment directory.'
+    return 2
+  }
+  printf '%s\n' "$value"
+}
+
+# POSIX quoting also works when the SSH server uses /bin/sh.
+remote_quote() {
+  local value="${1//\'/\'\\\'\'}"
+  printf "'%s'" "$value"
+}
+
+# Shared dependency options keep all public and legacy entries consistent.
+parse_dependency_option() {
+  case "$1" in
+    --sdk-prefix|--sdk2-source|--realsense-source|--realsense-prefix)
+      (($# >= 2)) && [[ -n "$2" ]] || { ui_err "$1 需要目录" "$1 requires a directory"; return 2; }
+      local value
+      value="$(normalize_deploy_path "$2")" || return 2
+      case "$1" in
+        --sdk-prefix) export UNIROBOGUI_SDK_PREFIX="$value" ;;
+        --sdk2-source) export UNIROBOGUI_SDK2_SOURCE="$value" ;;
+        --realsense-source) export UNIROBOGUI_REALSENSE_SOURCE="$value" ;;
+        --realsense-prefix) export UNIROBOGUI_REALSENSE_PREFIX="$value" ;;
+      esac
+      ;;
+    --install-sdk2) export UNIROBOGUI_INSTALL_SDK2=1 ;;
+    *) return 2 ;;
+  esac
+}
+
+print_dependency_help() {
+  ui_line '路径选项（均使用绝对路径；含空格时加引号）：' \
+    'Path options (absolute paths; quote paths containing spaces):'
+  ui_line '  --sdk-prefix DIR        已有 SDK2 或新安装前缀' '  --sdk-prefix DIR        Existing SDK2 or new installation prefix'
+  ui_line '  --sdk2-source DIR       机器人上的 SDK2 源码目录' '  --sdk2-source DIR       SDK2 source directory on the robot'
+  ui_line '  --install-sdk2          缺失时允许安装 SDK2（所有产品；不覆盖已有 SDK）' \
+    '  --install-sdk2          Allow SDK2 installation if missing (all products; no overwrite)'
+  ui_line '  --realsense-source DIR  机器人上的 librealsense 源码目录' '  --realsense-source DIR  librealsense source directory on the robot'
+  ui_line '  --realsense-prefix DIR  librealsense 前缀（默认 /usr/local）' '  --realsense-prefix DIR  librealsense prefix (default /usr/local)'
+  ui_line '  --install-dir DIR       仅 from-pc；机器人项目目录（默认 /home/unitree/UniRoboGui）' \
+    '  --install-dir DIR       from-pc only; robot project directory (default /home/unitree/UniRoboGui)'
+  ui_line '本机项目目录自动识别；重新运行时请带上自定义依赖参数。' \
+    'The local project root is detected automatically; pass custom dependency options again when rerunning.'
 }

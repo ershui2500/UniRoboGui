@@ -1,5 +1,11 @@
 # UniRoboGui G1 / R1 / GO2 / A2 通用部署与排障指南
 
+## 自定义路径和账号
+
+脚本自动识别项目位置。`/home/unitree/UniRoboGui`、`/opt/unitree_robotics` 和 `/usr/local` 均为默认建议，不是强制位置；支持其他普通账号。`--install-dir`、`--sdk-prefix`、`--sdk2-source`、`--install-sdk2` 和 RealSense 参数用法见 [自定义部署路径](../README.md#自定义安装目录和依赖路径)，旧版兼容入口也接受这些参数。
+
+优先复用已有 SDK。R1/GO2/A2 可用 `--install-sdk2` 显式安装缺失的 SDK，不覆盖已有残缺或不兼容安装；构建、链接和运行检查均使用所选前缀。固件兼容性与机器人端验收仍需确认。
+
 **简体中文** | [English](deployment-dependencies.en.md)
 
 本文件同时覆盖 Unitree G1、R1、GO2 与 A2。部署入口、公共构建流程和安全检查保持一致；网卡、SDK、service、相机、TTS 和附件差异集中在产品配置中，不维护两套重复教程。
@@ -46,13 +52,13 @@ bash scripts/deploy.sh install --product g1 --lang en
 | --- | --- | --- | --- | --- |
 | 默认 SSH 目标 | `unitree@192.168.123.164` | `unitree@192.168.123.164` | `unitree@192.168.123.18` | `unitree@192.168.123.162`（用户开发单元） |
 | DDS 网卡 | `eth0` | `eth10` | `eth0`（先核对现场） | `eth0`（先核对现场） |
-| SDK / CMake 前缀 | `/opt/unitree_robotics`；用户安装可用 `/home/unitree/.local/unitree_robotics` | `/usr/local`，已有安装只校验，不自动覆盖 | `/usr/local`，仅校验已有兼容 SDK，不覆盖 | `/usr/local`，只校验不覆盖 |
+| SDK / CMake 前缀 | 默认 `/opt/unitree_robotics` 或 `$HOME/.local/unitree_robotics`，可自定义 | 默认 `/usr/local`，可自定义 | 默认 `/usr/local`，可自定义 | 默认 `/usr/local`，可自定义 |
 | 动态库路径 | SDK `prefix/lib` + `/usr/local/lib`；需要时兼容已有 librealsense | `/usr/local/lib` | `/usr/local/lib` | `/usr/local/lib` |
 | Web service | `g1-web-control.service` | `r1-web-control.service` | `go2-web-control.service` | `a2-web-control.service` |
 | systemd user unit | `deploy/g1-web-control.user.service` | `deploy/r1-web-control.user.service` | `deploy/go2-web-control.user.service` | `deploy/a2-web-control.user.service` |
 | 相机 | D435i + librealsense + `g1-web-first-person-service` | R1 EDU 固定 RGB/Depth + `r1-web-camera-service` | 固定原生 RGB；深度不支持；无特权 helper | 固定原生 RGB，无深度，无特权 helper |
 | TTS 默认 | Kokoro + Unitree fallback | Unitree native TTS | Kokoro FP32；无原生回退 | Unitree 原生 + 可选 Kokoro FP32 |
-| SDK 安装策略 | 缺失时可从官方 SDK2 源码安装 | 校验现有 R1 头文件、CMake 配置和 CycloneDDS 动态库；缺失即停止 | `/usr/local`，仅校验已有兼容 SDK，不覆盖 | 校验兼容 A2 SDK，缺失即停止，不覆盖 |
+| SDK 安装策略 | 优先复用，缺失时安装 | 优先复用，显式 `--install-sdk2` 允许源码安装 | 优先复用，显式 `--install-sdk2` 允许源码安装 | 优先复用，显式 `--install-sdk2` 允许源码安装 |
 | Mid-360 / navigation | 保持现有 G1 配置与 service 默认值 | 默认不声明 Mid-360，不启用真实导航 | 默认不声明可选雷达，不启用真实导航 | JT128 / 导航入口已启用，需匹配附件及外部服务 |
 | 二进制 | `build/g1_web_server --robot g1` | `build/g1_web_server --robot r1` | `build/g1_web_server --robot go2` | `build/g1_web_server --robot a2` |
 
@@ -66,7 +72,7 @@ bash scripts/deploy.sh install --product g1 --lang en
 
 部署脚本按同一流程执行：
 
-1. 检查 G1/R1/GO2：Ubuntu 20.04 AArch64；A2：Ubuntu 22.04 x86_64、`unitree` 用户、目标 DDS 网卡和 ROS/RMW/CycloneDDS 环境污染；
+1. 检查 G1/R1/GO2：Ubuntu 20.04 AArch64；A2：Ubuntu 22.04 x86_64、普通部署账号、目标 DDS 网卡和 ROS/RMW/CycloneDDS 环境污染；
 2. 检查项目源码脏状态，发现未提交业务代码时停止而不是覆盖；
 3. 根据产品配置检查或准备 SDK、相机依赖和 TTS 资源；
 4. Release 构建并运行完整 CTest；
@@ -97,8 +103,8 @@ G1 保持现有基线：
 R1 使用以下边界：
 
 - DDS 网卡固定为 `eth10`；
-- SDK/CMake 前缀固定为 `/usr/local`；
-- 部署脚本只校验 R1 Audio/Loco 必需头文件、`unitree_sdk2` CMake 配置以及 `libddsc` / `libddscxx` 动态库，缺失时停止并提示，不自动覆盖 `/usr/local`；
+- SDK/CMake 前缀默认 `/usr/local`，可用 `--sdk-prefix` 指定；
+- 部署脚本校验所选前缀的必需头文件、CMake 配置及 DDS 动态库；缺失时指定路径或显式加 `--install-sdk2`，不覆盖已有不兼容 SDK；
 - 默认使用 Unitree 原生 TTS，不安装 Kokoro；
 - 系统级安装使用 `r1-web-camera-service`；用户级安装无 helper 时相关 Camera Capability 按运行时证据降级；
 - `r1-web-control.service` 显式包含 `--robot r1`，不带 `--device mid360`，也不带 `--enable-navigation`；
@@ -107,7 +113,7 @@ R1 使用以下边界：
 ### GO2 部署说明
 
 - 按 [GO2 教程](go2-guide.md#3-部署步骤) 先确认二次开发型号、可信系统时间与实际有线 DDS 网卡。仓库默认 `eth0`，部署 CLI 没有 `--interface` 参数。
-- 复用兼容的 `/usr/local` SDK；缺少 Go2 头文件、CMake 配置或 DDS 动态库时停止，不自动覆盖。
+- 复用所选前缀（默认 `/usr/local`）的兼容 SDK；缺失时指定其他路径或显式加 `--install-sdk2`，不自动覆盖。
 - 在选定 system/user 范围安装 `go2-web-control.service` 和 `go2-local-tts.service`。默认 FP32 `kokoro-multi-lang-v1_1/model.onnx`，不使用 G1 INT8 模型。
 - 默认不装 RealSense/相机 helper，不声明可选雷达/真实导航；深度及 ASR/原生TTS/内置LLM 不可用。
 - 电脑准备模型与 AArch64/Python3.8 wheelhouse，但不会打包整个 Ubuntu 软件源。缺失的 arm64 系统包仍需兼容来源。
@@ -134,7 +140,7 @@ bash scripts/deploy.sh check --product go2
 bash scripts/deploy.sh check --product a2
 ~~~
 
-`check` 不安装软件包、不修改文件、不停止或启动 service。它检查系统、架构、目标网卡、所需包、SDK 状态、相机 helper 状态等。R1 / GO2 / A2 `check` 直接使用 `/usr/local` 进行 SDK 校验。检查通过不等于运行或运动验收通过。
+`check` 不安装软件包、不修改文件、不停止或启动 service。它检查系统、架构、目标网卡、所需包、SDK 状态、相机 helper 状态等。R1 / GO2 / A2 `check` 使用所选前缀（默认 `/usr/local`）进行 SDK 校验。检查通过不等于运行或运动验收通过。
 
 ## 7. 部署后验收
 
@@ -145,7 +151,7 @@ curl --noproxy '*' -fsS http://127.0.0.1:8080/api/health
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/robot/manifest
 curl --noproxy '*' -fsS http://127.0.0.1:8080/api/control/status
 ss -ltnp 'sport = :8080'
-ldd /home/unitree/UniRoboGui/build/g1_web_server | grep -E 'ddsc|ddscxx|realsense|not found'
+ldd ./build/g1_web_server | grep -E 'ddsc|ddscxx|realsense|not found'
 ~~~
 
 验收应确认：
@@ -174,7 +180,7 @@ bash scripts/deploy.sh from-pc --product a2
 
 ### R1 SDK 校验失败
 
-如果缺少 `/usr/local` 下的 R1 头文件、`unitree_sdk2Config.cmake`、`libddsc` 或 `libddscxx`，部署会停止。不要让通用部署器自动重装 `/usr/local`；应先按机器人固件/ABI 要求恢复兼容 SDK。
+SDK 校验失败时，先检查 `--sdk-prefix`（默认 `/usr/local`）是否正确。提供与固件/ABI 兼容的 SDK；需要新装时使用 `--install-sdk2 --sdk-prefix /new/prefix` 安装到独立前缀，不覆盖已有 SDK。
 
 ### `undefined symbol: ddsi_sertype_v0`
 

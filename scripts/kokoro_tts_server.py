@@ -7,6 +7,7 @@ POST /tts and sends it to the robot speaker through Unitree AudioClient::PlayStr
 The service never uses PulseAudio for robot playback.
 """
 
+import pathlib
 import argparse
 import json
 import os
@@ -481,7 +482,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
         "--model-dir",
-        default="/home/unitree/UniRoboGui/tts_models/kokoro-int8-multi-lang-v1_1",
+        default=str(pathlib.Path(__file__).resolve().parent.parent / "tts_models" / "kokoro-int8-multi-lang-v1_1"),
     )
     parser.add_argument("--sid", type=int, default=48)
     parser.add_argument("--speed", type=float, default=1.0)

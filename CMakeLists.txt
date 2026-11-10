@@ -12,15 +12,18 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
 pkg_check_modules(ZMQ QUIET libzmq)
 find_package(unitree_sdk2 CONFIG REQUIRED)
+get_target_property(UNITREE_SDK2_INCLUDE_HINTS unitree_sdk2 INTERFACE_INCLUDE_DIRECTORIES)
 find_path(UNITREE_SDK2_R1_INCLUDE_DIR
     unitree/robot/r1/audio/audio_client.hpp
-    HINTS /home/unitree/unitree_sdk2/include)
+    HINTS ${UNITREE_SDK2_INCLUDE_HINTS}
+    NO_DEFAULT_PATH)
 if(NOT UNITREE_SDK2_R1_INCLUDE_DIR)
     message(FATAL_ERROR "Current Unitree SDK2 R1 locomotion/audio headers are required")
 endif()
 find_path(UNITREE_SDK2_A2_INCLUDE_DIR
     unitree/robot/a2/sport/sport_client.hpp
-    HINTS ${UNITREE_SDK2_R1_INCLUDE_DIR})
+    HINTS ${UNITREE_SDK2_INCLUDE_HINTS}
+    NO_DEFAULT_PATH)
 if(NOT UNITREE_SDK2_A2_INCLUDE_DIR)
     message(FATAL_ERROR "Current Unitree SDK2 A2 sport headers are required")
 endif()
@@ -167,6 +170,8 @@ if(BUILD_TESTING)
              COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deploy_cli.sh)
     add_test(NAME unirobo_deploy_bootstrap_tests
              COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deploy_bootstrap.sh)
+    add_test(NAME unirobo_deployment_paths_tests
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deployment_paths.py)
     add_test(NAME unirobo_start_services_tests
              COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_start_services.sh)
     add_test(NAME unirobo_local_tts_tests

@@ -3,6 +3,9 @@ set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
+source "$project_dir/scripts/deploy_i18n.sh"
+source "$project_dir/scripts/deploy_product.sh"
+
 usage() {
   cat <<'EOF'
 用法 / Usage:
@@ -44,6 +47,7 @@ usage() {
 不要原样输入 <g1|r1|go2|a2>；请根据实际机器人填写产品 ID。产品没有隐式默认值。
 Do not type <g1|r1|go2|a2> literally; use the actual product ID. There is no implicit product default.
 EOF
+  print_dependency_help
 }
 
 (($# > 0)) || { usage >&2; exit 2; }
@@ -55,6 +59,15 @@ host=""
 lang="${UNIROBOGUI_LANG:-zh}"
 while (($#)); do
   case "$1" in
+    --install-dir)
+      (($# >= 2)) || { printf '%s\n' '--install-dir requires a directory' >&2; exit 2; }
+      UNIROBOGUI_INSTALL_DIR="$(normalize_deploy_path "$2")" || exit 2
+      export UNIROBOGUI_INSTALL_DIR
+      shift ;;
+    --sdk-prefix|--sdk2-source|--realsense-source|--realsense-prefix)
+      parse_dependency_option "$@" || exit 2
+      shift ;;
+    --install-sdk2) parse_dependency_option "$1" ;;
     --product)
       (($# >= 2)) || { printf '%s\n' '--product requires a value' >&2; exit 2; }
       product="$2"
@@ -94,6 +107,11 @@ export UNIROBOGUI_LANG="$lang"
 source "$project_dir/scripts/deploy_i18n.sh"
 source "$project_dir/scripts/deploy_product.sh"
 load_product_profile "$product"
+
+if [[ "$command_name" != from-pc && -n "${UNIROBOGUI_INSTALL_DIR:-}" ]]; then
+  ui_err "--install-dir 仅可用于 from-pc；本机自动检测项目目录" "--install-dir is only valid for from-pc; local deployment detects the checkout"
+  exit 2
+fi
 
 if [[ "$command_name" != from-pc && -n "$host" ]]; then
   ui_err "--host 仅可用于 from-pc" "--host is only valid for from-pc"

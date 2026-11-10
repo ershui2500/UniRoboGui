@@ -10,6 +10,13 @@ if [[ ! -f "${helper_source}" || ! -f "${sudoers_source}" ]]; then
   exit 1
 fi
 
+account="$(id -un)"
+[[ "$account" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*\$?$ ]] || { echo 'Unsupported account name' >&2; exit 1; }
+rendered="$(mktemp)"
+trap 'rm -f -- "$rendered"' EXIT
+sed "s/^unitree /$account /" "$sudoers_source" > "$rendered"
+sudoers_source="$rendered"
+
 sudo install -m 0755 "${helper_source}" /usr/local/sbin/r1-web-camera-service
 sudo visudo -cf "${sudoers_source}"
 sudo install -m 0440 "${sudoers_source}" /etc/sudoers.d/r1-web-camera

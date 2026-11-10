@@ -1,5 +1,7 @@
 # GO2 部署与 Web 使用教程
 
+项目目录和 SDK 前缀均可自定义，`/home/unitree/UniRoboGui` 和 `/usr/local` 只是默认值。具体见 [自定义路径与账号](../README.md#自定义安装目录和依赖路径)。远程部署用 `--install-dir`，已有 SDK 用 `--sdk-prefix`，新装 SDK 显式加 `--install-sdk2`。
+
 [English](go2-guide.en.md) · [通用部署指南](deployment-dependencies.md)
 
 适用于本项目已注册的 GO2 二次开发变体，运行身份为 `product_id=go2`、内部 `variant=go2_edu`。页面显示 Unitree GO2 不会改变协议标识。不要将其他 GO2 型号或其他机器人的能力直接类推到当前设备。
@@ -44,7 +46,7 @@ Manifest/Capability 是运行时真值。现有 Profile 的 Mock/operator-valida
 
 ### 3.1 准备与校时
 
-准备一台可二次开发的 GO2 拓展计算单元：Ubuntu 20.04 AArch64、`unitree` 用户、兼容 SDK2 已安装到 `/usr/local`。电脑和拓展单元应网络互通。默认 SSH 地址为 `unitree@192.168.123.18`（拓展计算单元），部署前确认现场地址与有线 DDS 网卡；地址不同时再覆盖，不使用运控单元地址。不要加载 ROS 环境。
+准备一台可二次开发的 GO2 拓展计算单元：Ubuntu 20.04 AArch64、普通部署账号（默认 `unitree`）、兼容 SDK2（默认 `/usr/local`，可自定义或显式安装）。电脑和拓展单元应网络互通。默认 SSH 地址为 `unitree@192.168.123.18`（拓展计算单元），部署前确认现场地址与有线 DDS 网卡；地址不同时再覆盖，不使用运控单元地址。不要加载 ROS 环境。
 
 机器人执行 `ip -br -4 addr` 核对网卡。仓库默认 `eth0`；若现场不同，先由维护人员统一修改 `scripts/deploy_product.sh` 与 `deploy/go2-web-control{,.user}.service` 的接口配置并验证，不能通过传入不存在的 `--interface` 部署参数解决。
 
@@ -101,7 +103,7 @@ GO2 默认连接 `unitree@192.168.123.18`，无需填写 `--host` 或创建开�
 
 ### 3.4 仅准备 TTS
 
-在机器人终端进入 `/home/unitree/UniRoboGui` 后，仅准备/修复TTS资源时使用同一个安装器：
+在机器人终端进入实际项目目录（默认 `/home/unitree/UniRoboGui`）后，仅准备/修复TTS资源时使用同一个安装器：
 
 ```bash
 bash scripts/install_kokoro_tts.sh --product go2

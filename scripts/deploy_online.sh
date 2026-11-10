@@ -4,8 +4,8 @@ set -Eeuo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "$PROJECT_DIR/scripts/deploy_i18n.sh"
 source "$PROJECT_DIR/scripts/deploy_product.sh"
-SDK2_DIR="/home/unitree/unitree_sdk2"
-REALSENSE_DIR="/home/unitree/librealsense"
+SDK2_DIR="${UNIROBOGUI_SDK2_SOURCE:-$HOME/unitree_sdk2}"
+REALSENSE_DIR="${UNIROBOGUI_REALSENSE_SOURCE:-$HOME/librealsense}"
 OFFLINE_MODE=false
 WHEELHOUSE=""
 PRODUCT=""
@@ -23,7 +23,7 @@ usage() {
 Usage:
   bash scripts/deploy_online.sh --product g1|r1|go2|a2
 
-Normally no options are required. Use this entry point when the robot itself can access GitHub.
+Without path options the existing defaults are used. Use this entry point when the robot itself can access GitHub.
 If the robot cannot access GitHub, run this on an Ubuntu/Linux computer that can:
   bash scripts/deploy.sh from-pc --product g1|r1|go2|a2 --host USER@HOST
 
@@ -36,7 +36,7 @@ EOF
 用法：
   bash scripts/deploy_online.sh --product g1|r1|go2|a2
 
-正常情况下不要加参数。该脚本用于“机器人本身可以访问 GitHub”的部署场景。
+不使用路径选项时沿用默认值。该脚本用于“机器人本身可以访问 GitHub”的部署场景。
 如果机器人不能访问 GitHub，请在一台能访问 GitHub 的 Ubuntu/Linux 电脑上运行：
   bash scripts/deploy.sh from-pc --product g1|r1|go2|a2 --host USER@HOST
 
@@ -45,10 +45,15 @@ EOF
   --wheelhouse DIR
 EOF
   fi
+  print_dependency_help
 }
 
 while (($#)); do
   case "$1" in
+    --sdk-prefix|--sdk2-source|--realsense-source|--realsense-prefix)
+      parse_dependency_option "$@" || exit 2
+      shift ;;
+    --install-sdk2) parse_dependency_option "$1" ;;
     --product)
       (($# >= 2)) || { ui_err "[错误] --product 缺少产品 ID" "[ERROR] --product requires a product ID"; exit 2; }
       PRODUCT="$2"
@@ -68,6 +73,9 @@ done
 
 [[ -n "$PRODUCT" ]] || { ui_err "[错误] 必须指定 --product" "[ERROR] --product is required"; exit 2; }
 load_product_profile "$PRODUCT"
+SDK2_DIR="${UNIROBOGUI_SDK2_SOURCE:-$SDK2_DIR}"
+REALSENSE_DIR="${UNIROBOGUI_REALSENSE_SOURCE:-$REALSENSE_DIR}"
+[[ "${UNIROBOGUI_INSTALL_SDK2:-0}" != 1 ]] || SDK_POLICY=install_if_missing
 
 STEP_ZH=""
 STEP_EN=""
@@ -137,7 +145,7 @@ PY
 
 archive_source() {
   local name="$1" dir="$2"
-  local backup_root="/home/unitree/.unirobogui-deploy-backups"
+  local backup_root="$HOME/.unirobogui-deploy-backups"
   local stamp backup
   stamp="$(date +%Y%m%d-%H%M%S)"
   backup="$backup_root/$(basename "$dir")-$stamp"
@@ -183,10 +191,8 @@ update_or_clone() {
 }
 
 update_project_checkout() {
-  [[ "$PROJECT_DIR" == "/home/unitree/UniRoboGui" ]] ||
-    die "项目必须位于 /home/unitree/UniRoboGui；当前目录为 $PROJECT_DIR。" "The project must be located at /home/unitree/UniRoboGui; current directory: $PROJECT_DIR."
   [[ -d "$PROJECT_DIR/.git" ]] ||
-    die "在线部署要求 /home/unitree/UniRoboGui 是 Git 仓库；机器人不能访问 GitHub 时请改用 deploy.sh from-pc。" "Online deployment requires a Git checkout at /home/unitree/UniRoboGui; use deploy.sh from-pc when the robot cannot access GitHub."
+    die "在线部署要求 ${PROJECT_DIR} 是 Git 仓库；机器人不能访问 GitHub 时请改用 deploy.sh from-pc。" "Online deployment requires a Git checkout at ${PROJECT_DIR}; use deploy.sh from-pc when the robot cannot access GitHub."
   local remote dirty
   remote="$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null || true)"
   [[ "$remote" == *"ershui2500/UniRoboGui"* ]] ||
@@ -194,7 +200,7 @@ update_project_checkout() {
   dirty="$(git -C "$PROJECT_DIR" status --short)"
   if [[ -n "$dirty" ]]; then
     echo "$dirty" | head -40 >&2
-    help_customer "请先提交或备份 /home/unitree/UniRoboGui 的现场修改，再重新运行；部署脚本不会自动覆盖业务代码。" "Commit or back up local changes in /home/unitree/UniRoboGui before rerunning. The deployment script will not overwrite project code automatically."
+    help_customer "请先提交或备份 ${PROJECT_DIR} 的现场修改，再重新运行；部署脚本不会自动覆盖业务代码。" "Commit or back up local changes in ${PROJECT_DIR} before rerunning. The deployment script will not overwrite project code automatically."
     die "UniRoboGui 存在未提交修改，无法安全自动升级。" "UniRoboGui has uncommitted changes and cannot be upgraded safely."
   fi
   local before after
@@ -219,8 +225,7 @@ missing_system_packages() {
 }
 
 check_environment() {
-  [[ "${EUID}" -ne 0 ]] || die "请使用 unitree 用户运行，不要直接使用 root。" "Run this script as the unitree user, not root."
-  [[ "$(id -un)" == "unitree" ]] || die "当前用户是 $(id -un)，本脚本仅支持机器人 unitree 用户。" "Current user is $(id -un); this script supports only the robot's unitree account."
+  [[ "${EUID}" -ne 0 ]] || die "请使用普通用户运行，不要直接使用 root。" "Run this script as a regular user, not root."
   [[ "$(uname -m)" == "$TARGET_ARCH" ]] || die "当前架构为 $(uname -m)，预期 ${PRODUCT_NAME} ${TARGET_ARCH}。" "Current architecture is $(uname -m); expected ${PRODUCT_NAME} ${TARGET_ARCH}."
   source /etc/os-release
   [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "$TARGET_UBUNTU_VERSION" ]] ||
@@ -266,8 +271,6 @@ check_environment
 
 step "3/8 准备 UniRoboGui 项目源码" "3/8 Prepare UniRoboGui source"
 if $OFFLINE_MODE; then
-  [[ "$PROJECT_DIR" == "/home/unitree/UniRoboGui" ]] ||
-    die "项目必须位于 /home/unitree/UniRoboGui；当前目录为 $PROJECT_DIR。" "The project must be located at /home/unitree/UniRoboGui; current directory: $PROJECT_DIR."
   info "使用联网电脑已经传入的 UniRoboGui 源码，不要求机器人访问 GitHub。" "Using UniRoboGui source already transferred by the online computer; robot-side GitHub access is not required."
 else
   update_project_checkout
@@ -284,40 +287,46 @@ fi
 
 step "5/8 准备 Unitree SDK2 源码" "5/8 Prepare Unitree SDK2 source"
 if [[ "$SDK_POLICY" == verify_existing ]]; then
-  info "${PRODUCT_NAME} 复用 /usr/local 的现有 SDK2；本流程不会下载或覆盖它。" "${PRODUCT_NAME} reuses the existing SDK2 under /usr/local; this flow will not download or replace it."
+  info '将验证所选 SDK2 前缀；缺失时安装器会提示路径或显式源码安装参数。' \
+    'The selected SDK2 prefix will be verified; missing SDKs require a path or explicit source installation.'
+elif [[ -f "${UNIROBOGUI_SDK_PREFIX:-$SYSTEM_SDK_PREFIX}/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" ]]; then
+  info '复用现有 SDK2，无需更新 SDK 源码。' 'Reusing existing SDK2; no SDK source update needed.'
 elif $OFFLINE_MODE; then
   [[ -f "$SDK2_DIR/CMakeLists.txt" ]] || die "离线部署缺少 SDK2 源码：$SDK2_DIR" "Offline deployment is missing SDK2 source: $SDK2_DIR"
-  info "使用联网电脑已传入的 SDK2 源码：$SDK2_DIR" "Using SDK2 source transferred by the online computer: $SDK2_DIR"
+elif [[ -n "${UNIROBOGUI_SDK2_SOURCE:-}" && -f "$SDK2_DIR/CMakeLists.txt" ]]; then
+  info "使用指定 SDK2 源码：$SDK2_DIR" "Using selected SDK2 source: $SDK2_DIR"
 else
-  update_or_clone "Unitree SDK2"     "https://github.com/unitreerobotics/unitree_sdk2.git"     "$SDK2_DIR" "unitreerobotics/unitree_sdk2"
+  update_or_clone "Unitree SDK2" "https://github.com/unitreerobotics/unitree_sdk2.git" "$SDK2_DIR" "unitreerobotics/unitree_sdk2"
 fi
 
 step "6/8 检测/准备 librealsense2" "6/8 Check/prepare librealsense2"
 if ! ${NEEDS_REALSENSE}; then
   info "${PRODUCT_NAME} 不需要 librealsense2；跳过该依赖。" "${PRODUCT_NAME} does not require librealsense2; skipping it."
 elif {
+  if [[ -n "${UNIROBOGUI_REALSENSE_PREFIX:-}" ]]; then
+    [[ -f "$UNIROBOGUI_REALSENSE_PREFIX/lib/cmake/realsense2/realsense2Config.cmake" ]]
+  else
   pkg-config --exists realsense2 2>/dev/null ||
   [[ -f /usr/local/lib/cmake/realsense2/realsense2Config.cmake ]] ||
   [[ -f /usr/local/lib/aarch64-linux-gnu/cmake/realsense2/realsense2Config.cmake ]] ||
-  [[ -f /opt/ros/noetic/lib/aarch64-linux-gnu/cmake/realsense2/realsense2Config.cmake ]];
+  [[ -f /opt/ros/noetic/lib/aarch64-linux-gnu/cmake/realsense2/realsense2Config.cmake ]]
+  fi
 }; then
   ok "机器人已经有可用 librealsense2，后续直接复用。" "A usable librealsense2 installation is already present and will be reused."
 else
   if $OFFLINE_MODE; then
     info "使用联网电脑已传入的 librealsense 源码：$REALSENSE_DIR" "Using librealsense source transferred by the online computer: $REALSENSE_DIR"
   else
-    update_or_clone "librealsense2"     "https://github.com/realsenseai/librealsense.git"     "$REALSENSE_DIR" "realsenseai/librealsense"
+    [[ -f "$REALSENSE_DIR/CMakeLists.txt" && -n "${UNIROBOGUI_REALSENSE_SOURCE:-}" ]] || update_or_clone "librealsense2"     "https://github.com/realsenseai/librealsense.git"     "$REALSENSE_DIR" "realsenseai/librealsense"
   fi
   [[ -f "$REALSENSE_DIR/CMakeLists.txt" ]] || die "librealsense 源码不完整：$REALSENSE_DIR" "librealsense source is incomplete: $REALSENSE_DIR"
 fi
 
 step "7/8 编译、测试并安装 UniRoboGui" "7/8 Build, test, and install UniRoboGui"
-[[ "$PROJECT_DIR" == "/home/unitree/UniRoboGui" ]] ||
-  die "项目必须位于 /home/unitree/UniRoboGui；当前目录为 $PROJECT_DIR。" "The project must be located at /home/unitree/UniRoboGui; current directory: $PROJECT_DIR."
 [[ -f "$PROJECT_DIR/scripts/install.sh" ]] || die "缺少 scripts/install.sh。" "Missing scripts/install.sh."
 if $OFFLINE_MODE && ${NEEDS_KOKORO}; then
   [[ -n "$WHEELHOUSE" && -d "$WHEELHOUSE" ]] || die "离线部署缺少 Kokoro wheelhouse：$WHEELHOUSE" "Offline deployment is missing the Kokoro wheelhouse: $WHEELHOUSE"
-  [[ -s /home/unitree/UniRoboGui/tts_models/${TTS_MODEL_NAME}.tar.bz2 ]] ||
+  [[ -s "$PROJECT_DIR/tts_models/${TTS_MODEL_NAME}.tar.bz2" ]] ||
     die "离线部署缺少 Kokoro 模型压缩包。" "Offline deployment is missing the Kokoro model archive."
   export KOKORO_WHEELHOUSE="$WHEELHOUSE"
   info "Kokoro 将只使用联网电脑传入的 wheelhouse：$WHEELHOUSE" "Kokoro will use only the wheelhouse transferred by the online computer: $WHEELHOUSE"

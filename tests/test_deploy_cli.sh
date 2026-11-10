@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# CTest may inherit the installer's selected paths; fixtures must remain isolated.
+unset UNIROBOGUI_INSTALL_DIR UNIROBOGUI_SDK_PREFIX UNIROBOGUI_SDK2_SOURCE \
+  UNIROBOGUI_REALSENSE_SOURCE UNIROBOGUI_REALSENSE_PREFIX UNIROBOGUI_INSTALL_SDK2
+
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -60,57 +64,57 @@ if load_product_profile unknown >/dev/null 2>&1; then
   fail "unknown product was accepted"
 fi
 
-mkdir -p "$TMP/repo/scripts"
+mkdir -p "$TMP/repo with spaces/scripts"
 cp "$ROOT/scripts/deploy.sh" "$ROOT/scripts/deploy_i18n.sh" \
-  "$ROOT/scripts/deploy_product.sh" "$TMP/repo/scripts/"
+  "$ROOT/scripts/deploy_product.sh" "$TMP/repo with spaces/scripts/"
 for name in deploy_online.sh deploy_from_pc.sh install.sh; do
-  cat >"$TMP/repo/scripts/$name" <<'EOF'
+  cat >"$TMP/repo with spaces/scripts/$name" <<'EOF'
 #!/usr/bin/env bash
 printf '%s lang=%s\n' "$0 $*" "${UNIROBOGUI_LANG:-}" >>"${DEPLOY_TEST_LOG:?}"
 EOF
 done
-chmod +x "$TMP/repo/scripts/"*.sh
+chmod +x "$TMP/repo with spaces/scripts/"*.sh
 export DEPLOY_TEST_LOG="$TMP/dispatch.log"
 
-bash "$TMP/repo/scripts/deploy.sh" --help >"$TMP/help"
+bash "$TMP/repo with spaces/scripts/deploy.sh" --help >"$TMP/help"
 grep -q -- '--product g1|r1|go2|a2' "$TMP/help" || fail "help does not document supported products"
 grep -q -- '--host USER@HOST' "$TMP/help" || fail "help does not document --host"
 grep -q -- '--lang zh|en' "$TMP/help" || fail "help does not document --lang"
 grep -q 'install' "$TMP/help" && grep -q 'from-pc' "$TMP/help" && grep -q 'check' "$TMP/help" ||
   fail "help does not document all deployment commands"
 
-expect_rc 2 bash "$TMP/repo/scripts/deploy.sh" install
+expect_rc 2 bash "$TMP/repo with spaces/scripts/deploy.sh" install
 grep -q -- '--product g1|r1|go2|a2 is required' "$TMP/stderr" ||
   fail "missing product was not rejected"
-expect_rc 2 bash "$TMP/repo/scripts/deploy.sh" install --product unknown
+expect_rc 2 bash "$TMP/repo with spaces/scripts/deploy.sh" install --product unknown
 grep -q 'Unsupported product' "$TMP/stderr" ||
   fail "unknown product was not rejected"
-expect_rc 2 bash "$TMP/repo/scripts/deploy.sh" install --product g1 --host robot
+expect_rc 2 bash "$TMP/repo with spaces/scripts/deploy.sh" install --product g1 --host robot
 grep -q -- '--host' "$TMP/stderr" || fail "--host leaked into install"
-expect_rc 2 bash "$TMP/repo/scripts/deploy.sh" check --product g1 --lang de
+expect_rc 2 bash "$TMP/repo with spaces/scripts/deploy.sh" check --product g1 --lang de
 grep -q 'Unsupported UNIROBOGUI_LANG' "$TMP/stderr" ||
   fail "unsupported language was not rejected"
 
 : >"$DEPLOY_TEST_LOG"
-bash "$TMP/repo/scripts/deploy.sh" install --product g1 --lang en
-bash "$TMP/repo/scripts/deploy.sh" check --product r1
-bash "$TMP/repo/scripts/deploy.sh" from-pc --product r1
+bash "$TMP/repo with spaces/scripts/deploy.sh" install --product g1 --lang en
+bash "$TMP/repo with spaces/scripts/deploy.sh" check --product r1
+bash "$TMP/repo with spaces/scripts/deploy.sh" from-pc --product r1
 grep -q 'deploy_online.sh --product g1' "$DEPLOY_TEST_LOG"
 grep -q 'deploy_online.sh --product g1 lang=en' "$DEPLOY_TEST_LOG" ||
   fail "--lang en was not forwarded through the environment"
 grep -q 'install.sh --product r1 --check-only' "$DEPLOY_TEST_LOG"
 grep -q 'deploy_from_pc.sh --product r1 --host unitree@192.168.123.164' "$DEPLOY_TEST_LOG"
-bash "$TMP/repo/scripts/deploy.sh" install --product go2
-bash "$TMP/repo/scripts/deploy.sh" check --product go2
-bash "$TMP/repo/scripts/deploy.sh" from-pc --product go2
+bash "$TMP/repo with spaces/scripts/deploy.sh" install --product go2
+bash "$TMP/repo with spaces/scripts/deploy.sh" check --product go2
+bash "$TMP/repo with spaces/scripts/deploy.sh" from-pc --product go2
 grep -q 'deploy_from_pc.sh --product go2 --host unitree@192.168.123.18' "$DEPLOY_TEST_LOG" ||
   fail "GO2 default host was not dispatched"
-bash "$TMP/repo/scripts/deploy.sh" from-pc --product go2 --host unirobo-go2
+bash "$TMP/repo with spaces/scripts/deploy.sh" from-pc --product go2 --host unirobo-go2
 grep -q 'deploy_online.sh --product go2' "$DEPLOY_TEST_LOG"
 grep -q 'install.sh --product go2 --check-only' "$DEPLOY_TEST_LOG"
 grep -q 'deploy_from_pc.sh --product go2 --host unirobo-go2' "$DEPLOY_TEST_LOG"
 for command in install check from-pc; do
-  bash "$TMP/repo/scripts/deploy.sh" "$command" --product a2
+  bash "$TMP/repo with spaces/scripts/deploy.sh" "$command" --product a2
 done
 grep -q 'deploy_online.sh --product a2' "$DEPLOY_TEST_LOG"
 grep -q 'install.sh --product a2 --check-only' "$DEPLOY_TEST_LOG"
@@ -219,7 +223,7 @@ sdk_prefix="$TMP/sdk"
 SDK_POLICY=verify_existing
 mkdir -p "$sdk_prefix/lib/cmake/unitree_sdk2" "$sdk_prefix/include/unitree/robot/go2/"{vui,sport}
 touch "$sdk_prefix/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake" \
-  "$sdk_prefix/lib/libddsc.so" "$sdk_prefix/lib/libddscxx.so" \
+  "$sdk_prefix/lib/libddsc.so" "$sdk_prefix/lib/libddscxx.so" "$sdk_prefix/lib/libunitree_sdk2.a" \
   "$sdk_prefix/include/unitree/robot/go2/vui/vui_client.hpp" \
   "$sdk_prefix/include/unitree/robot/go2/sport/sport_client.hpp"
 sdk_in_subshell() ( install_sdk2 )
@@ -234,11 +238,14 @@ install_sdk2 >"$TMP/sdk-check"
 source <(sed -n '/^remote_preflight() {$/,/^}$/p' "$ROOT/scripts/deploy_from_pc.sh")
 SSH_ARGS=()
 ROBOT=unitree@go2-test
+REMOTE_PROJECT_DIR=/home/unitree/UniRoboGui
 PRODUCT_NAME='Unitree GO2'
 clock_offset=0
 baseline_age=0
 ssh() {
-  if [[ "$*" == *'stat -c %Y'* ]]; then
+  if [[ "$*" == *'printf "%s" "$HOME"'* ]]; then
+    printf '/home/unitree'
+  elif [[ "$*" == *'stat -c %Y'* ]]; then
     local now
     now="$(date +%s)"
     printf '%s\n%s\n' "$((now + clock_offset))" "$((now + clock_offset - baseline_age))"
@@ -328,28 +335,28 @@ for preserved in tts_models tts_kokoro; do
     fail "from-pc must preserve robot $preserved"
 done
 
-legacy="$TMP/repo/scripts/deploy_g1_from_pc.sh"
+legacy="$TMP/repo with spaces/scripts/deploy_g1_from_pc.sh"
 cp "$ROOT/scripts/deploy_g1_from_pc.sh" "$legacy"
 : >"$DEPLOY_TEST_LOG"
 bash "$legacy" --robot unitree@example
 grep -q 'deploy_from_pc.sh --product g1 --host unitree@example' "$DEPLOY_TEST_LOG" ||
   fail "legacy --robot was not translated to --host"
 
-cp "$ROOT/scripts/deploy_g1_online.sh" "$ROOT/scripts/install_g1.sh" "$TMP/repo/scripts/"
+cp "$ROOT/scripts/deploy_g1_online.sh" "$ROOT/scripts/install_g1.sh" "$TMP/repo with spaces/scripts/"
 : >"$DEPLOY_TEST_LOG"
-bash "$TMP/repo/scripts/deploy_g1_online.sh"
-bash "$TMP/repo/scripts/install_g1.sh" --check-only
+bash "$TMP/repo with spaces/scripts/deploy_g1_online.sh"
+bash "$TMP/repo with spaces/scripts/install_g1.sh" --check-only
 grep -q 'deploy_online.sh --product g1' "$DEPLOY_TEST_LOG" ||
   fail "legacy online entry did not forward to g1"
 grep -q 'install.sh --product g1 --check-only' "$DEPLOY_TEST_LOG" ||
   fail "legacy install entry did not forward to g1"
 
 cp "$ROOT/scripts/deploy_g1_from_pc.en.sh" "$ROOT/scripts/deploy_g1_online.en.sh" \
-  "$ROOT/scripts/install_g1.en.sh" "$TMP/repo/scripts/"
+  "$ROOT/scripts/install_g1.en.sh" "$TMP/repo with spaces/scripts/"
 : >"$DEPLOY_TEST_LOG"
-bash "$TMP/repo/scripts/deploy_g1_from_pc.en.sh" --robot unitree@example
-bash "$TMP/repo/scripts/deploy_g1_online.en.sh"
-bash "$TMP/repo/scripts/install_g1.en.sh" --check-only
+bash "$TMP/repo with spaces/scripts/deploy_g1_from_pc.en.sh" --robot unitree@example
+bash "$TMP/repo with spaces/scripts/deploy_g1_online.en.sh"
+bash "$TMP/repo with spaces/scripts/install_g1.en.sh" --check-only
 grep -q 'deploy_from_pc.sh --product g1 --host unitree@example' "$DEPLOY_TEST_LOG" ||
   fail "legacy English from-pc entry did not forward to g1"
 grep -q 'deploy_online.sh --product g1' "$DEPLOY_TEST_LOG" ||
@@ -393,7 +400,7 @@ rsync() {
     case "$arg" in --files-from=*) cat "${arg#--files-from=}" >"$TMP/project-files" ;; esac
   done
 }
-source <(sed -n '/^rsync -e .* -az --info=progress2 /,/^project_revision=/{ /^project_revision=/!p; }' "$ROOT/scripts/deploy_from_pc.sh")
+source <(sed -n '/^rsync -e .* -az --protect-args --info=progress2 /,/^project_revision=/{ /^project_revision=/!p; }' "$ROOT/scripts/deploy_from_pc.sh")
 [[ -s "$TMP/project-rsync-args" ]] || fail "project transfer was not exercised"
 ! grep -Fxq -- '--delete' "$TMP/project-rsync-args" || fail "project transfer deletes on-site files"
 grep -Fxq '/config/' "$TMP/project-rsync-args" || fail "project transfer exposes customer config"
