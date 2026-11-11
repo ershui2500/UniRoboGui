@@ -4013,9 +4013,12 @@ body.console-workspace-active #voice-interaction:not(.drawer-expanded) #ttsSubmi
   color: #ff9aa3;
   border-color: rgba(255, 107, 118, .3);
 }
-.camera-inline-feedback {
-  grid-area: camera-feedback;
-  min-height: 28px;
+#cameraFeedback {
+  grid-column: 1 / -1;
+  min-width: 0;
+  max-height: 4.5em;
+  overflow: auto;
+  overflow-wrap: anywhere;
   margin: 0;
   padding: 6px 10px;
   border: 1px solid rgba(137, 166, 201, .12);

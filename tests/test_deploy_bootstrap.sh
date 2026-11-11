@@ -146,6 +146,22 @@ ensurepip_present=true
 prepare_kokoro_bootstrap
 [[ "${#SYSTEM_PACKAGES[@]}" == 0 ]] || fail 'working ensurepip forced an APT dependency'
 ensurepip_present=false
+python3() {
+  case "$*" in
+    '-m pip --version') return 0 ;;
+    '-m pip download '*) printf '%s\n' "$*" >"$TMP/online-bootstrap-download" ;;
+    *) return 1 ;;
+  esac
+}
+prepare_kokoro_bootstrap
+[[ "$KOKORO_WHEELHOUSE" == "$project_dir/tts_kokoro/wheelhouse" ]] || fail 'online bootstrap escaped project venv'
+grep -q -- '--only-binary=:all:.*pip<25.*sherpa-onnx==' "$TMP/online-bootstrap-download" || fail 'online bootstrap dependencies incomplete'
+KOKORO_WHEELHOUSE=""
+offline_mode=1
+if bootstrap_in_subshell >"$TMP/offline-bootstrap.out" 2>&1; then
+  fail 'offline bootstrap unexpectedly used the online pip downloader'
+fi
+offline_mode=0
 mkdir -p "$project_dir/tts_kokoro/bin"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$project_dir/tts_kokoro/bin/python"
 cp "$project_dir/tts_kokoro/bin/python" "$project_dir/tts_kokoro/bin/pip"
@@ -255,5 +271,49 @@ UNIROBOGUI_ROOT="$fixture" KOKORO_WHEELHOUSE="$fixture/wheels" PYTHON="$TMP/pyth
   cat "$TMP/recovery.out" >&2; fail 'partial model did not recover';
 }
 test -f "$fixture/tts_models/kokoro-multi-lang-v1_1/voices.bin" || fail 'missing voice asset was not restored'
+
+# A truncated download must resume online, but never access the network offline.
+cp "$fixture/tts_models/kokoro-multi-lang-v1_1.tar.bz2" "$TMP/complete-model.tar.bz2"
+printf 'truncated' >"$fixture/tts_models/kokoro-multi-lang-v1_1.tar.bz2"
+rm "$fixture/tts_models/kokoro-multi-lang-v1_1/voices.bin"
+if UNIROBOGUI_OFFLINE=1 UNIROBOGUI_ROOT="$fixture" KOKORO_WHEELHOUSE="$fixture/wheels" PYTHON="$TMP/python" \
+  bash "$ROOT/scripts/install_kokoro_tts.sh" --product a2 >"$TMP/truncated-offline.out" 2>&1; then
+  fail 'offline install accepted a truncated archive'
+fi
+grep -q 'Kokoro' "$TMP/truncated-offline.out" || fail 'offline archive error unclear'
+cat >"$TMP/bin/curl" <<STUB
+#!/usr/bin/env bash
+printf 'resume %s\\n' "\$*" >>"$BOOTSTRAP_LOG"
+while ((\$#)); do
+  if [[ "\$1" == -o ]]; then cp "$TMP/complete-model.tar.bz2" "\$2"; exit; fi
+  shift
+done
+exit 1
+STUB
+chmod +x "$TMP/bin/curl"
+PATH="$TMP/bin:$PATH" UNIROBOGUI_OFFLINE=0 UNIROBOGUI_ROOT="$fixture" KOKORO_WHEELHOUSE="$fixture/wheels" PYTHON="$TMP/python" \
+  bash "$ROOT/scripts/install_kokoro_tts.sh" --product a2 >"$TMP/truncated-online.out" 2>&1 || {
+  cat "$TMP/truncated-online.out" >&2; fail 'truncated download did not resume';
+}
+grep -q 'resume .*--continue-at -' "$BOOTSTRAP_LOG" || fail 'online download did not request resume'
+test -f "$fixture/tts_models/kokoro-multi-lang-v1_1/voices.bin" || fail 'resumed model was not extracted'
+
+# sudo must keep only the configured proxy variables for both APT operations.
+(
+  source <(sed -n '/^install_system_packages() {$/,/^}$/p' "$ROOT/scripts/install.sh")
+  missing_system_packages() { echo python3-venv; }
+  warn() { :; }; wifi_help() { :; }
+  install_scope=system
+  unset http_proxy https_proxy no_proxy
+  export HTTP_PROXY=http://127.0.0.1:17890 HTTPS_PROXY=http://127.0.0.1:17890 NO_PROXY=localhost,127.0.0.1
+  sudo() {
+    [[ "$*" != *apt-get* ]] && return 0
+    [[ "$1" == --preserve-env=http_proxy,https_proxy,no_proxy ]] || return 91
+    [[ "$http_proxy" == "$HTTP_PROXY" && "$https_proxy" == "$HTTPS_PROXY" && "$no_proxy" == "$NO_PROXY" ]] || return 92
+    printf 'apt-proxy %s\n' "$*" >>"$BOOTSTRAP_LOG"
+  }
+  install_system_packages
+) || fail 'APT did not receive the configured proxy through sudo'
+[[ "$(grep -c '^apt-proxy ' "$BOOTSTRAP_LOG")" == 2 ]] || fail 'both APT operations must use the proxy'
 
 printf '%s\n' 'deployment bootstrap regression passed'

@@ -86,6 +86,16 @@ bash scripts/deploy.sh install --product go2 --lang en
 
 For an existing directory, skip clone, inspect `git status --short` and preserve local changes before check/install. The robot needs GitHub, model-host and PyPI access, plus an Ubuntu package source if system packages are missing. Installation performs Release/complete CTest/ldd checks, installs the selected Web/TTS service scope, and runs read-only acceptance. Unpublished local changes cannot be fetched from an older remote revision.
 
+For a custom directory, replace the clone and cd lines above with these commands, then run check/install as usual. Always quote paths containing spaces. `install` does not use `--install-dir`:
+
+```bash
+PROJECT_DIR="$HOME/robot apps/UniRoboGui"
+git clone https://github.com/ershui2500/UniRoboGui.git "$PROJECT_DIR"
+cd "$PROJECT_DIR"
+```
+
+To use port 7890 on the PC as a proxy, first follow the [SSH reverse proxy procedure](deployment-dependencies.en.md#github-is-unreachable), then set proxy variables in the robot terminal before clone/install. The robot cannot reach the PC proxy through its own `127.0.0.1:7890`.
+
 ### 3.3 Method B: transfer from an online PC
 
 On an Ubuntu/Linux PC with GitHub/model/PyPI access and SSH reachability to GO2, clone first. Skip clone if the directory already exists and inspect `git status --short`; do not overwrite it. After entering the project directory, run the clock procedure in §3.1 on this PC, then run `from-pc` within five minutes:
@@ -98,6 +108,15 @@ bash scripts/deploy.sh from-pc --product go2 --lang en
 ```
 
 GO2 defaults to `unitree@192.168.123.18`; no `--host` or development alias is needed. If the actual address differs, override it with `bash scripts/deploy.sh from-pc --product go2 --host unitree@<GO2_IP> --lang en`, or use an existing SSH Host alias. The script updates the PC's clean checkout, prepares the FP32 model and AArch64/Python 3.8 wheelhouse, and transfers them for robot-side build/install. This is not an offline OS image: missing Ubuntu 20.04 arm64 system packages still need a compatible source or prior installation. Do not substitute x86_64 wheels/packages.
+
+For a custom robot directory, replace the `from-pc` command above with this one. The absolute path refers to the robot, independently of the PC checkout location:
+
+```bash
+bash scripts/deploy.sh from-pc --product go2 --lang en \
+  --install-dir "/home/unitree/robot apps/UniRoboGui" --sdk-prefix /usr/local
+```
+
+Different installation directories on the same GO2 share the Web/TTS service names and ports. Migration checks and replaces the existing services; it does not create a second running instance. Remove an unused old directory only after verifying the new deployment.
 
 If the PC needs a proxy, configure its real proxy address only on the PC. Include localhost, 127.0.0.1 and the actual robot address in `no_proxy`. Robot localhost is not the PC's proxy; do not repurpose the DDS interface for Internet access.
 

@@ -118,7 +118,9 @@ for required in "${model_assets[@]}"; do
 done
 [[ -d "${MODEL_DIR}/espeak-ng-data" ]] || model_complete=false
 if ! ${model_complete}; then
-  if [[ ! -s "${ARCHIVE}" ]]; then
+  if [[ ! -s "${ARCHIVE}" ]] || ! tar -tjf "${ARCHIVE}" >/dev/null 2>&1; then
+    [[ "${UNIROBOGUI_OFFLINE:-0}" != 1 ]] ||
+      fail "离线 Kokoro 模型包缺失或不完整，请重新传输：${ARCHIVE}" "Offline Kokoro model archive is missing or incomplete; transfer it again: ${ARCHIVE}"
     curl -fL --retry 2 --retry-delay 2 --connect-timeout 8 \
       --continue-at - -o "${ARCHIVE}" "${MODEL_URL}" || {
       if [[ "$UNIROBOGUI_LANG" == "en" ]]; then

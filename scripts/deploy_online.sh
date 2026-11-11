@@ -126,7 +126,7 @@ trap on_error ERR
 
 github_available() {
   if command -v curl >/dev/null 2>&1; then
-    curl --noproxy '*' -IL --connect-timeout 5 --max-time 10 -fsS https://github.com/ >/dev/null 2>&1
+    curl -IL --connect-timeout 5 --max-time 10 -fsS https://github.com/ >/dev/null
     return
   fi
   if command -v git >/dev/null 2>&1; then

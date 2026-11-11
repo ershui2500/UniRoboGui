@@ -143,7 +143,7 @@ trap on_error ERR
 
 github_available() {
   if command -v curl >/dev/null 2>&1; then
-    curl -IL --connect-timeout 5 --max-time 10 -fsS https://github.com/ >/dev/null 2>&1
+    curl -IL --connect-timeout 5 --max-time 10 -fsS https://github.com/ >/dev/null
   elif command -v git >/dev/null 2>&1; then
     git ls-remote https://github.com/unitreerobotics/unitree_sdk2.git HEAD >/dev/null 2>&1
   else
@@ -164,7 +164,7 @@ require_local_tools() {
       die "联网电脑没有可用的 python3 -m pip。请先安装 python3-pip。" "python3 -m pip is unavailable on the online computer. Install python3-pip first."
   fi
   if [[ ! -t 0 ]]; then
-    warn "当前不是交互终端。若 SSH 或机器人 sudo 需要输入密码，最终安装步骤会失败；正常客户部署请在可交互的终端中运行本脚本。" "This is not an interactive terminal. If SSH or robot sudo requires a password, the final install step will fail. Run normal deployments from an interactive terminal."
+    warn "当前为非交互部署：SSH 必须免密；机器人需免交互 sudo，或满足持久用户级安装条件（Linger=yes、系统包齐全）。需要输入密码时，请改用交互终端。" "Non-interactive deployment requires passwordless SSH and either non-interactive sudo or persistent user-install prerequisites (Linger=yes and all system packages). Use an interactive terminal if a password is needed."
   fi
 }
 

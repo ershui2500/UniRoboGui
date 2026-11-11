@@ -168,8 +168,8 @@ have_realsense() {
 probe_github() {
   if ! command -v curl >/dev/null 2>&1; then
     ui_err "[WARN] curl 尚未安装，暂时无法检测 GitHub；APT 安装基础工具后会自动重试。" "[WARN] curl is not installed yet, so GitHub cannot be checked; the check will retry after APT installs the base tools."
-  elif curl --noproxy '*' -IL --connect-timeout 5 --max-time 10 -fsS \
-      https://github.com/ >/dev/null 2>&1; then
+  elif curl -IL --connect-timeout 5 --max-time 10 -fsS \
+      https://github.com/ >/dev/null; then
     github_available=true
     ui_line "[OK] GitHub 当前可访问。" "[OK] GitHub is reachable."
   else
@@ -234,6 +234,13 @@ prepare_kokoro_bootstrap() {
   if [[ "${install_scope}" == system ]]; then
     SYSTEM_PACKAGES+=(python3-venv)
     ui_line "首次本地 TTS 安装需要 python3-venv；将通过系统软件源准备。" "First-time local TTS setup requires python3-venv; preparing it from the system package mirror."
+  elif [[ "${offline_mode:-0}" != 1 ]] && python3 -m pip --version >/dev/null 2>&1; then
+    export KOKORO_WHEELHOUSE="${venv}/wheelhouse"
+    mkdir -p "$KOKORO_WHEELHOUSE"
+    ui_line "系统缺少 ensurepip；先下载 wheels，在项目虚拟环境内引导 pip，无需 sudo。" "ensurepip is missing; downloading wheels to bootstrap pip inside the project venv without sudo."
+    python3 -m pip download --only-binary=:all: --dest "$KOKORO_WHEELHOUSE" \
+      'pip<25' 'setuptools<76' wheel 'numpy<2' "sherpa-onnx==${SHERPA_ONNX_VERSION:-1.13.4}" ||
+      fail "TTS wheels 下载失败；请检查 PyPI/代理，或提供完整 KOKORO_WHEELHOUSE。" "TTS wheel download failed; check PyPI/proxy access or supply a complete KOKORO_WHEELHOUSE."
   else
     fail "首次本地 TTS 安装缺少 ensurepip。请提供含 pip wheel 的 KOKORO_WHEELHOUSE，或由管理员先安装 python3-venv；当前尚未开始编译。" "First-time local TTS setup requires ensurepip. Supply KOKORO_WHEELHOUSE containing a pip wheel, or ask an administrator to install python3-venv; compilation has not started."
   fi
@@ -260,15 +267,18 @@ install_system_packages() {
   if [[ "${install_scope}" == "user" ]]; then
     fail "用户级安装不能补装缺失的 Ubuntu 系统包。请在交互终端进行系统级安装，或先安装上面列出的 Ubuntu ${TARGET_UBUNTU_VERSION} ${TARGET_ARCH} 软件包。" "User-local install cannot add missing Ubuntu packages. Rerun in an interactive terminal for system install, or install the listed Ubuntu ${TARGET_UBUNTU_VERSION} ${TARGET_ARCH} packages first."
   fi
+  export http_proxy="${http_proxy:-${HTTP_PROXY:-}}"
+  export https_proxy="${https_proxy:-${HTTPS_PROXY:-}}"
+  export no_proxy="${no_proxy:-${NO_PROXY:-}}"
   sudo -v
-  if ! sudo apt-get update \
+  if ! sudo --preserve-env=http_proxy,https_proxy,no_proxy apt-get update \
     -o Dir::Etc::sourcelist="sources.list" \
     -o Dir::Etc::sourceparts="-" \
     -o APT::Get::List-Cleanup="0"; then
     wifi_help
     fail "缺少必要软件包且 APT 更新失败。请保持 ${DDS_INTERFACE} 不变，让 wlan0 连接 Ubuntu ${TARGET_UBUNTU_VERSION} 软件源。" "APT update failed while packages are missing. Keep ${DDS_INTERFACE} unchanged and connect wlan0 to an Ubuntu ${TARGET_UBUNTU_VERSION} mirror."
   fi
-  sudo apt-get install -y --no-install-recommends "${missing[@]}"
+  sudo --preserve-env=http_proxy,https_proxy,no_proxy apt-get install -y --no-install-recommends "${missing[@]}"
 }
 
 check_network() {
@@ -528,7 +538,9 @@ PY
     fail "无法取得 ${WEB_SERVICE} 的 MainPID。" "Could not get MainPID for ${WEB_SERVICE}."
 
   cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline")"
-  [[ "${cmdline}" == *"--robot ${PRODUCT_ID}"* &&
+  assert_web_service_identity "${install_scope}"
+  [[ "${cmdline}" == "${project_dir}/build/g1_web_server "* &&
+     "${cmdline}" == *"--robot ${PRODUCT_ID}"* &&
      "${cmdline}" == *"--interface ${DDS_INTERFACE}"* ]] ||
     fail "MainPID 启动参数与目标产品不一致：${cmdline}" "MainPID arguments do not match the selected product: ${cmdline}"
 
@@ -555,16 +567,21 @@ PY
 }
 
 assert_web_service_identity() {
-  local scope="$1" exec_start pid cmdline
+  local scope="$1" exec_start pid cmdline service_dir
   local ctl=(systemctl)
   [[ "$scope" != user ]] || ctl+=(--user)
   exec_start="$("${ctl[@]}" show "${WEB_SERVICE}" -p ExecStart --value)"
+  service_dir="$("${ctl[@]}" show "${WEB_SERVICE}" -p WorkingDirectory --value)"
+  service_dir="$(readlink -f -- "$service_dir")" ||
+    fail "无法核实 ${WEB_SERVICE} 的工作目录，拒绝停止。" "Cannot verify ${WEB_SERVICE} working directory; refusing to stop."
   pid="$("${ctl[@]}" show "${WEB_SERVICE}" -p MainPID --value)"
   [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/cmdline" ]] ||
     fail "无法核实 ${WEB_SERVICE} 的 MainPID，拒绝停止。" "Cannot verify MainPID for ${WEB_SERVICE}; refusing to stop."
   cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
-  [[ "$exec_start" == *"${project_dir}/build/g1_web_server "* &&
-     "$cmdline" == "${project_dir}/build/g1_web_server "* ]] ||
+  [[ "$service_dir" == /* &&
+     "$exec_start" == *"${service_dir%/}/build/g1_web_server"* &&
+     "$cmdline" == "${service_dir%/}/build/g1_web_server "* &&
+     "$(readlink -f "/proc/$pid/exe")" == "$(readlink -f "${service_dir%/}/build/g1_web_server")" ]] ||
     fail "${WEB_SERVICE} 的程序路径不匹配，拒绝停止。" "${WEB_SERVICE} executable path does not match; refusing to stop."
   local args
   for args in "$exec_start" "$cmdline"; do

@@ -199,23 +199,35 @@ unset -f systemctl sudo sleep ss
 # Exercise exact unit/MainPID checks without operating any services.
 source <(sed -n '/^assert_web_service_identity() {$/,/^}$/p' "$ROOT/scripts/install.sh")
 project_dir=/home/unitree/UniRoboGui
+fixture_service_dir="$project_dir"
 PRODUCT_ID=go2
 DDS_INTERFACE=eth0
 unit_args="$project_dir/build/g1_web_server --robot go2 --interface eth0 "
 process_args="$unit_args"
 systemctl() {
   if [[ "$*" == *ExecStart* ]]; then printf '%s\n' "$unit_args";
-  elif [[ "$*" == *MainPID* ]]; then printf '%s\n' "$$"; else return 1; fi
+  elif [[ "$*" == *MainPID* ]]; then printf '%s\n' "$$";
+  elif [[ "$*" == *WorkingDirectory* ]]; then printf '%s\n' "$fixture_service_dir"; else return 1; fi
 }
 tr() { printf '%s\n' "$process_args"; }
+readlink() {
+  if [[ "${*: -1}" == /proc/*/exe ]]; then printf '%s\n' "$fixture_service_dir/build/g1_web_server";
+  else printf '%s\n' "${*: -1}"; fi
+}
+assert_web_service_identity system
+# A new checkout may safely replace the verified unit from its previous location.
+project_dir='/tmp/new robot checkout'
 assert_web_service_identity system
 identity_in_subshell() ( assert_web_service_identity system )
-unit_args="$project_dir/build/g1_web_server --robot go2x --interface eth0 "
+unit_args="$fixture_service_dir/build/g1_web_server --robot go2x --interface eth0 "
 expect_rc 1 identity_in_subshell
 unit_args="$process_args"
-process_args="$project_dir/build/g1_web_server --robot go2 --interface eth10 "
+process_args="$fixture_service_dir/build/g1_web_server --robot go2 --interface eth10 "
 expect_rc 1 identity_in_subshell
-unset -f systemctl tr
+process_args="$fixture_service_dir/build/g1_web_server --robot go2 --interface eth0 "
+fixture_service_dir=/tmp/unrelated
+expect_rc 1 identity_in_subshell
+unset -f systemctl tr readlink
 
 # A GO2 deployment still builds the shared binary and needs R1 headers.
 source <(sed -n '/^install_sdk2() {$/,/^}$/p' "$ROOT/scripts/install.sh")
@@ -280,7 +292,7 @@ for profile in g1 go2 a2; do
   cat >"$fixture/tts_kokoro/bin/python" <<'EOF'
 #!/usr/bin/env bash
 printf '%s|%s\n' "${KOKORO_MODEL_DIR:-}" "${KOKORO_MODEL_FILE:-}" >>"${INSTALL_TEST_LOG:?}"
-cat >/dev/null
+if [[ "${1:-}" == - ]]; then cat >/dev/null; fi
 EOF
   chmod +x "$fixture/tts_kokoro/bin/python"
   touch "$fixture/tts_kokoro/bin/pip"

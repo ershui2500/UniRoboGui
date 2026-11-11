@@ -173,16 +173,12 @@ bool StreamSustainedFresh(const StreamState& stream) {
          std::chrono::seconds(1);
 }
 
-bool SafeVideoDevice(const std::string& source) {
-  constexpr const char* kPrefix = "/dev/video";
+bool SafeCameraDevicePath(const std::string& source) {
   if (source.empty()) return true;
-  if (source.rfind(kPrefix, 0) != 0 || source.size() <= 10 ||
-      source.size() > 13) {
-    return false;
-  }
-  return std::all_of(source.begin() + 10, source.end(),
+  if (source.front() != '/' || source.size() == 1) return false;
+  return std::all_of(source.begin(), source.end(),
                      [](unsigned char value) {
-                       return std::isdigit(value) != 0;
+                       return value >= 0x20 && value != 0x7f;
                      });
 }
 
@@ -617,6 +613,9 @@ class CameraService::Impl {
     }
 
     bool shared_realsense = false;
+#ifdef G1_WEB_HAS_REALSENSE
+    const bool requested_realsense = options_.realsense;
+#endif
     {
       std::lock_guard<std::mutex> lock(mutex_);
       realsense_shared_without_pause_ = false;
@@ -654,6 +653,26 @@ class CameraService::Impl {
       depth_.error = error;
       return false;
     }
+#ifdef G1_WEB_HAS_REALSENSE
+    // A busy device can reject the concurrent probe but work after release.
+    if (!fixed_policy && requested_realsense && !shared_realsense &&
+        !options_.mock) {
+      std::string probe_error;
+      for (int attempt = 0; attempt < 6; ++attempt) {
+        if (ProbeConcurrentRealSense(options_, probe_error)) {
+          std::lock_guard<std::mutex> lock(mutex_);
+          options_.realsense = true;
+          options_.auto_detect = false;
+          options_.rgb_source.clear();
+          options_.depth_source.clear();
+          realsense_probe_error_.clear();
+          ApplyOptionsLocked();
+          break;
+        }
+        if (attempt != 5) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      }
+    }
+#endif
     if (!fixed_policy && options_.auto_detect && !options_.mock &&
         !options_.realsense) {
       const auto detected = DetectV4l2Sources();
@@ -840,8 +859,8 @@ class CameraService::Impl {
         next.depth_source = depth_spec->fixed_source;
       }
     } else if (request.command == "start_v4l2") {
-      if (!SafeVideoDevice(request.rgb_source) ||
-          !SafeVideoDevice(request.depth_source)) {
+      if (!SafeCameraDevicePath(request.rgb_source) ||
+          !SafeCameraDevicePath(request.depth_source)) {
         result.error = "invalid_camera_source";
         return result;
       }
@@ -892,7 +911,8 @@ class CameraService::Impl {
               ? ((rgb_.configured || depth_.configured) &&
                  (!rgb_.configured || StreamFresh(rgb_)) &&
                  (!depth_.configured || StreamFresh(depth_)))
-              : (StreamFresh(rgb_) || StreamFresh(depth_));
+              : ((!next.rgb_enabled || (rgb_.configured && StreamFresh(rgb_))) &&
+                 (!next.depth_enabled || (depth_.configured && StreamFresh(depth_))));
       if (same_configuration && streams_ready) {
         result.accepted = true;
         result.request_id = ++last_request_id_;

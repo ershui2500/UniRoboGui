@@ -211,6 +211,8 @@ The installer chooses one of two service scopes:
 - **Interactive sudo available:** install the selected product's system service and controlled camera helper. G1 can install/reuse SDK2; R1/GO2/A2 validate and reuse the selected SDK by default; all products support custom prefixes and explicit source installation without overwriting an existing SDK.
 - **Interactive sudo unavailable:** user services are allowed only when system packages are complete, `systemctl --user` works, and `Linger=yes`. G1 may use a user SDK prefix; all products can reuse custom SDK prefixes or explicitly install into writable prefixes.
 
+First-time TTS setup needs Python venv/pip bootstrap support. If an online user install lacks `ensurepip` but system pip is available, it downloads wheels and installs them inside the project venv. Offline `from-pc` supplies the wheels. If neither is available, follow the error message to install `python3-venv`.
+
 External resources differ by method:
 
 - **G1:** keeps the existing D435i/librealsense, Kokoro, and navigation defaults.
@@ -239,6 +241,8 @@ bash scripts/deploy.sh from-pc --product a2 --host developer@robot \
 ```
 
 Without `--install-dir`, the destination remains `/home/unitree/UniRoboGui`. Replace the example product, account, host and paths with your own values.
+
+Make sure the deployment account can write to the destination; an administrator must create and grant access to locations such as `/opt` first. A custom directory does not create a separate instance: the same product keeps its Web/TTS service names and ports, and installation replaces the old service only after confirming stopped motion and zero speeds. If a systemd drop-in overrides `ExecStart`, back it up and update its project paths before moving; otherwise it may still launch the old checkout. Do not remove unrelated custom settings.
 
 | Option | Meaning |
 | --- | --- |

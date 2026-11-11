@@ -3070,9 +3070,29 @@ void TestMockCameraCommands() {
 
   request.request_key = "camera-request-0002";
   request.command = "start_v4l2";
-  request.rgb_source = "/tmp/video0";
+  request.rgb_source = "relative-camera";
   Require(camera.Submit(request).error == "invalid_camera_source",
-          "camera source outside /dev/videoN must be rejected");
+          "camera source must be a local absolute device path");
+  for (const auto& source : {std::string("/dev/video1234"),
+                             std::string("/dev/video") + std::string(100, '1'),
+                             std::string("/dev/video-dep"),
+                             std::string("/dev/v4l/by-id/usb-camera-video-index0"),
+                             std::string("/home/unitree/相机 RGB"),
+                             std::string("/tmp/camera-alias")}) {
+    request.request_key = "camera-path-" + source.substr(0, 110);
+    request.rgb_source = source;
+    request.depth_source = source;
+    Require(camera.Submit(request).accepted,
+            "mock camera must accept local device paths without a naming or length cap");
+  }
+  for (const auto& source : {std::string("/"), std::string("udp://127.0.0.1:5000"),
+                             std::string("/dev/camera\nname"),
+                             std::string("/dev/camera\0tail", 16)}) {
+    request.request_key = "camera-invalid-path";
+    request.rgb_source = source;
+    Require(camera.Submit(request).error == "invalid_camera_source",
+            "camera overrides must reject URLs and invalid local paths");
+  }
   request.request_key = "camera-request-0003";
   request.rgb_source.clear();
   request.depth_source.clear();

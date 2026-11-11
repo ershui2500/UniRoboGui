@@ -160,7 +160,8 @@ if(BUILD_TESTING)
     if(NODE_EXECUTABLE)
         add_test(NAME unirobo_a2_console_tests COMMAND ${NODE_EXECUTABLE} tests/test_a2_console.js)
         add_test(NAME unirobo_walking_modes_tests COMMAND ${NODE_EXECUTABLE} tests/test_walking_modes.js)
-        set_tests_properties(unirobo_a2_console_tests unirobo_walking_modes_tests
+        add_test(NAME unirobo_camera_inputs_tests COMMAND ${NODE_EXECUTABLE} tests/test_camera_inputs.js)
+        set_tests_properties(unirobo_a2_console_tests unirobo_walking_modes_tests unirobo_camera_inputs_tests
             PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
     add_test(NAME g1_web_customer_config_http_tests

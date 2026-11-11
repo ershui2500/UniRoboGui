@@ -166,6 +166,22 @@ Verify that:
 
 ### GitHub is unreachable
 
+Run `date -u` first and verify the robot date. If curl reports `certificate is not yet valid` / `certificate has expired`, ask the administrator to correct the system clock before retrying; do not use `curl -k` or disable Git TLS verification. Use `curl -I https://github.com/` to see the actual error instead of treating clock or certificate errors as network failures.
+
+Network probes, downloads, and APT installation through sudo honor command-scoped `HTTP_PROXY` / `HTTPS_PROXY` (including lowercase names); these settings are not written into systemd services. Local health checks always connect directly. Robot-side `127.0.0.1` refers to the robot, so using a PC proxy over SSH requires a reverse tunnel. For a proxy listening on port 7890 on the PC, run this on the PC:
+
+~~~bash
+ssh -o ExitOnForwardFailure=yes -R 127.0.0.1:17890:127.0.0.1:7890 USER@ROBOT
+# Run the following in that robot terminal; use your checkout path.
+cd /path/to/UniRoboGui
+HTTP_PROXY=http://127.0.0.1:17890 HTTPS_PROXY=http://127.0.0.1:17890 \
+http_proxy=http://127.0.0.1:17890 https_proxy=http://127.0.0.1:17890 \
+NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost \
+bash scripts/deploy.sh install --product a2 --lang en
+~~~
+
+Keep this SSH session open until installation finishes; exiting releases the tunnel. Apply the same proxy settings when cloning the project. If clone fails with a TLS interruption or `early EOF`, check that the failed destination contains no personal files, then retry with `git clone --depth 1` to download the current version.
+
 Do not keep retrying GitHub operations on the robot and do not modify the DDS interface to obtain Internet access. Use an Internet-connected computer instead:
 
 ~~~bash

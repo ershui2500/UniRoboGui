@@ -86,6 +86,16 @@ bash scripts/deploy.sh install --product go2
 
 已有目录时跳过 clone，先检查 `git status --short` 并保留现有改动，再运行 check/install。机器人需能访问 GitHub、模型下载站点、PyPI；缺系统包时还需 Ubuntu 软件源。安装会 Release 构建、完整 CTest、ldd 检查，安装选定范围的 Web/TTS unit 并做只读验收。不能从旧远端版本获得尚未发布的本地修改。
 
+自定义目录时，将上面的 clone 和进入目录两行替换为以下命令，之后照常运行 check/install；含空格的路径始终加双引号。`install` 不使用 `--install-dir`：
+
+```bash
+PROJECT_DIR="$HOME/robot apps/UniRoboGui"
+git clone https://github.com/ershui2500/UniRoboGui.git "$PROJECT_DIR"
+cd "$PROJECT_DIR"
+```
+
+使用电脑的 7890 代理联网时，先按[SSH 反向代理步骤](deployment-dependencies.md#github-不可达)建立隧道，再在机器人终端设置代理并执行 clone/install；不要直接把电脑的 `127.0.0.1:7890` 填到机器人上。
+
 ### 3.3 方式 B：联网电脑传输
 
 在能访问 GitHub/模型/PyPI 且能 SSH 到 GO2 的 Ubuntu/Linux 电脑上先 clone。已有目录时跳过 clone，先检查 `git status --short`，不要覆盖目录。进入项目后，先在电脑执行3.1的校时步骤，再于5分钟内执行 `from-pc`：
@@ -98,6 +108,15 @@ bash scripts/deploy.sh from-pc --product go2
 ```
 
 GO2 默认连接 `unitree@192.168.123.18`，无需填写 `--host` 或创建开发机别名。现场地址不同时，可用 `bash scripts/deploy.sh from-pc --product go2 --host unitree@<GO2_IP>` 覆盖；也可填写已有 SSH Host 别名。脚本更新电脑上的干净 checkout、准备 FP32 模型与 aarch64/Python3.8 wheelhouse，再传输到机器人进行构建和安装。它不是完整离线系统镜像；机器人缺失的 Ubuntu 20.04 arm64 系统包仍需预装或提供兼容来源。不要用 x86_64 wheel 或软件包替代。
+
+自定义机器人目录时，用下面这行替换上面的 `from-pc` 命令；这里填写的是机器人上的绝对路径，与电脑 checkout 的位置无关：
+
+```bash
+bash scripts/deploy.sh from-pc --product go2 \
+  --install-dir "/home/unitree/robot apps/UniRoboGui" --sdk-prefix /usr/local
+```
+
+同一 GO2 的不同安装目录共用 Web/TTS 服务名与端口。迁移会检查并替换原服务，不会创建可并行运行的第二套服务；确认新目录部署成功后，再清理不再使用的旧目录。
 
 如电脑需要代理，只在电脑设置真实可用的代理地址；`no_proxy` 应包含 localhost、127.0.0.1 与实际机器人地址。不要把机器人自己的127.0.0.1当作电脑代理，不修改 DDS 网卡来获取外网。
 

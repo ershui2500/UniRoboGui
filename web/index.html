@@ -1279,26 +1279,27 @@
               </details>
             </section>
             <aside class="camera-column">
-              <section class="panel camera-panel" id="rgbCameraPanel" data-capability="camera_rgb">
+              <section class="panel camera-panel" id="rgbCameraPanel" data-capability="camera_rgb" data-capability-view-when-unavailable>
                 <div class="card-heading camera-integrated-heading">
                   <div><p class="eyebrow">RGB</p><h3>RGB 彩色画面</h3></div>
                   <div class="camera-inline-controls">
                     <span class="perception-badge pending" id="cameraServiceBadge">RGB 未启动</span>
-                    <label class="camera-device-field"><span>手动覆盖</span><input id="rgbCameraSource" placeholder="留空自动检测" maxlength="13" aria-label="RGB 摄像头设备，留空自动检测" /></label>
+                    <label class="camera-device-field"><span>手动覆盖</span><input id="rgbCameraSource" placeholder="留空自动检测" aria-label="RGB 摄像头设备，留空自动检测" /></label>
                     <button type="button" class="primary-action" id="startV4l2Camera">自动检测并启动</button>
                     <button type="button" class="danger-outline" id="stopCamera">停止</button>
                     <button type="button" class="icon-button camera-fullscreen" data-camera-fullscreen="rgbCameraViewport" aria-label="全屏">⛶</button>
                   </div>
+                  <p class="perception-feedback" id="cameraFeedback" hidden></p>
                 </div>
                 <div class="camera-viewport" id="rgbCameraViewport"><img id="rgbCameraImage" alt="机器人 RGB 摄像头画面" /><div class="camera-empty" id="rgbCameraEmpty"><div class="camera-reticle"></div><strong>等待 RGB 画面</strong><span>V4L2 · MJPEG/JPEG</span></div><strong class="camera-frozen" id="rgbCameraFrozen" role="alert" hidden>画面已冻结</strong></div>
                 <div class="camera-status" id="rgbCameraStatus" hidden><span class="status-dot muted-dot"></span><strong>未配置</strong><small>等待自动检测</small><span class="camera-frame-age" id="rgbCameraFrameAge" hidden></span></div>
               </section>
-              <section class="panel camera-panel" id="depthCameraPanel" data-capability="camera_depth">
+              <section class="panel camera-panel" id="depthCameraPanel" data-capability="camera_depth" data-capability-view-when-unavailable>
                 <div class="card-heading camera-integrated-heading">
                   <div><p class="eyebrow">DEPTH</p><h3>深度画面</h3></div>
                   <div class="camera-inline-controls">
                     <span class="perception-badge pending" id="depthCameraBadge">深度未启动</span>
-                    <label class="camera-device-field"><span>手动覆盖</span><input id="depthCameraSource" placeholder="留空自动检测" maxlength="13" aria-label="深度摄像头设备，留空自动检测" /></label>
+                    <label class="camera-device-field"><span>手动覆盖</span><input id="depthCameraSource" placeholder="留空自动检测" aria-label="深度摄像头设备，留空自动检测" /></label>
                     <button type="button" class="primary-action" id="startRealSenseCamera">自动检测 RGB+深度</button>
                     <button type="button" class="danger-outline" id="stopDepthCamera">停止</button>
                     <button type="button" class="icon-button camera-fullscreen" data-camera-fullscreen="depthCameraViewport" aria-label="全屏">⛶</button>
@@ -1308,7 +1309,6 @@
                 <div class="camera-status" id="depthCameraStatus" hidden><span class="status-dot muted-dot"></span><strong>未配置</strong><small>等待自动检测</small></div>
               </section>
               <span id="robotViewerConsoleSlot" hidden></span>
-              <p class="perception-feedback camera-inline-feedback" id="cameraFeedback" hidden></p>
             </aside>
           </div>
         </article>

@@ -15,6 +15,32 @@ spec.loader.exec_module(renderer)
 
 
 class DeploymentPaths(unittest.TestCase):
+    def test_github_probes_use_configured_proxy(self):
+        for script, name in [('deploy_online.sh', 'github_available'),
+                             ('install.sh', 'probe_github')]:
+            source = (ROOT / 'scripts' / script).read_text()
+            function = name + '() {' + source.split(name + '() {', 1)[1].split('\n}', 1)[0] + '\n}'
+            result = subprocess.run(['bash', '-eu', '-c', '''
+curl() { [[ "$*" != *--noproxy* && "$HTTPS_PROXY" == http://127.0.0.1:17890 ]]; }
+ui_line() { :; }; ui_err() { :; }; github_help() { :; }
+''' + function + '\n' + name + '\n' +
+                ('[[ "$github_available" == true ]]' if name == 'probe_github' else '')],
+                env=dict(os.environ, HTTPS_PROXY='http://127.0.0.1:17890'),
+                text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, script + result.stderr)
+
+    def test_github_probe_preserves_tls_error(self):
+        for script, name in [('deploy_online.sh', 'github_available'),
+                             ('deploy_from_pc.sh', 'github_available'),
+                             ('install.sh', 'probe_github')]:
+            source = (ROOT / 'scripts' / script).read_text()
+            function = name + '() {' + source.split(name + '() {', 1)[1].split('\n}', 1)[0] + '\n}'
+            result = subprocess.run(['bash', '-c', '''
+curl() { echo 'curl: (60) certificate is not yet valid' >&2; return 60; }
+ui_line() { :; }; ui_err() { :; }; github_help() { :; }
+''' + function + '\n' + name], text=True, capture_output=True)
+            self.assertIn('certificate is not yet valid', result.stderr, script)
+
     def bash(self, script, *args, env=None):
         prefix = 'source "$1/scripts/deploy_i18n.sh"; source "$1/scripts/deploy_product.sh"; shift; '
         env = dict(os.environ if env is None else env)
@@ -22,7 +48,7 @@ class DeploymentPaths(unittest.TestCase):
                      'REALSENSE_PREFIX', 'INSTALL_SDK2']:
             env.pop('UNIROBOGUI_' + name, None)
         return subprocess.run(['bash', '-eu', '-c', prefix + script, 'test', str(ROOT), *args],
-                              env=env, text=True, capture_output=True)
+                              env=env, stdin=subprocess.DEVNULL, text=True, capture_output=True)
 
     def test_normalization_and_shell_quoting(self):
         for value in ["/tmp/客户 apps/a'b/$x`echo bad`%", '/tmp/a/../b/', '/tmp/double"quote']:

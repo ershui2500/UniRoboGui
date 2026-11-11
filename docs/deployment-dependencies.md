@@ -169,6 +169,22 @@ ldd ./build/g1_web_server | grep -E 'ddsc|ddscxx|realsense|not found'
 
 ### GitHub 不可达
 
+先运行 `date -u` 确认机器人日期正确。若 curl 报 `certificate is not yet valid` / `certificate has expired`，先由管理员校准系统时间，再重试；不要用 `curl -k` 或关闭 Git TLS 校验。可用 `curl -I https://github.com/` 查看实际错误，避免把证书或时间问题当作网络故障。
+
+联网探测、下载和 sudo 下的 APT 安装沿用当前命令的 `HTTP_PROXY` / `HTTPS_PROXY`（也支持小写），不会写入 systemd 服务；本地 health 检查始终直连。通过 SSH 使用电脑代理时，机器人上的 `127.0.0.1` 指机器人自身，需要先建立反向隧道。电脑代理监听本机 7890 时，在电脑执行：
+
+~~~bash
+ssh -o ExitOnForwardFailure=yes -R 127.0.0.1:17890:127.0.0.1:7890 USER@ROBOT
+# 以下在该机器人终端执行；替换为自己的项目目录
+cd /path/to/UniRoboGui
+HTTP_PROXY=http://127.0.0.1:17890 HTTPS_PROXY=http://127.0.0.1:17890 \
+http_proxy=http://127.0.0.1:17890 https_proxy=http://127.0.0.1:17890 \
+NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost \
+bash scripts/deploy.sh install --product a2
+~~~
+
+安装结束再退出该 SSH 会话以释放隧道；首次 clone 时也需要设置上述代理。若 clone 因 TLS 中断或 `early EOF` 失败，确认失败目录没有个人文件后，可改用 `git clone --depth 1` 下载当前版本。
+
 机器人不能访问 GitHub 时不要反复重试，也不要修改 DDS 网卡。改用联网电脑：
 
 ~~~bash

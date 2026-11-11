@@ -275,8 +275,8 @@ const COMMAND_META = {
   exit_map: ["退出地图", "将调用官方 API 1901 关闭 SLAM 定位并清空当前已加载地图状态；退出后导航会被锁定，必须重新加载地图并定位后才能再次导航。"],
   stop_slam: ["关闭 SLAM", "将调用官方 API 1901，并只停止本次由 Web 管理且启动的 SLAM 依赖；外部依赖保持不变。此操作不会调用 StopMove。"],
   start_v4l2: ["自动检测并启动摄像头", "将临时释放占用 D435i 的摄像头服务，再按 V4L2 像素格式自动识别当前 RGB 与 Z16 深度设备；不依赖固定 /dev/videoN。手填设备仅作为覆盖。"],
-  start_realsense: ["启动 D435i RGB + 深度", "优先通过 librealsense2 与机器人现有相机服务并发共享，不中断 master_service；仅设备无法并发访问时才使用兼容的暂停/自动识别兜底链路。"],
-  stop_camera: ["停止 Web 摄像头", "释放 Web 自己的取流资源；共享 teleimager 模式不会停止机器人现有第一人称服务。"],
+  start_realsense: ["启动 D435i RGB + 深度", "优先直接读取 D435i 的 RGB 与深度；若设备被占用，将临时暂停占用服务并自动检测设备，停止后恢复由 Web 暂停的服务。"],
+  stop_camera: ["停止 Web 摄像头", "关闭 Web 的 RGB 与深度取流，并恢复本次由 Web 临时暂停的摄像头服务。"],
 };
 
 function cameraCommandMeta(command) {
@@ -1857,7 +1857,7 @@ function updateCameraStatus(stream, state) {
     `${state.source || "等待自动检测"}${size}`;
   const sourceInput = stream === "rgb" ? rgbCameraSource : depthCameraSource;
   if (!sourceInput.value) {
-    sourceInput.placeholder = state.source?.startsWith("/dev/video")
+    sourceInput.placeholder = state.source?.startsWith("/")
       ? `${state.source}（自动）`
       : "留空自动检测";
   }
@@ -1867,7 +1867,7 @@ function updateCameraStatus(stream, state) {
 
 function updateCameraServiceStatus(status) {
   latestCameraStatus = status;
-  cameraFeedback.hidden = false;
+  cameraFeedback.hidden = pendingRequest?.feedback !== "camera";
   const captureError = status.rgb?.error || status.depth?.error;
   const fixedPolicy = status.fixed_policy === true;
   [rgbCameraSource, depthCameraSource].forEach((input) => {
@@ -1878,6 +1878,9 @@ function updateCameraServiceStatus(status) {
   });
 
   if (fixedPolicy) {
+    if (cameraFeedback.closest("dialog")) {
+      document.querySelector("#rgbCameraPanel .card-heading").append(cameraFeedback);
+    }
     document.querySelector("#rgbCameraEmpty span").textContent = "RTP / H.264";
     const cameraName = status.device?.model ||
       window.robotManifest?.identity?.display_name ||
@@ -1936,12 +1939,20 @@ function updateCameraServiceStatus(status) {
     return;
   }
 
+  if (cameraFeedback.previousElementSibling !== confirmWarning) confirmWarning.after(cameraFeedback);
+  cameraFeedback.hidden = pendingRequest?.feedback !== "camera";
   if (status.first_person_service?.error) {
     cameraFeedback.textContent = `摄像头占用服务切换失败：${status.first_person_service.error}`;
     cameraFeedback.className = "perception-feedback error";
   } else if (status.first_person_service?.paused_by_web) {
     const detected = [status.rgb?.source && `RGB ${status.rgb.source}`, status.depth?.source && `深度 ${status.depth.source}`].filter(Boolean).join(" · ");
     cameraFeedback.textContent = `摄像头占用服务已由 Web 临时暂停${detected ? `；已识别 ${detected}` : ""}；Wi-Fi 低带宽输出 ${status.output_width || "--"}×${status.output_height || "--"}。`;
+    cameraFeedback.className = "perception-feedback success";
+  } else if (status.running && status.backend === "librealsense2") {
+    cameraFeedback.textContent = cameraText(
+      `D435i RGB 与深度直接取流；Wi-Fi 低带宽输出 ${status.output_width || "--"}×${status.output_height || "--"}。`,
+      `Direct D435i RGB and depth capture; Wi-Fi low-bandwidth output ${status.output_width || "--"}×${status.output_height || "--"}.`,
+    );
     cameraFeedback.className = "perception-feedback success";
   } else if (!status.running && captureError) {
     cameraFeedback.textContent = `摄像头启动失败，已自动恢复原摄像头服务：${captureError === "teleimager_camera_owner_active" ? "teleimager 仍占用 D435i，请更新摄像头辅助脚本" : captureError}`;
@@ -1952,7 +1963,7 @@ function updateCameraServiceStatus(status) {
   }
   startV4l2Camera.textContent = cameraText("自动检测并启动", "Auto-detect & Start");
   startRealSenseCamera.textContent = cameraText("自动检测 RGB+深度", "Auto-detect RGB + Depth");
-  startV4l2Camera.disabled = false;
+  startV4l2Camera.disabled = !status.mock && status.backend === "unavailable";
   startRealSenseCamera.disabled = !status.mock && status.backend === "unavailable";
   startRealSenseCamera.title = "自动检测当前 D435i RGB 与深度设备";
   stopRgbCamera.disabled = !status.running;
@@ -2096,6 +2107,7 @@ function buildRequest(command) {
 }
 
 function stageMapLoad() {
+  if (!latestCameraStatus?.fixed_policy) cameraFeedback.hidden = true;
   const name = mapName.value.trim();
   if (!validateMapName(true)) {
     setFeedback("地图名称无效；仅允许 test1.pcd ~ test10.pcd。", "error");
@@ -2121,6 +2133,7 @@ function stageMapLoad() {
 }
 
 function stageCommand(command, uiAction = "") {
+  if (!latestCameraStatus?.fixed_policy) cameraFeedback.hidden = true;
   const request = buildRequest(command);
   if (!request) return;
   pendingRequest = { endpoint: "/api/perception/command", feedback: "perception", ui_action: uiAction, ...request };
@@ -2157,17 +2170,32 @@ function stageCameraCommand(command) {
     (stream) => stream?.role === "depth",
   ) === true;
   const streamStop = command === "stop_rgb" || command === "stop_depth";
+  if (!fixedPolicy && ["start_v4l2", "start_realsense"].includes(command)) {
+    command = rgbCameraSource.value.trim() || depthCameraSource.value.trim()
+      ? "start_v4l2"
+      : latestCameraStatus?.realsense_available === false ? "start_v4l2" : "start_realsense";
+  }
   const backendCommand = command === "stop_camera" || (streamStop && !fixedPolicy)
     ? "stop"
     : command;
   const request = { command: backendCommand };
+  cameraFeedback.hidden = false;
   if (command === "start_v4l2" && !fixedPolicy) {
     request.rgb_source = rgbCameraSource.value.trim();
     request.depth_source = depthCameraSource.value.trim();
-    const valid = (value) => value === "" || /^\/dev\/video\d{1,3}$/.test(value);
+    const valid = (value) => value === "" || /^\/[^\x00-\x1f\x7f]+$/.test(value);
     if (!valid(request.rgb_source) || !valid(request.depth_source)) {
-      cameraFeedback.textContent = "手动覆盖设备必须是 /dev/videoN；两项都留空时会自动检测。";
+      cameraFeedback.textContent = cameraText(
+        "请输入本机摄像头设备的绝对路径；留空自动检测。",
+        "Enter an absolute path to a local camera device, or leave blank for auto-detection.",
+      );
       cameraFeedback.className = "perception-feedback error";
+      pendingRequest = null;
+      confirmTitle.textContent = cameraText("摄像头设备路径无效", "Invalid camera device path");
+      confirmWarning.textContent = cameraFeedback.textContent;
+      dialogFeedback.textContent = "";
+      submitCommand.disabled = true;
+      confirmDialog.showModal();
       return;
     }
   }
@@ -2206,7 +2234,9 @@ function stageCameraCommand(command) {
     ? stopping
       ? cameraText("仅停止所选画面", "Stop selected stream only")
       : cameraText(`${cameraName} 固定数据源`, `Fixed source for ${cameraName}`)
-    : "Web 取流会临时独占当前 D435i";
+    : stopping
+      ? cameraText("同时关闭 RGB 与深度", "Stop RGB and depth together")
+      : "Web 取流会临时独占当前 D435i";
   const fixedDepthSource =
     latestCameraStatus?.depth?.fixed_source ||
     latestCameraStatus?.depth?.source ||
@@ -2236,7 +2266,9 @@ function stageCameraCommand(command) {
                 `RGB 固定监听 RTP/H264 UDP ${fixedRgbPort}。`,
                 `RGB listens on fixed RTP/H264 UDP ${fixedRgbPort}.`,
               )
-    : "启动时会暂停占用 D435i 的 master_service / teleimager.service，再自动识别当前 RGB 与 Z16 深度设备；停止后仅恢复本页实际暂停的服务。";
+    : stopping
+      ? COMMAND_META.stop_camera[1]
+      : "启动时会暂停占用 D435i 的 master_service / teleimager.service，再自动识别当前 RGB 与 Z16 深度设备；停止后仅恢复本页实际暂停的服务。";
   dialogFeedback.textContent = "";
   submitCommand.disabled = false;
   confirmDialog.showModal();

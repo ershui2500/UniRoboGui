@@ -213,6 +213,8 @@ SSH 登录机器人时，如果出现 ROS 环境选择，请直接按回车选�
 - **有交互 sudo**：安装所选产品的系统级 service 与受控相机 helper；G1 可安装/复用 SDK2，R1 / GO2 / A2 默认校验并复用已有 SDK；所有产品均支持自定义前缀和显式源码安装，不覆盖已有 SDK。
 - **没有可交互 sudo**：仅当系统包已齐全、`systemctl --user` 可用且 `Linger=yes` 时使用用户级 service。G1 可使用用户 SDK 前缀；所有产品可复用自定义 SDK 前缀，或显式安装到可写前缀。
 
+首次 TTS 安装需要 Python venv/pip 引导：在线用户级安装缺少 `ensurepip` 但系统 pip 可用时，会先下载 wheels，再在项目虚拟环境内安装；离线安装由 `from-pc` 提供 wheels。两者都不可用时按提示补齐 `python3-venv`。
+
 - **G1**：保持现有 D435i/librealsense、Kokoro 和导航默认值。
 - **R1**：默认使用 Unitree 原生 TTS，不安装 Kokoro；不声明 Mid-360，也不启用真实导航。
 - **GO2**：复用已有 `/usr/local` SDK，安装 Kokoro FP32 与专属 TTS unit；默认不安装 RealSense/helper、可选雷达或真实导航。先完成 [GO2 部署前检查](docs/go2-guide.md#3-部署步骤)，尤其是可信时钟与实际 DDS 网卡。
@@ -239,6 +241,8 @@ bash scripts/deploy.sh from-pc --product a2 --host developer@robot \
 ```
 
 未指定 `--install-dir` 时仍部署到 `/home/unitree/UniRoboGui`。请把示例中的产品、账号、主机名和路径换成自己的值。
+
+先确认账号能写入目标目录；`/opt` 等系统目录需要管理员预先创建并授权。自定义目录不会创建独立实例：同一产品仍使用相同 Web/TTS 服务名和端口，安装会在确认旧服务停止、速度全零后替换它。若旧服务有覆盖 `ExecStart` 的 systemd drop-in，迁移前先备份并调整其中的项目路径，避免仍启动旧目录程序；不要直接删除其他自定义配置。
 
 | 参数 | 含义 |
 | --- | --- |
