@@ -2,25 +2,103 @@
 
 Run UniRoboGui on an Ubuntu 22.04 x86_64 PC with Python 3.10. The robot does not need this project installed; its existing telemetry services must remain available. This is separate from the robot deployment commands in `deploy.sh`.
 
+## Installation choice and feature comparison
+
+**Robot installation is recommended/default and provides the fullest implemented feature set for the selected product.** Devices and local services still depend on model, attachments, readiness and validation. **PC installation is optional and has feature limitations; it is not fully equivalent.** `deploy.sh from-pc` still deploys to the robot; explicit `--target pc` installs on the computer.
+
+| Feature | Robot (recommended) | PC (optional) |
+| --- | --- | --- |
+| Telemetry, status, models and diagnostics | Product SDK2 and robot deployment settings | Same product SDK2; manually select product and wired interface |
+| Locomotion, actions, joint debugging and teaching | Product capabilities and safety interlocks | Existing implementations/interlocks; exposed controls do not mean hardware acceptance |
+| RGB camera | G1 local D435i, R1 fixed transport, GO2/A2 fixed RGB | GO2/A2 fixed RGB reception only; G1/R1 not connected; no robot camera service management |
+| Depth camera | G1/R1 transports require hardware/services; unsupported on GO2/A2 | Not connected for any product |
+| Speech and LLM | Product native interfaces, customer API and local Kokoro integration; ASR/built-in LLM are product-specific | Native TTS for G1/R1/A2; no native GO2 TTS; no local Kokoro installation. ASR, volume and customer API remain product-specific |
+| Point clouds, SLAM and maps | Integrates product-local services and declared attachments | G1 reuses existing DDS with external robot services; undeclared R1/GO2/A2 attachments remain unavailable; no robot service management |
+| Local files and services | Robot-local maps, configuration, helpers and services | Configuration/teaching stored on PC; no direct robot file access or systemd management |
+
+Fresh camera/map data, SDK initialization and successful API calls do not establish real control acceptance. A2 PC defaults use built-in GO2-derived experimental gains, not official or validated A2 values; see the A2 joint gains section below.
+
 ## Install and start
 
-From the project checkout on the PC:
+Use a normal account on Ubuntu 22.04 x86_64 / Python 3.10. For the first download, run the following in a terminal without ROS/RMW/CycloneDDS (skip clone if you already have a checkout):
 
 ```bash
-bash scripts/pc.sh install
-bash scripts/pc.sh check
-bash scripts/pc.sh start
+sudo apt-get update
+sudo apt-get install -y git
+git clone https://github.com/ershui2500/UniRoboGui.git
+cd UniRoboGui
 ```
 
-Open `http://127.0.0.1:8080`. The server binds only to loopback and starts disconnected. Ctrl+C shuts down the manager and its worker. No robot service, camera helper, TTS model, automatic connection or network configuration is installed.
+The PC needs access to Ubuntu package mirrors and GitHub for the SDK download; a prepared pinned SDK source avoids the latter download, but does not provide offline Ubuntu packages. There is no complete offline PC installation bundle. In the project directory:
+
+```bash
+bash scripts/deploy.sh install --target pc --lang en
+bash scripts/deploy.sh check --target pc --lang en
+bash scripts/deploy.sh start --target pc --lang en
+```
+
+Open `http://127.0.0.1:8080`. The server binds only to loopback and starts disconnected. Use Ctrl+C and wait for the manager and worker to exit. Active control or missing fresh stop evidence can refuse shutdown; finish tasks or follow read-only recovery below. Process exit does not prove the robot has stopped. No robot service, camera helper, TTS model, automatic connection or network configuration is installed.
 
 Missing Ubuntu build packages are installed through sudo. The installer pins SDK2 revision `7740f8b67e386ab09c3b333187fd5f8582a75ddc` under `~/.local/share/unirobogui/sdk2/<revision>/`, preserving existing SDK installations. Reinstallation reuses that SDK and repeats the Release build, full CTest and ldd checks. A prepared clean official source checkout at that revision can be supplied with `--sdk2-source /absolute/path`. Use `--sdk-prefix` for a separate SDK destination; incomplete or unverified existing prefixes are rejected. `--build-dir` selects a build directory and must also be supplied to subsequent start/check commands. Reinstall after moving installed directories.
 
 Use a terminal without ROS/RMW/CycloneDDS environment contamination. Runtime DDS libraries come from the selected SDK. Normal execution does not require sudo.
 
-PC install and preflight check require GStreamer tools, good/bad plug-ins and libav. The fixed RTP/H.264 pipeline uses `watchdog` from `gstreamer1.0-plugins-bad`. For existing installations missing this package, rerun `bash scripts/pc.sh install`. OpenCV availability and online DDS alone do not establish that the video pipeline dependencies are complete.
+PC install and preflight check require GStreamer tools, good/bad plug-ins and libav. The fixed RTP/H.264 pipeline uses `watchdog` from `gstreamer1.0-plugins-bad`. For existing installations missing this package, rerun `bash scripts/deploy.sh install --target pc`. OpenCV availability and online DDS alone do not establish that the video pipeline dependencies are complete.
 
 R1 PC RGB and depth are not connected. Both panels show “Robot camera transport is not connected on PC”. Camera reception, start commands and frame endpoints remain disabled; PC does not use the R1 GST video paths.
+
+## Optional desktop shortcuts
+
+After a successful installation, create an application-menu entry for the current user and a desktop entry when the configured desktop directory exists:
+
+```bash
+bash scripts/deploy.sh shortcut --target pc --lang en
+```
+
+Double-clicking opens a terminal, waits for the workbench and opens the browser. Startup remains disconnected. An existing PC workbench is opened with its current settings; another service on the port produces an error without launching a second process. Your desktop may require Allow Launching on first use. On a machine without a graphical desktop, use terminal `start` instead.
+
+Keep custom build-directory and port settings consistent. Shortcuts retain creation-time arguments, including optional `--mock` and `--a2-joint-gains`:
+
+```bash
+bash scripts/deploy.sh install --target pc --build-dir "$HOME/UniRoboGui-build" --sdk-prefix "$HOME/UniRoboGui-sdk" --lang en
+bash scripts/deploy.sh check --target pc --build-dir "$HOME/UniRoboGui-build" --lang en
+bash scripts/deploy.sh start --target pc --build-dir "$HOME/UniRoboGui-build" --port 18080 --lang en
+# In another terminal; future launches use the same build directory and port
+bash scripts/deploy.sh shortcut --target pc --build-dir "$HOME/UniRoboGui-build" --port 18080 --lang en
+```
+
+For an installed build, `check` reads its recorded SDK prefix unless `--sdk-prefix` is supplied. Before installation or for another SDK, pass that option explicitly. Repeating `shortcut` updates the current user's `unirobogui-pc.desktop`. After moving the project, build or gains file, reinstall and recreate shortcuts. They require a desktop terminal and `xdg-open` (Ubuntu package `xdg-utils`); they do not create autostart services. Direct `bash scripts/pc.sh install|check|start` calls remain supported.
+
+## Upgrade and exit
+
+Finish tasks, release control and confirm fresh stopped state before disconnecting normally. Use Ctrl+C and wait for the manager and worker to exit. If stop evidence is missing, follow read-only recovery below; process exit does not prove physical stop.
+
+Run `git status --short` in the project directory. Save and resolve local changes first. For a clean checkout:
+
+```bash
+git pull --ff-only
+bash scripts/deploy.sh install --target pc --lang en
+bash scripts/deploy.sh check --target pc --lang en
+bash scripts/deploy.sh start --target pc --lang en
+```
+
+Supply custom SDK/build directories again when reinstalling. The pinned independent SDK is reused, builds/tests rerun, and local configuration/teaching data in `config/` preserved. Do not copy robot build directories or old virtual environments.
+
+## Installation and startup troubleshooting
+
+| Symptom | Action |
+| --- | --- |
+| Unsupported OS or architecture | The PC installer supports Ubuntu 22.04 x86_64 / Python 3.10; do not use robot arm64 dependencies |
+| Missing packages or APT failure | Check the PC's Ubuntu mirrors and sudo access, then reinstall; `check` only reports missing packages |
+| GitHub download failure | Supply a clean official SDK checkout at the pinned revision below with `--sdk2-source`; Ubuntu packages still need preparation or accessible mirrors |
+| Existing incomplete SDK prefix | Preserve it and select a new `--sdk-prefix`; do not overwrite another SDK |
+| ROS/DDS contamination or missing libraries | Use a clean terminal and reinstall with the recorded SDK, without ROS DDS libraries |
+| Page unavailable or port occupied | Keep the error; do not stop unknown processes. Use `start --target pc --port 18080` and the matching URL; recreate shortcuts too |
+| No interface or waiting for data | Check physical Ethernet UP, IPv4, subnet, multicast, firewall and existing robot publishers; never probe through motion commands |
+| Feature missing on PC | Check the comparison table and runtime Capability; choose robot installation for fuller local device/service integration |
+| Shortcut does not launch | Check the desktop terminal, `xdg-open`, launch permission and terminal errors; recreate after moving, or use terminal startup |
+
+Use `--lang en` on unified commands for English output. PC mode rejects `--product`, `--host`, RealSense and robot-only options; choose the product in the web UI.
 
 ## Connect
 
@@ -28,7 +106,7 @@ R1 PC RGB and depth are not connected. Both panels show “Robot camera transpor
 2. Configure the PC's wired IPv4 manually for the actual robot network, with a unique address. The installer does not change addresses, routes or firewall settings.
 3. Select G1, R1, GO2 or A2, choose an UP physical Ethernet/USB interface with IPv4 in the header, and click Connect. While disconnected, the list updates automatically every 5 seconds and preserves your selection. Detection pauses while connected.
 4. Check the connection status at the top right. The info icon beside the interface shows the current interface, IPv4 and last data time. Fresh required telemetry determines whether the connection is online; DDS initialization alone is insufficient.
-5. The button shows Disconnect for the current connection, including after data/network loss; without fresh stop evidence normal disconnection is refused. Both products require fresh LowState, control state and odometry. R1 odometry is optional telemetry, but a missing or stale odometry source still blocks disconnect confirmation. Use Recover read-only connection in connection info as described below. Choosing another interface changes it to Connect; clicking ends the old connection before switching. Disconnect before replacing the robot.
+5. The button shows Disconnect for the current connection, including after data/network loss; without fresh stop evidence normal disconnection is refused. Normal disconnection requires fresh LowState, control state and odometry for the selected product. R1 odometry is optional telemetry, but a missing or stale odometry source still blocks disconnect confirmation. Use Recover read-only connection in connection info as described below. Choosing another interface changes it to Connect; clicking ends the old connection before switching. Disconnect before replacing the robot.
 
 The selected model is a Profile choice, not independently verified physical identity. DDS uses the existing domain 0 and fixed product topics. A robot IP does not isolate DDS devices. Wi-Fi, bridges, tunnels and simultaneous robots are outside this release.
 
@@ -43,7 +121,7 @@ G1/R1/GO2/A2 wired hardware acceptance, cable loss/recovery and clean-machine fi
 ## Mock and interfaces
 
 ```bash
-bash scripts/pc.sh start --mock --port 18080
+bash scripts/deploy.sh start --target pc --mock --port 18080 --lang en
 ```
 
 Mock explicitly identifies simulated data and allows `lo`; real mode rejects loopback.
@@ -122,6 +200,6 @@ Without a provable completion receipt, read-only isolation followed by field con
 
 Real A2 control sessions on PC default to experimental gains compiled into the binary: `kp=60, kd=5`, with `kp=0, kd=1` for recording, for all 12 joints. A new PC needs no separate gains file or launch argument after compilation. These are previously selected GO2 reference values, not official or validated A2 gains. Experimental provenance remains in configuration metadata and this guide; the debugger shows no gains banner. Field evaluation and operator validation remain required. Enter Low-level Mode checks fresh state, issues StandDown when needed, and confirms sustained STAND_DOWN with settled joints before disabling `ai_sport`. Failure, stale feedback or timeout leaves motion control enabled. Exit Low-level Mode releases LowCmd and restores `ai_sport` without standing up.
 
-Override them with `bash scripts/pc.sh start --a2-joint-gains /absolute/path/to/a2-gains.json`. An explicit file takes priority; invalid files disable joint debugging/teaching without falling back. The existing A2 parser and safety interlocks apply. Mock retains zero default gains. Idle and read-only recovery workers never load gains or create joint control. Robot-side startup still requires an explicit gains file.
+Override them with `bash scripts/deploy.sh start --target pc --a2-joint-gains /absolute/path/to/a2-gains.json`. An explicit file takes priority; invalid files disable joint debugging/teaching without falling back. The existing A2 parser and safety interlocks apply. Mock retains zero default gains. Idle and read-only recovery workers never load gains or create joint control. Robot-side startup still requires an explicit gains file.
 
 A2 low-level entry allows up to 8 seconds for its single StandDown RPC, then restores the ordinary 1-second motion RPC timeout. An unresolved 3104 timeout is reported as `stand_down_rpc_timeout`; it does not retry or release ai_sport. Fresh crouch and joint-stability confirmation still follows a successful RPC.

@@ -2,6 +2,22 @@
 
 UniRoboGui 在电脑运行，通过 Unitree SDK2 DDS 连接 G1、R1、GO2 或 A2。机器人不需要安装本项目，仍须运行其原有遥测和其他必要服务。该入口与将项目部署到机器人的 `deploy.sh install/from-pc` 相互独立。
 
+## 安装方式与功能对照
+
+**推荐且默认安装到机器人端：对应产品的功能覆盖最完整。** 机器人端可以集成本地设备和服务，实际可用性取决于型号、附件、服务及验证情况。**PC 是可选方式，部分功能受限，不与机器人端完全等价。** `deploy.sh from-pc` 仍是向机器人部署；只有显式 `--target pc` 才在电脑安装。
+
+| 功能 | 机器人端（推荐） | PC 端（可选） |
+| --- | --- | --- |
+| 遥测、状态、模型和诊断 | 使用对应产品 SDK2 和本机部署配置 | 复用对应 SDK2；网页手动选择产品和有线网卡 |
+| 底盘、动作、关节调试与示教 | 按产品能力和互锁开放 | 复用现有实现及互锁；开放入口不代表真机控制已验收 |
+| RGB 相机 | G1 本地 D435i、R1 固定链路、GO2/A2 固定 RGB | 仅 GO2/A2 固定 RGB 接收；G1/R1 暂未接入，不启停机器人相机服务 |
+| 深度相机 | G1/R1 对应链路，需硬件和服务就绪；GO2/A2 不支持 | 全部暂未接入 |
+| 语音与大模型 | 按产品提供原生接口、客户 API 和本地 Kokoro 集成；并非所有产品支持 ASR/内置大模型 | G1/R1/A2 原生 TTS；GO2 无原生 TTS；不安装本地 Kokoro。ASR、音量及客户 API 仍按产品能力开放 |
+| 点云、SLAM 与地图 | 可集成对应本地服务和已声明附件 | G1 复用现有 DDS 链路，依赖机器人原有外部服务；R1/GO2/A2 未声明的附件能力不开放，不代替机器人管理服务 |
+| 本地文件与服务 | 使用机器人本地地图、配置、helper 和服务 | 配置/示教动作存于 PC；不能直接读取机器人文件或管理机器人 systemd |
+
+相机和地图数据有更新、SDK 初始化或接口返回成功，均不能替代实机控制验收。A2 PC 默认关节增益是内置 GO2 参考实验值，不是 A2 官方或已验收值；详见本文末尾“A2 关节增益”。
+
 ## 支持与验证状态
 
 - 系统：Ubuntu 22.04 x86_64 / Python 3.10。
@@ -12,29 +28,93 @@ UniRoboGui 在电脑运行，通过 Unitree SDK2 DDS 连接 G1、R1、GO2 或 A2
 
 ## 安装
 
-在电脑上的项目目录执行（普通账号，系统包缺失时由 sudo 安装）：
+使用 Ubuntu 22.04 x86_64 / Python 3.10 和普通账号。首次下载先在未加载 ROS/RMW/CycloneDDS 的终端执行；已有项目可跳过 clone：
 
 ```bash
-bash scripts/pc.sh install
-bash scripts/pc.sh check
-bash scripts/pc.sh start
+sudo apt-get update
+sudo apt-get install -y git
+git clone https://github.com/ershui2500/UniRoboGui.git
+cd UniRoboGui
+```
+
+安装需要访问 Ubuntu 软件源以及下载 SDK 的 GitHub；提前准备固定提交的 SDK 源码可以省去该源码下载，但不包含离线 Ubuntu 软件包。当前不提供完整的 PC 离线安装包。
+
+在电脑项目目录执行（系统包缺失时由 sudo 安装）：
+
+```bash
+bash scripts/deploy.sh install --target pc
+bash scripts/deploy.sh check --target pc
+bash scripts/deploy.sh start --target pc
 ```
 
 浏览器打开 `http://127.0.0.1:8080`。程序只监听电脑回环地址，启动时未连接机器人；不创建开机自动连接或机器人 systemd 服务。关闭终端程序用 Ctrl+C，等待工作进程退出。普通控制会话有占用或缺少停止证据时拒绝退出；可先按下文进入只读恢复隔离。隔离工作进程拒绝控制写入；R1 只保留 FSM 查询，以验证新鲜停止状态。退出不证明机器人已停止。
 
-PC 安装与检查会校验 GStreamer tools、good/bad 插件和 libav 解码器；固定 RTP/H.264 相机管线的 `watchdog` 由 `gstreamer1.0-plugins-bad` 提供。已有安装若报告缺少该包，重新运行 `bash scripts/pc.sh install` 补齐依赖；仅有 OpenCV 和 DDS 在线不代表视频管线依赖完整。
+PC 安装与检查会校验 GStreamer tools、good/bad 插件和 libav 解码器；固定 RTP/H.264 相机管线的 `watchdog` 由 `gstreamer1.0-plugins-bad` 提供。已有安装若报告缺少该包，重新运行 `bash scripts/deploy.sh install --target pc` 补齐依赖；仅有 OpenCV 和 DDS 在线不代表视频管线依赖完整。
 
 R1 的 PC RGB 和深度画面均未接入，两个面板统一显示“电脑端尚未接入机器人相机传输”。相机接收、启动命令和图像接口保持关闭；PC 不接入 R1 的 GST 视频链路。
 
 安装固定 SDK2 提交 `7740f8b67e386ab09c3b333187fd5f8582a75ddc`，在当前账号的 `~/.local/share/unirobogui/sdk2/<提交>/` 独立安装，不覆盖已有 SDK。重复安装复用该版本并重新构建和测试。源码下载失败可提前准备该提交的干净官方源码：
 
 ```bash
-bash scripts/pc.sh install --sdk2-source /absolute/path/to/unitree_sdk2
+bash scripts/deploy.sh install --target pc --sdk2-source /absolute/path/to/unitree_sdk2
 ```
 
 `--sdk-prefix` 可以指定独立 SDK 安装目录；已存在但无法确认版本或不完整的目录会被拒绝。`--build-dir` 可以选择独立构建目录，后续 start/check 必须传同一目录。编译后的 SDK 路径记录在构建目录，移动目录后重新安装。电脑安装不修改网络、路由或防火墙，也不安装相机 helper、TTS 模型或机器人服务。
 
 使用未加载 ROS/RMW/CycloneDDS 的终端。运行环境中的 DDS 库只使用选定 SDK，不能混用其他 ROS DDS 库。安装包含 Release 构建、全部 CTest 和 ldd 检查；正常运行无需 sudo。
+
+## 可选桌面快捷方式
+
+安装成功后运行以下命令，创建当前用户应用菜单入口；系统配置的桌面目录存在时，同时创建桌面快捷方式：
+
+```bash
+bash scripts/deploy.sh shortcut --target pc
+```
+
+双击后打开终端，工作台就绪后打开浏览器；默认保持机器人未连接。已有 PC 工作台时直接打开其网页，沿用其当前配置；其他服务占用相同端口时提示错误，不启动第二个进程。首次使用时，桌面可能要求右键选择“允许启动”。没有图形桌面的电脑使用终端 `start` 命令即可。
+
+自定义构建目录和端口须在后续命令中保持一致；快捷方式会保存创建时指定的参数，支持 `--mock` 和 `--a2-joint-gains`：
+
+```bash
+bash scripts/deploy.sh install --target pc --build-dir "$HOME/UniRoboGui-build" --sdk-prefix "$HOME/UniRoboGui-sdk"
+bash scripts/deploy.sh check --target pc --build-dir "$HOME/UniRoboGui-build"
+bash scripts/deploy.sh start --target pc --build-dir "$HOME/UniRoboGui-build" --port 18080
+# 另开终端；下次双击将使用相同构建目录和端口
+bash scripts/deploy.sh shortcut --target pc --build-dir "$HOME/UniRoboGui-build" --port 18080
+```
+
+`check` 在已有构建目录时默认读取安装记录的 SDK 前缀；安装前或检查其他 SDK 时显式填写 `--sdk-prefix`。重复运行 `shortcut` 更新本用户的 `unirobogui-pc.desktop`；移动项目、构建目录或增益文件后，重新安装并创建快捷方式。快捷方式依赖桌面终端和 `xdg-open`（Ubuntu 的 `xdg-utils` 包）；不会创建自启动服务。原有 `bash scripts/pc.sh install|check|start` 仍可使用。
+
+## 升级与退出
+
+先在页面结束当前任务、释放控制并确认新鲜停止状态，正常断开后按 Ctrl+C，等待终端程序及工作进程退出。缺少停止证据时按下文只读恢复流程处理，不能从退出推断机器人已经停止。
+
+在项目目录执行 `git status --short`，有本地改动时先保存并处理；干净 checkout 执行：
+
+```bash
+git pull --ff-only
+bash scripts/deploy.sh install --target pc
+bash scripts/deploy.sh check --target pc
+bash scripts/deploy.sh start --target pc
+```
+
+自定义 SDK 安装前缀和构建目录在重新安装时仍须传入。升级会复用固定版本的独立 SDK 并重新构建和测试，不删除 `config/` 中的本机配置与示教数据。不要搬用机器人构建目录或旧虚拟环境。
+
+## 安装与启动排障
+
+| 现象 | 处理方式 |
+| --- | --- |
+| 系统或架构不支持 | 当前 PC 安装入口只支持 Ubuntu 22.04 x86_64 / Python 3.10，不要套用机器人端 arm64 依赖 |
+| 缺系统包或 APT 失败 | 检查电脑 Ubuntu 软件源和 sudo 权限后重新安装；`check` 只报告，不安装 |
+| GitHub 下载失败 | 准备下文指定提交的干净官方 SDK 源码，传 `--sdk2-source`；系统包仍需预装或可访问的软件源 |
+| SDK 目录已存在但不完整 | 保留已有内容，选新 `--sdk-prefix` 重新安装；不要直接覆盖其他 SDK |
+| ROS/DDS 污染或库缺失 | 使用干净终端；按安装记录重装，不借用 ROS 的 DDS 库 |
+| 页面打不开或端口冲突 | 保留报错，不终止未知进程；用 `start --target pc --port 18080` 并访问对应端口，快捷方式也需重建 |
+| 没有网卡或一直等待数据 | 检查物理有线接口 UP、IPv4、网段、组播、防火墙和机器人原有发布服务；不要通过运动命令探测 |
+| PC 没有某项功能 | 对照本页功能表和运行时 Capability；需要更完整的本地设备/服务集成时选机器人端部署 |
+| 双击快捷方式失败 | 检查图形桌面终端、`xdg-open`、启动许可和终端错误；项目移动后重建快捷方式，亦可用终端启动 |
+
+脚本输出需要英文时，在统一命令后添加 `--lang en`。`--product`、`--host`、RealSense 与机器人部署参数不能用于 PC；产品在网页中选择。
 
 ## 有线连接
 
@@ -56,7 +136,7 @@ LowState 超过既有新鲜度窗口会显示过期/离线，不自动重连机�
 不连接机器人测试页面：
 
 ```bash
-bash scripts/pc.sh start --mock --port 18080
+bash scripts/deploy.sh start --target pc --mock --port 18080
 ```
 
 Mock 模式可选择 `lo`，页面明确显示“模拟”。真实模式不允许该接口。
@@ -103,7 +183,7 @@ PC 真实 A2 控制会话默认使用编译进程序的实验增益：12 个关�
 需要覆盖内置值时，使用经过现场确认的本机增益文件启动：
 
 ```bash
-bash scripts/pc.sh start --a2-joint-gains /absolute/path/to/a2-gains.json
+bash scripts/deploy.sh start --target pc --a2-joint-gains /absolute/path/to/a2-gains.json
 ```
 
 显式文件优先，文件无效时关闭关节调试/示教，不回退内置值。复用已有 A2 JSON 校验和安全互锁；Mock 未指定文件时仍用零增益。PC 离线和只读恢复 worker 不加载增益、不创建关节控制。机器人端启动仍须显式提供增益文件。

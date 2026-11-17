@@ -67,7 +67,7 @@ fi
 mkdir -p "$TMP/repo with spaces/scripts"
 cp "$ROOT/scripts/deploy.sh" "$ROOT/scripts/deploy_i18n.sh" \
   "$ROOT/scripts/deploy_product.sh" "$TMP/repo with spaces/scripts/"
-for name in deploy_online.sh deploy_from_pc.sh install.sh; do
+for name in deploy_online.sh deploy_from_pc.sh install.sh pc.sh; do
   cat >"$TMP/repo with spaces/scripts/$name" <<'EOF'
 #!/usr/bin/env bash
 printf '%s lang=%s\n' "$0 $*" "${UNIROBOGUI_LANG:-}" >>"${DEPLOY_TEST_LOG:?}"
@@ -119,6 +119,28 @@ done
 grep -q 'deploy_online.sh --product a2' "$DEPLOY_TEST_LOG"
 grep -q 'install.sh --product a2 --check-only' "$DEPLOY_TEST_LOG"
 grep -q 'deploy_from_pc.sh --product a2 --host unitree@192.168.123.162' "$DEPLOY_TEST_LOG"
+
+# Target selection never falls through from PC to robot installation.
+: >"$DEPLOY_TEST_LOG"
+bash "$TMP/repo with spaces/scripts/deploy.sh" install --target robot --product g1
+for command in install check start shortcut; do
+  bash "$TMP/repo with spaces/scripts/deploy.sh" "$command" --target pc --build-dir "$TMP/客户 build" --lang en
+done
+grep -q 'deploy_online.sh --product g1' "$DEPLOY_TEST_LOG"
+for command in install check start shortcut; do
+  grep -Fq "pc.sh $command --build-dir $TMP/客户 build lang=en" "$DEPLOY_TEST_LOG" || fail "PC $command was not forwarded"
+done
+bash "$TMP/repo with spaces/scripts/deploy.sh" start --target pc --port 18080 --mock --a2-joint-gains "$TMP/客户 gains.json"
+grep -Fq "pc.sh start --port 18080 --mock --a2-joint-gains $TMP/客户 gains.json" "$DEPLOY_TEST_LOG"
+before="$(cat "$DEPLOY_TEST_LOG")"
+for arguments in 'install --target unknown' 'install --target pc --product g1' \
+  'from-pc --target pc' 'install --target pc --host robot' 'install --target pc --install-sdk2' \
+  'start --product g1' 'shortcut --product g1' 'install --product g1 --mock' \
+  'install --target pc --realsense-prefix /tmp/sdk' 'install --target pc --install-dir /tmp/robot'; do
+  # Intentional word splitting for fixed invalid CLI fixtures.
+  expect_rc 2 bash "$TMP/repo with spaces/scripts/deploy.sh" $arguments
+done
+[[ "$(cat "$DEPLOY_TEST_LOG")" == "$before" ]] || fail "invalid target/options reached an installer"
 
 # Invalid destinations must fail before networking, even through the internal entry.
 mkdir -p "$TMP/no-network"

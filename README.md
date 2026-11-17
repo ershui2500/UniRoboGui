@@ -17,13 +17,13 @@ Unitree SDK2 提供了丰富的底层能力，但在实际项目中，这些能�
 - **感知、建图与导航链路**：共享地图、轨迹和导航 UI；G1 保持现有 Mid-360 / 导航链路，R1 / GO2 只有显式声明附件和部署开关后才开放相应能力。
 - **关节调试与动作开发**：由产品 JointSchema 驱动关节姿态、上半身 / 全身调试、手掰示教和动作入口，不在前端维护第二份产品关节索引。
 - **语音与大模型能力整合**：共享 ASR、Unitree TTS、内置/客户大模型能力；G1 可使用本地 Kokoro，R1 默认只使用 Unitree 原生 TTS；GO2 使用本地 Kokoro FP32，不支持 ASR / 原生TTS / 内置大模型；A2 使用原生 ASR / TTS 和可选 Kokoro FP32，无内置大模型。
-- **面向后续二次开发**：提供中英文界面、在线 / 离线自动部署、Mock 回归模式和控制安全互锁，可直接作为机器人功能验证、现场调试以及上层应用开发的基础环境。
+- **面向后续二次开发**：提供中英文界面、机器人端部署与可选 PC 安装、在线 / 离线自动部署、Mock 回归模式和控制安全互锁，可直接作为机器人功能验证、现场调试以及上层应用开发的基础环境。
 
 运行时能力以 `/api/robot/manifest` 和 Capability 状态为真值：未实现、未检测、附件未启用或尚未真机验证的能力会保持 `unsupported`、`disabled` 或 `unverified`，不会因为页面存在入口就视为可用。
 
 > **准备部署？** 直接跳转到 [快速部署](#quick-deploy)。
 >
-> 机器人可以访问 GitHub 和机器人无法访问 GitHub 两种场景都提供自动部署脚本。
+> 推荐且默认安装到机器人（对应产品功能最完整）；也可显式选择 PC 安装（部分功能受限）。
 
 ---
 
@@ -135,6 +135,25 @@ Unitree SDK2 提供了丰富的底层能力，但在实际项目中，这些能�
 
 ## 3. 快速部署
 
+### 先选择安装位置
+
+**推荐且默认：安装到机器人端。** 这是对应产品功能覆盖最完整的运行方式，可使用已实现的机器人本地设备、感知和服务集成；实际能力取决于型号、附件、服务状态及验证情况，并不表示所有型号都支持全部功能。
+
+**可选：安装到 Ubuntu PC。** 电脑通过有线网络直接连接机器人，机器人无需安装本项目。PC 端部分功能尚未接入，与机器人端并非完全等价；相机、深度、本地语音及部分感知/SLAM 功能受限。选择前请查看 [PC 功能对照与完整教程](docs/pc-guide.md)。
+
+| 安装方式 | 程序运行在哪里 | 适合场景 | 安装入口 |
+| --- | --- | --- | --- |
+| **机器人端（推荐、默认，功能最完整）** | 机器人 | 需要对应产品更完整的设备与服务集成 | `bash scripts/deploy.sh install --product g1`，或通过电脑执行 `from-pc --product g1` |
+| **PC 端（可选，部分功能受限）** | Ubuntu 22.04 x86_64 电脑 | 不在机器人安装项目，在电脑直接连接与调试 | `bash scripts/deploy.sh install --target pc` |
+
+表中的 `g1` 是示例，机器人安装须换成实际产品 `g1`、`r1`、`go2` 或 `a2`。默认 `--target robot`，也可显式填写。**`from-pc` 是通过电脑安装到机器人，不是安装到 PC。**
+
+PC 安装的完整步骤见下方 [Ubuntu 电脑安装](#pc-install) 或 [PC 教程](docs/pc-guide.md)。
+
+### 机器人端安装（推荐、默认）
+
+以下命令、系统依赖和服务说明均适用于**机器人端安装**。
+
 G1、R1、GO2 和 A2 共用同一个部署入口：`scripts/deploy.sh`。部署脚本不会猜测机器人型号，`--product` **必须明确填写**：G1 填 `g1`，R1 填 `r1`，GO2 填 `go2`，A2 填 `a2`。
 
 通用命令格式：
@@ -184,7 +203,7 @@ bash scripts/deploy.sh from-pc --product <PRODUCT>
 
 旧 `deploy_g1_*` / `install_g1*` 中英文脚本仅作为一个兼容周期的弃用入口保留，会提示迁移并转发到 `--product g1`。
 
-### 3.1 部署前确认
+### 3.1 机器人端部署前确认
 
 执行 clone 的机器先要安装 Git。方式 B 的联网电脑还需 `curl`、OpenSSH客户端、`rsync`、`python3` 和 `python3 -m pip`；可在电脑运行 `command -v git curl ssh rsync python3` 与 `python3 -m pip --version` 检查。缺失时先在电脑安装 Ubuntu 软件包 `git curl openssh-client rsync python3 python3-pip`。文中的“机器人终端”指已通过 SSH 登录机器人普通账号（默认示例为 `unitree`）的终端，或机器人本机终端；不要在电脑本地终端执行机器人命令。
 
@@ -220,16 +239,23 @@ SSH 登录机器人时，如果出现 ROS 环境选择，请直接按回车选�
 - **GO2**：复用已有 `/usr/local` SDK，安装 Kokoro FP32 与专属 TTS unit；默认不安装 RealSense/helper、可选雷达或真实导航。先完成 [GO2 部署前检查](docs/go2-guide.md#3-部署步骤)，尤其是可信时钟与实际 DDS 网卡。
 - **A2**：面向普通足式 A2 用户开发单元（Ubuntu 22.04 x86_64 / Python 3.10），使用 `--product a2` 部署，复用已有 `/usr/local` SDK；默认使用 Unitree 原生 TTS，并安装 Kokoro FP32 供选用。当前服务模板启用 JT128 / 导航入口，需要对应附件与外部 `unitree_slam` 服务；功能与配置说明见 [A2 使用说明](docs/a2-guide.md)。
 
-### 在 Ubuntu 电脑运行（G1 / R1 / GO2 / A2 SDK2 控制台）
+<a id="pc-install"></a>
 
-如果希望电脑直接连接机器人、机器人不安装 UniRoboGui，请使用独立电脑入口：
+### 在 Ubuntu 电脑运行（可选）
+
+PC 首次安装：在电脑未加载 ROS/RMW/CycloneDDS 的终端执行，普通账号运行，仅缺系统依赖时使用 sudo：
 
 ```bash
-bash scripts/pc.sh install
-bash scripts/pc.sh start
+sudo apt-get update
+sudo apt-get install -y git
+git clone https://github.com/ershui2500/UniRoboGui.git
+cd UniRoboGui
+bash scripts/deploy.sh install --target pc
+bash scripts/deploy.sh check --target pc
+bash scripts/deploy.sh start --target pc
 ```
 
-支持 Ubuntu 22.04 x86_64，浏览器访问 `http://127.0.0.1:8080` 后选择 G1、R1、GO2 或 A2，并选有线网卡连接。启动时不连接机器人，任一时刻只连接一台；复用各自现有 SDK2 遥测、控制、关节调试/示教和音频。真实运动和关节控制仍须现场操作员验证；PC 端 GO2/A2 支持固定 RGB 接收；G1/R1 相机、PC 深度、未声明附件型 SLAM 和本地 Kokoro TTS 不开放。A2 真机全身关节控制还需有效增益文件。切换前须结束任务、释放控制并确认新鲜停止状态。Mock 不代表实机验证。详见 [电脑使用说明](docs/pc-guide.md) / [PC guide](docs/pc-guide.en.md)。原有 `install/from-pc` 仍用于机器人端部署。
+打开 `http://127.0.0.1:8080`，选择产品和有线网卡，再手动连接。可另开终端运行 `bash scripts/deploy.sh shortcut --target pc` 创建应用菜单及桌面快捷方式。PC 安装、启动均不会自动连接机器人；完整网络、升级、功能限制与排障见 [PC 教程](docs/pc-guide.md)。
 
 ### 自定义安装目录和依赖路径
 
@@ -430,6 +456,8 @@ bash scripts/deploy.sh install --product a2
 
 ## 4. 访问与使用
 
+本节中的机器人 IP、unit 和机器人本地设备说明适用于机器人部署；PC 访问 `http://127.0.0.1:8080`，网络和退出操作见 [PC 教程](docs/pc-guide.md)。
+
 ### 4.1 页面入口
 
 部署完成后，浏览器访问：
@@ -480,7 +508,7 @@ Web 页面本身没有身份认证，因此不应暴露到不可信网络或公�
 
 ## 5. 兼容性
 
-以下是仓库默认部署配置；网卡、附件和可用能力还需现场确认。
+以下是**机器人端**默认部署配置；PC 的系统、网卡、SDK 和能力限制见 [PC 教程](docs/pc-guide.md)。网卡、附件和可用能力还需现场确认。
 
 | 项目 | G1 | R1 | GO2 | A2 |
 | --- | --- | --- | --- | --- |

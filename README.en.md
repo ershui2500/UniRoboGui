@@ -23,7 +23,7 @@ Runtime truth comes from `/api/robot/manifest` and Capability state. Features th
 
 > **Ready to deploy?** Jump to [Quick deployment](#quick-deployment).
 >
-> Both deployment cases are supported: the robot can access GitHub, or the robot is offline while another Ubuntu/Linux computer has Internet access.
+> Robot installation is recommended/default and offers the fullest feature set for the selected product. PC installation is optional with feature limitations.
 
 ---
 
@@ -134,6 +134,25 @@ Fields whose bit definitions are not publicly documented are shown as raw values
 
 ## 3. Quick deployment
 
+### Choose where to install
+
+**Recommended and default: install on the robot.** This offers the fullest implemented feature set for the selected product, including robot-local devices, perception and service integrations. Actual availability depends on model, attachments, services and validation; not every model supports every feature.
+
+**Optional: install on an Ubuntu PC.** Connect directly over wired networking without installing this project on the robot. PC mode is not fully equivalent: camera, depth, local speech and some perception/SLAM features have limitations. See the [PC feature comparison and complete guide](docs/pc-guide.en.md).
+
+| Installation | Runs on | Suitable for | Entry point |
+| --- | --- | --- | --- |
+| **Robot (recommended/default; fullest feature set)** | Robot | More complete device and service integration for the selected product | `bash scripts/deploy.sh install --product g1`, or `from-pc --product g1` from a PC |
+| **PC (optional; limited features)** | Ubuntu 22.04 x86_64 PC | Direct debugging without installing the project on the robot | `bash scripts/deploy.sh install --target pc` |
+
+Replace `g1` with the actual product: `g1`, `r1`, `go2` or `a2`. The default target is `robot`; explicit `--target robot` is also supported. **`from-pc` installs onto the robot using a PC; it is not PC installation.**
+
+For full PC steps, see [Ubuntu PC installation](#pc-install) below or the [PC guide](docs/pc-guide.en.md).
+
+### Robot installation (recommended/default)
+
+The commands, dependencies and services below apply to **robot installation**.
+
 G1, R1, GO2 and A2 share the same deployment entry point: `scripts/deploy.sh`. The script never guesses the robot model: `--product` is **required**. Use `g1`, `r1`, `go2`, or `a2` for the corresponding robot.
 
 General syntax:
@@ -183,7 +202,7 @@ Use `bash scripts/deploy.sh --help` for help. `--lang en` changes script logs on
 
 Legacy `deploy_g1_*` / `install_g1*` Chinese and English scripts remain for one compatibility cycle only. They print a deprecation message and forward to `--product g1`.
 
-### 3.1 Before deployment
+### 3.1 Before robot deployment
 
 Before cloning, the machine running `git clone` needs Git. For Method B, the online PC also needs `curl`, OpenSSH client, `rsync`, `python3` and `python3 -m pip`. On that PC, check with `command -v git curl ssh rsync python3` and `python3 -m pip --version`. If missing, install Ubuntu packages `git curl openssh-client rsync python3 python3-pip` on the PC first. Do not run robot commands in the PC terminal: a robot terminal means an SSH session logged in with a regular robot account (examples default to `unitree`) (or a terminal on the robot itself).
 
@@ -219,6 +238,24 @@ External resources differ by method:
 - **R1:** defaults to Unitree native TTS, does not install Kokoro, does not declare Mid-360, and does not enable real navigation.
 - **GO2:** reuses existing `/usr/local` SDK, installs Kokoro FP32 and its own TTS unit, and skips RealSense/helpers, optional LiDAR and real navigation. Complete the [GO2 prerequisites](docs/go2-guide.en.md#3-deployment), especially clock and actual DDS interface checks, before either method.
 - **A2:** targets the legged A2 user development unit (Ubuntu 22.04 x86_64 / Python 3.10). Deploy with `--product a2`, reusing the existing `/usr/local` SDK; native Unitree TTS is the default, with Kokoro FP32 installed as an option. Current service templates enable JT128/navigation and require the matching attachment and external `unitree_slam` service.
+
+<a id="pc-install"></a>
+
+### Run on an Ubuntu PC (optional)
+
+For a first PC install, use a terminal without ROS/RMW/CycloneDDS. Run as a normal user; sudo is only needed for missing system dependencies:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git
+git clone https://github.com/ershui2500/UniRoboGui.git
+cd UniRoboGui
+bash scripts/deploy.sh install --target pc --lang en
+bash scripts/deploy.sh check --target pc --lang en
+bash scripts/deploy.sh start --target pc --lang en
+```
+
+Open `http://127.0.0.1:8080`, select the product and wired interface, then connect manually. In another terminal, optionally run `bash scripts/deploy.sh shortcut --target pc --lang en` to create application-menu and desktop entries. Neither installation nor startup connects automatically. See the [PC guide](docs/pc-guide.en.md) for networking, upgrades, limitations and troubleshooting. Direct `pc.sh install|check|start` calls remain supported.
 
 ### Custom project and dependency paths
 
@@ -420,6 +457,8 @@ When replacing an already running Web service, the installer requires a matching
 
 ## 4. Access and operation
 
+Robot IPs, units and robot-local devices in this section apply to robot deployment. PC users open `http://127.0.0.1:8080`; see the [PC guide](docs/pc-guide.en.md) for networking and shutdown.
+
 ### 4.1 Web entry point
 
 Open:
@@ -467,6 +506,8 @@ The Web interface does not provide built-in user authentication and should not b
 ---
 
 ## 5. Compatibility
+
+The following product defaults apply to **robot deployment**; PC requirements and feature differences are documented in the [PC guide](docs/pc-guide.en.md).
 
 These are repository deployment defaults; verify interfaces, attachments and availability on the actual robot.
 

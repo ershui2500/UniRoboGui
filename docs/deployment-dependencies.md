@@ -1,5 +1,10 @@
 # UniRoboGui G1 / R1 / GO2 / A2 通用部署与排障指南
 
+> **推荐且默认安装到机器人端，对应产品功能覆盖最完整**，实际能力取决于型号、附件、服务和验证情况。本指南的依赖、unit 和 `install/from-pc/check --product ...` 均适用于机器人端；`from-pc` 表示通过电脑安装到机器人。
+>
+> **PC 为可选方式，部分功能受限**，包括相机、深度、本地语音和部分感知/SLAM。使用 `bash scripts/deploy.sh install --target pc`，先看 [PC 功能对照与完整安装教程](pc-guide.md)。省略 `--target` 默认是 `robot`，也可显式写 `--target robot`。
+
+
 ## 自定义路径和账号
 
 脚本自动识别项目位置。`/home/unitree/UniRoboGui`、`/opt/unitree_robotics` 和 `/usr/local` 均为默认建议，不是强制位置；支持其他普通账号。`--install-dir`、`--sdk-prefix`、`--sdk2-source`、`--install-sdk2` 和 RealSense 参数用法见 [自定义部署路径](../README.md#自定义安装目录和依赖路径)，旧版兼容入口也接受这些参数。

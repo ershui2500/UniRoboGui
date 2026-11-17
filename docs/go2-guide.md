@@ -1,5 +1,8 @@
 # GO2 部署与 Web 使用教程
 
+> **推荐且默认安装到机器人端，对应产品功能覆盖最完整**，实际能力仍受附件、服务和验证情况约束。本文的部署命令（包括 `from-pc`）安装到机器人。可选 PC 安装须显式指定 `--target pc`，部分功能受限，详见 [PC 功能对照与教程](pc-guide.md)。
+
+
 项目目录和 SDK 前缀均可自定义，`/home/unitree/UniRoboGui` 和 `/usr/local` 只是默认值。具体见 [自定义路径与账号](../README.md#自定义安装目录和依赖路径)。远程部署用 `--install-dir`，已有 SDK 用 `--sdk-prefix`，新装 SDK 显式加 `--install-sdk2`。
 
 [English](go2-guide.en.md) · [通用部署指南](deployment-dependencies.md)

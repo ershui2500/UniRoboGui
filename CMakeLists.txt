@@ -159,6 +159,8 @@ if(BUILD_TESTING)
     add_test(NAME g1_web_a2_http_tests
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_a2_http.py
                      $<TARGET_FILE:g1_web_server> ${CMAKE_CURRENT_SOURCE_DIR}/web)
+    add_test(NAME unirobo_pc_shortcut_tests
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pc_shortcut.py)
     add_test(NAME unirobo_pc_session_tests
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pc_session.py
                      $<TARGET_FILE:g1_web_server>)

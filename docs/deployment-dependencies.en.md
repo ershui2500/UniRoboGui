@@ -1,5 +1,10 @@
 # UniRoboGui G1 / R1 / GO2 / A2 Deployment and Troubleshooting Guide
 
+> **Robot installation is recommended/default and provides the fullest feature set for the selected product**, subject to model, attachments, services and validation. This guide's dependencies, units and `install/from-pc/check --product ...` commands apply to robot installation. `from-pc` installs onto the robot using a PC.
+>
+> **PC installation is optional with feature limitations** (camera, depth, local speech and some perception/SLAM). Use `bash scripts/deploy.sh install --target pc`; see the [PC comparison and full installation guide](pc-guide.en.md). Omitted `--target` defaults to `robot`; explicit `--target robot` is supported.
+
+
 ## Custom paths and accounts
 
 The project location is detected from the script. `/home/unitree/UniRoboGui`, `/opt/unitree_robotics` and `/usr/local` are defaults, not mandatory locations. Other regular accounts are supported. See [custom deployment paths](../README.en.md#custom-project-and-dependency-paths) for `--install-dir`, `--sdk-prefix`, `--sdk2-source`, `--install-sdk2` and RealSense options. These options also work through legacy wrappers.

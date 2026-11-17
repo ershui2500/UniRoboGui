@@ -56,7 +56,8 @@ else:
 
     def run(command, extra=(), overrides=None):
         return subprocess.run(["bash", str(project / "scripts/pc.sh"), command,
-                               "--sdk-prefix", str(prefix), "--build-dir", str(build), *extra],
+                               *((["--sdk-prefix", str(prefix)]) if command in ("install", "check") else []),
+                               "--build-dir", str(build), *extra],
                               env=env | (overrides or {}), capture_output=True, text=True)
 
     assert run("check").returncode == 0
@@ -68,6 +69,10 @@ else:
         result = run("install")
         assert result.returncode == 0, result.stderr
     assert (build / "pc-sdk-prefix").read_text().strip() == str(prefix)
+    # Installed custom builds locate the recorded SDK without repeating --sdk-prefix.
+    result = subprocess.run(["bash", str(project / "scripts/pc.sh"), "check", "--build-dir", str(build)],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
     calls = log.read_text()
     assert 'sudo' not in calls and 'systemctl' not in calls and 'ssh' not in calls
     assert '-DUNIROBO_PC_BUILD=ON' in calls and '-DCMAKE_BUILD_TYPE=Release' in calls
@@ -79,6 +84,13 @@ else:
     assert run("start", ("--a2-joint-gains", str(gains))).returncode == 0
     assert '--a2-joint-gains' in log.read_text()
     assert run("start", ("--a2-joint-gains", str(root / "missing.json"))).returncode != 0
+    assert run("shortcut", ("--port", "18080", "--mock")).returncode == 0
+    assert 'pc_shortcut.py' in log.read_text() and 'create' in log.read_text()
+    for command, options in (("install", ("--mock",)), ("check", ("--sdk2-source", str(root))),
+                             ("start", ("--sdk-prefix", str(prefix))), ("shortcut", ("--sdk-prefix", str(prefix)))):
+        before = log.read_text()
+        assert run(command, options).returncode == 2
+        assert log.read_text() == before, "invalid options must fail before side effects"
     assert run("start", ("--port", "0")).returncode != 0
     assert run("start", ("--port", "65536")).returncode != 0
     assert run("check", overrides={"ROS_DISTRO": "humble"}).returncode != 0

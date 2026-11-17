@@ -6,6 +6,7 @@ source "$project_dir/scripts/deploy_i18n.sh"
 # This revision includes every product header required by the shared binary.
 sdk_revision=7740f8b67e386ab09c3b333187fd5f8582a75ddc
 sdk_source=""
+sdk_prefix_explicit=false
 sdk_prefix="${HOME}/.local/share/unirobogui/sdk2/${sdk_revision}"
 build_dir="$project_dir/build-pc"
 command_name="${1:---help}"
@@ -19,6 +20,10 @@ UniRoboGui Ubuntu 22.04 x86_64 电脑 SDK2 控制台 / PC SDK2 console
   bash scripts/pc.sh install [--sdk2-source DIR] [--sdk-prefix DIR] [--build-dir DIR]
   bash scripts/pc.sh check   [--sdk-prefix DIR] [--build-dir DIR]
   bash scripts/pc.sh start   [--build-dir DIR] [--port 8080] [--mock] [--a2-joint-gains FILE]
+  bash scripts/pc.sh shortcut [same options as start]
+
+推荐默认安装到机器人，功能覆盖最完整；PC 为可选，部分功能受限。
+Robot installation is recommended/default with the fullest feature set; PC has feature limitations.
 
 安装后使用 start，在本机浏览器中选择 G1/R1/GO2/A2 和有线网卡；启动时不连接机器人。
 After install, start and select G1/R1/GO2/A2 and a wired interface in the local browser.
@@ -26,20 +31,24 @@ After install, start and select G1/R1/GO2/A2 and a wired interface in the local 
 Does not change networking, install robot helpers/services, or connect automatically.
 EOF
 }
-case "$command_name" in install|check|start) ;; -h|--help) usage; exit 0 ;; *) usage >&2; exit 2 ;; esac
+case "$command_name" in install|check|start|shortcut) ;; -h|--help) usage; exit 0 ;; *) usage >&2; exit 2 ;; esac
 while (($#)); do
   case "$1" in
     --sdk2-source|--sdk-prefix|--build-dir|--port|--a2-joint-gains)
       (($# >= 2)) || { usage >&2; exit 2; }
       option="$1"; value="$2"; shift
+      case "$command_name:$option" in
+        install:--sdk2-source|install:--sdk-prefix|install:--build-dir|check:--sdk-prefix|check:--build-dir|start:--build-dir|start:--port|start:--a2-joint-gains|shortcut:--build-dir|shortcut:--port|shortcut:--a2-joint-gains) ;;
+        *) printf 'Invalid option / 参数不适用: %s %s\n' "$command_name" "$option" >&2; exit 2 ;;
+      esac
       case "$option" in
         --sdk2-source) sdk_source="$(realpath -m -- "$value")" ;;
-        --sdk-prefix) sdk_prefix="$(realpath -m -- "$value")" ;;
+        --sdk-prefix) sdk_prefix="$(realpath -m -- "$value")"; sdk_prefix_explicit=true ;;
         --build-dir) build_dir="$(realpath -m -- "$value")" ;;
         --port) port="$value" ;;
         --a2-joint-gains) a2_joint_gains="$(realpath -e -- "$value")" ;;
       esac ;;
-    --mock) mock=true ;;
+    --mock) [[ "$command_name" == start || "$command_name" == shortcut ]] || { usage >&2; exit 2; }; mock=true ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -57,9 +66,15 @@ done
 [[ "${LD_LIBRARY_PATH:-}:${CMAKE_PREFIX_PATH:-}:${PYTHONPATH:-}" != *'/ros/'* ]] ||
   fail '检测到 ROS 路径污染' 'ROS path contamination detected'
 
-if [[ "$command_name" == start ]]; then
+if [[ "$command_name" == start || "$command_name" == shortcut ]]; then
   [[ -x "$build_dir/g1_web_server" && -f "$build_dir/pc-sdk-prefix" ]] ||
     fail '请先执行 pc.sh install' 'Run pc.sh install first'
+  if [[ "$command_name" == shortcut ]]; then
+    args=(create --build-dir "$build_dir" --port "$port")
+    if $mock; then args+=(--mock); fi
+    if [[ -n "$a2_joint_gains" ]]; then args+=(--a2-joint-gains "$a2_joint_gains"); fi
+    exec python3 "$project_dir/scripts/pc_shortcut.py" "${args[@]}"
+  fi
   IFS= read -r sdk_prefix < "$build_dir/pc-sdk-prefix"
   [[ -d "$sdk_prefix/lib" ]] || fail 'SDK 路径失效，请重新安装' 'SDK path is unavailable; reinstall'
   export LD_LIBRARY_PATH="$sdk_prefix/lib"
@@ -67,6 +82,10 @@ if [[ "$command_name" == start ]]; then
   if $mock; then args+=(--mock); fi
   if [[ -n "$a2_joint_gains" ]]; then args+=(--a2-joint-gains "$a2_joint_gains"); fi
   exec python3 "$project_dir/scripts/pc_session.py" "${args[@]}"
+fi
+
+if [[ "$command_name" == check && "$sdk_prefix_explicit" == false && -f "$build_dir/pc-sdk-prefix" ]]; then
+  IFS= read -r sdk_prefix < "$build_dir/pc-sdk-prefix"
 fi
 
 packages=(build-essential cmake pkg-config git python3 libboost-system-dev libboost-thread-dev libjsoncpp-dev libcurl4-openssl-dev libopencv-dev
@@ -131,5 +150,7 @@ for library in libddsc.so libddscxx.so; do
     fail 'DDS 动态库未来自指定 SDK' 'DDS library does not come from the selected SDK'
 done
 printf '%s\n' "$sdk_prefix" > "$build_dir/pc-sdk-prefix"
-ui_line '安装完成。运行 bash scripts/pc.sh start，浏览器访问 http://127.0.0.1:8080' \
-  'Installed. Run bash scripts/pc.sh start and open http://127.0.0.1:8080'
+printf -v next_command 'bash %q start --target pc --build-dir %q' "$project_dir/scripts/deploy.sh" "$build_dir"
+ui_line "PC 安装完成。启动：$next_command；浏览器访问 http://127.0.0.1:8080" \
+  "PC installed. Start: $next_command; open http://127.0.0.1:8080"
+ui_line '可选快捷方式：将上述 start 改为 shortcut。' 'Optional shortcuts: replace start above with shortcut.'

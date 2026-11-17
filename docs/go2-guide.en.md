@@ -1,5 +1,8 @@
 # GO2 deployment and Web guide
 
+> **Robot installation is recommended/default for the fullest product feature set**, subject to attachments, services and validation. Deployment instructions here target the robot, including `from-pc`. Optional PC installation requires `--target pc` and has feature limitations; see the [PC guide and comparison](pc-guide.en.md).
+
+
 Project directory and SDK prefix are configurable; `/home/unitree/UniRoboGui` and `/usr/local` are defaults. See [custom paths and accounts](../README.en.md#custom-project-and-dependency-paths). Use `--install-dir` for a remote destination and `--sdk-prefix` for an existing SDK; explicitly add `--install-sdk2` to install a missing SDK.
 
 [简体中文](go2-guide.md) · [Shared deployment guide](deployment-dependencies.en.md)
