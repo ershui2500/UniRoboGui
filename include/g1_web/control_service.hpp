@@ -73,6 +73,10 @@ class ControlService {
                                     float vyaw_rad_s, std::int32_t speed_mode,
                                     bool active);
   std::string SerializeJointDebugStatus();
+  bool HasControlOwnership(bool readonly_recovery = false) const;
+  std::string PcArmActionState() const;
+  bool PrepareDisconnect(bool readonly_recovery = false);
+  void ResumeRequests();
   JointDebugSubmitResult ApplyJointDebug(
       const std::string& mode,
       const std::vector<std::pair<std::size_t, float>>& targets,
@@ -157,6 +161,8 @@ class ControlService {
   std::atomic<bool> running_{false};
   std::atomic<bool> motion_active_{false};
   std::atomic<bool> motion_stop_unconfirmed_{false};
+  enum class PcArmPhase { Idle, Dispatching, Completed, Running, Holding, Unknown };
+  std::atomic<PcArmPhase> pc_arm_phase_{PcArmPhase::Idle};
   std::atomic<std::uint64_t> next_request_id_{1};
   std::atomic<std::uint64_t> next_motion_sequence_{1};
   std::thread worker_;
@@ -177,6 +183,7 @@ class ControlService {
 
   ResourceManager resources_;
   std::recursive_mutex joint_debug_request_mutex_;
+  bool disconnect_prepared_{false};
   std::unique_ptr<JointDebugImpl> joint_debug_;
 };
 

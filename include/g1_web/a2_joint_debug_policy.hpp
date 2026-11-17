@@ -13,6 +13,7 @@ struct A2JointGains {
   std::array<JointDebugGain, 12> recording{};
 };
 bool LoadA2JointGains(const std::string& path, A2JointGains& gains);
+A2JointGains A2ExperimentalJointGains();
 
 std::unique_ptr<IJointDebugPolicy> CreateA2JointDebugPolicy(
     const RobotProfile& profile, const A2JointGains& gains = {});

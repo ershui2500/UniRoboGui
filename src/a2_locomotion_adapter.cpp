@@ -9,8 +9,10 @@ namespace g1_web {
 namespace {
 class A2LocomotionAdapter final : public ILocomotion {
  public:
-  explicit A2LocomotionAdapter(bool mock, A2SportCall call = {})
-      : mock_(mock), call_(std::move(call)) {}
+  explicit A2LocomotionAdapter(bool mock, A2SportCall call = {},
+                              A2SportTimeout set_timeout = {})
+      : mock_(mock), call_(std::move(call)),
+        test_set_timeout_(std::move(set_timeout)) {}
 
   bool Initialize(LocomotionInitialization& state, std::string& error) override {
     state = {};
@@ -81,6 +83,25 @@ class A2LocomotionAdapter final : public ILocomotion {
     const int gait = command == "run" ? 1 : command == "climb" ? 2 : 0;
     return Result(Call(command, gait), target);
   }
+  LocomotionCommandResult StandDownForLowLevelEntry() override {
+    if (mock_) return Result(Call("stand_down"), 1);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (test_set_timeout_) test_set_timeout_(8.0F);
+    else if (client_) client_->SetTimeout(8.0F);
+    std::int32_t result;
+    try {
+      result = call_ ? call_("stand_down", 0, 0, 0, 0)
+                     : client_ ? client_->StandDown() : -1;
+    } catch (...) {
+      if (test_set_timeout_) test_set_timeout_(1.0F);
+      else if (client_) client_->SetTimeout(1.0F);
+      throw;
+    }
+    if (test_set_timeout_) test_set_timeout_(1.0F);
+    else if (client_) client_->SetTimeout(1.0F);
+    return {result, 1, result == 3104 ? "stand_down_rpc_timeout"
+                                      : result == 0 ? "" : "sdk_api_error"};
+  }
   LocomotionCommandResult ApplyVelocity(float x, float y, float yaw,
                                          std::int32_t speed, bool active) override {
     return ApplyVelocityGuarded(x, y, yaw, speed, active, [] { return std::string{}; });
@@ -135,6 +156,7 @@ class A2LocomotionAdapter final : public ILocomotion {
   }
   bool mock_;
   A2SportCall call_;
+  A2SportTimeout test_set_timeout_;
   std::mutex mutex_;
   std::unique_ptr<unitree::robot::a2::SportClient> client_;
 };
@@ -142,7 +164,9 @@ class A2LocomotionAdapter final : public ILocomotion {
 std::unique_ptr<ILocomotion> CreateA2LocomotionAdapter(bool mock) {
   return std::make_unique<A2LocomotionAdapter>(mock);
 }
-std::unique_ptr<ILocomotion> CreateA2LocomotionAdapterForTesting(A2SportCall call) {
-  return std::make_unique<A2LocomotionAdapter>(false, std::move(call));
+std::unique_ptr<ILocomotion> CreateA2LocomotionAdapterForTesting(
+    A2SportCall call, A2SportTimeout set_timeout) {
+  return std::make_unique<A2LocomotionAdapter>(false, std::move(call),
+                                               std::move(set_timeout));
 }
 }  // namespace g1_web

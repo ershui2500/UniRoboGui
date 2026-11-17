@@ -514,7 +514,10 @@ class ControlService::JointDebugImpl {
       std::lock_guard<std::mutex> lock(mutex);
       ai_sport_found = true;
       ai_sport_active = mock_ai_sport_active;
-      active_motion_mode = mock_ai_sport_active ? "mcf" : "";
+      active_motion_mode = mock_ai_sport_active
+          ? (policy.MotionModeSwitchService().empty()
+                 ? "mcf" : policy.MotionModeSwitchService())
+          : "";
       active_motion_service = active_motion_mode;
       error.clear();
       return true;
@@ -985,6 +988,8 @@ std::string ControlService::SerializeJointDebugStatus() {
   root["active_motion_service"] = joint_debug_->active_motion_service;
   root["motion_mode_switch_supported"] =
       joint_debug_->policy.SupportsMotionModeSwitch();
+  root["motion_mode_switch_service"] =
+      joint_debug_->policy.MotionModeSwitchService();
   const auto full_body_groups =
       joint_debug_->policy.GroupsForMode("full_body");
   if (!full_body_groups.empty()) {
@@ -1127,7 +1132,7 @@ JointDebugSubmitResult ControlService::ApplyJointDebug(
       joint_debug_request_mutex_);
   JointDebugSubmitResult result;
   const auto ready = safety_.CheckServiceReady(
-      running_.load() && joint_debug_ && joint_debug_->initialized);
+      running_.load() && !disconnect_prepared_ && joint_debug_ && joint_debug_->initialized);
   if (!ready.allowed) {
     result.error = ready.error;
     return result;
@@ -1711,7 +1716,7 @@ JointDebugSubmitResult ControlService::StartJointTeachRecording(
       joint_debug_request_mutex_);
   JointDebugSubmitResult result;
   const auto ready = safety_.CheckServiceReady(
-      running_.load() && joint_debug_ && joint_debug_->initialized);
+      running_.load() && !disconnect_prepared_ && joint_debug_ && joint_debug_->initialized);
   if (!ready.allowed) {
     result.error = ready.error;
     return result;
@@ -1765,7 +1770,7 @@ JointDebugSubmitResult ControlService::FinishJointTeachRecording(
       joint_debug_request_mutex_);
   JointDebugSubmitResult result;
   const auto ready = safety_.CheckServiceReady(
-      running_.load() && joint_debug_ && joint_debug_->initialized);
+      running_.load() && !disconnect_prepared_ && joint_debug_ && joint_debug_->initialized);
   if (!ready.allowed) {
     result.error = ready.error;
     return result;
@@ -1879,7 +1884,7 @@ JointDebugSubmitResult ControlService::PlayJointTeachAction(
       joint_debug_request_mutex_);
   JointDebugSubmitResult result;
   const auto ready = safety_.CheckServiceReady(
-      running_.load() && joint_debug_ && joint_debug_->initialized);
+      running_.load() && !disconnect_prepared_ && joint_debug_ && joint_debug_->initialized);
   if (!ready.allowed) {
     result.error = ready.error;
     return result;
@@ -2099,7 +2104,7 @@ JointDebugSubmitResult ControlService::SwitchJointDebugMode(
       joint_debug_request_mutex_);
   JointDebugSubmitResult result;
   const auto ready = safety_.CheckServiceReady(
-      running_.load() && joint_debug_ && joint_debug_->initialized);
+      running_.load() && !disconnect_prepared_ && joint_debug_ && joint_debug_->initialized);
   if (!ready.allowed) {
     result.error = ready.error;
     return result;
@@ -2169,6 +2174,124 @@ JointDebugSubmitResult ControlService::SwitchJointDebugMode(
     }
     return false;
   };
+  const auto switch_service = joint_debug_->policy.MotionModeSwitchService();
+  if (!switch_service.empty()) {
+    if (!LowStateFresh(store_.GetSnapshot())) {
+      result.error = "lowstate_unavailable";
+      return result;
+    }
+    bool service_active;
+    {
+      std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+      service_active = joint_debug_->ai_sport_active;
+      if (service_active && joint_debug_->active_motion_service != switch_service) {
+        result.error = "motion_mode_not_supported";
+        return result;
+      }
+    }
+    if (service_active == !enter_low_level) {
+      result.accepted = true;
+      return result;
+    }
+    if (enter_low_level) {
+      const auto snapshot = store_.GetSnapshot();
+      if (!SportStateFresh(snapshot.control)) {
+        result.error = "sport_state_stale";
+        return result;
+      }
+      Request stand_down;
+      stand_down.category = "mode";
+      stand_down.command = "stand_down";
+      if (!ValidatePreconditions(stand_down, result.error)) return result;
+      if (snapshot.control.fsm_id != 1) {
+        const auto execution = locomotion_->StandDownForLowLevelEntry();
+        if (execution.api_result != 0 || !execution.error.empty()) {
+          result.error = execution.error.empty() ? "sdk_api_error" : execution.error;
+          return result;
+        }
+        update_mock_fsm(1);
+      }
+      auto settled_since = SteadyClock::time_point{};
+      SteadyClock::time_point first_low_update{}, first_sport_update{};
+      const auto joints_settled = [&](const RobotSnapshot& current) {
+        return std::all_of(robot_profile_.joint_schema.joints.begin(),
+            robot_profile_.joint_schema.joints.end(), [&](const auto& joint) {
+              if (joint.motor_slot >= current.motors.size()) return false;
+              const auto& motor = current.motors[joint.motor_slot];
+              return std::isfinite(motor.q) && std::isfinite(motor.dq) &&
+                     std::abs(motor.dq) <= 0.1F;
+            });
+      };
+      const auto deadline = SteadyClock::now() + std::chrono::seconds(10);
+      while (running_.load() && SteadyClock::now() < deadline) {
+        const auto current = store_.GetSnapshot();
+        if (!LowStateFresh(current) || !SportStateFresh(current.control)) {
+          result.error = !LowStateFresh(current) ? "lowstate_unavailable" : "sport_state_stale";
+          return result;
+        }
+        const auto low_update = current.sources[
+            static_cast<std::size_t>(SourceId::kLowState)].last_update;
+        if (current.control.fsm_id != 1 || !joints_settled(current)) {
+          settled_since = {};
+        } else if (settled_since == SteadyClock::time_point{}) {
+          settled_since = SteadyClock::now();
+          first_low_update = low_update;
+          first_sport_update = current.control.sport_state_last_update;
+        } else if (SteadyClock::now() - settled_since >= std::chrono::milliseconds(500) &&
+                   low_update > first_low_update &&
+                   current.control.sport_state_last_update > first_sport_update) {
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+      if (!running_.load() || SteadyClock::now() >= deadline) {
+        result.error = "stand_down_confirmation_timeout";
+        return result;
+      }
+      if (!joint_debug_->RefreshAiSport(service_error)) {
+        result.error = service_error;
+        return result;
+      }
+      {
+        std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+        if (!joint_debug_->ai_sport_active ||
+            joint_debug_->active_motion_service != switch_service) {
+          result.error = "motion_service_confirmation_timeout";
+          return result;
+        }
+      }
+      const auto final_snapshot = store_.GetSnapshot();
+      if (!LowStateFresh(final_snapshot) || !SportStateFresh(final_snapshot.control) ||
+          final_snapshot.control.fsm_id != 1 || !joints_settled(final_snapshot)) {
+        result.error = "stand_down_confirmation_timeout";
+        return result;
+      }
+    }
+    std::int32_t switch_result = 0;
+    if (mock_) {
+      std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+      joint_debug_->mock_ai_sport_active = !enter_low_level;
+    } else {
+      std::lock_guard<std::mutex> lock(joint_debug_->service_mutex);
+      switch_result = enter_low_level
+          ? joint_debug_->motion_switcher->ReleaseMode()
+          : joint_debug_->motion_switcher->SelectMode(switch_service);
+    }
+    if (switch_result != 0) {
+      result.error = MotionSwitcherError(switch_result);
+      return result;
+    }
+    result.accepted = wait_for([&] {
+      std::string error;
+      if (!joint_debug_->RefreshAiSport(error)) return false;
+      std::lock_guard<std::mutex> lock(joint_debug_->mutex);
+      return enter_low_level ? !joint_debug_->ai_sport_active
+          : joint_debug_->ai_sport_active &&
+            joint_debug_->active_motion_service == switch_service;
+    }, std::chrono::seconds(8));
+    if (!result.accepted) result.error = "motion_service_confirmation_timeout";
+    return result;
+  }
   const auto execute_mode = [&](const std::string& command,
                                 std::uint32_t mock_fsm,
                                 const auto& reached) {
@@ -2432,7 +2555,7 @@ JointDebugSubmitResult ControlService::SwitchJointDebugMode(
 JointDebugSubmitResult ControlService::HeartbeatJointDebug() {
   JointDebugSubmitResult result;
   const auto ready = safety_.CheckServiceReady(
-      running_.load() && joint_debug_ && joint_debug_->initialized);
+      running_.load() && !disconnect_prepared_ && joint_debug_ && joint_debug_->initialized);
   if (!ready.allowed) {
     result.error = ready.error;
     return result;

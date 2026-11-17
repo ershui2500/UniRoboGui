@@ -8,5 +8,6 @@
 
 namespace g1_web {
 std::unique_ptr<IDeviceCapabilityPolicy> CreateA2DeviceCapabilityPolicy(
-    const std::set<std::string>& enabled_devices = {});
+    const std::set<std::string>& enabled_devices = {},
+    bool robot_local_resources = true);
 }  // namespace g1_web

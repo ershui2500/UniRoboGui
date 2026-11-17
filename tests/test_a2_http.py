@@ -126,7 +126,8 @@ def run(server, web_root, readonly):
             assert debug['initialized'] and len(debug['joints']) == 12
             assert debug['full_body_allowed'] and not debug['upper_body_allowed']
             assert debug['control_topics'] == {'full_body': 'rt/lowcmd'}
-            assert not debug['motion_mode_switch_supported']
+            assert debug['motion_mode_switch_supported']
+            assert debug['motion_mode_switch_service'] == 'ai_sport'
             assert debug['remote_binding_supported'] and not debug['teach_actions']
             targets = [
                 {'index': index, 'q': .8 if index % 3 == 1 else
@@ -134,8 +135,8 @@ def run(server, web_root, readonly):
                 for index in range(12)
             ]
             for endpoint, body, expected in (
-                    ('mode', {'mode': 'low_level', 'confirmed': True},
-                     'motion_mode_switch_unsupported'),
+                    ('mode', {'mode': 'low_level', 'confirmed': False},
+                     'confirmation_required'),
                     ('apply', {'mode': 'upper_body', 'confirmed': True,
                                'joints': targets},
                      'invalid_control_mode'),
@@ -147,6 +148,12 @@ def run(server, web_root, readonly):
                     raise AssertionError(f'A2 Joint Debug accepted {expected}')
                 except urllib.error.HTTPError as error:
                     assert json.loads(error.read())['error'] == expected
+            for mode, active in [('high_level', True), ('low_level', False)]:
+                assert request_json(base + '/api/control/joint-debug/mode',
+                                    {'mode': mode, 'confirmed': True})['accepted']
+                switched = request_json(base + '/api/control/joint-debug/status')
+                assert switched['motion_service_active'] is active
+                assert switched['dds_state'] == 'idle'
             targets[0]['q'] = .1
             applied = request_json(base + '/api/control/joint-debug/apply', {
                 'mode': 'full_body', 'confirmed': True, 'joints': targets})
@@ -177,6 +184,8 @@ def run(server, web_root, readonly):
                 except urllib.error.HTTPError:
                     pass
 
+            assert control()['fsm_id'] == 1  # Entry crouches before releasing ai_sport.
+            command('balance_stand', 3)  # Restore the independent high-level Mock fixture.
             reject('left_side_gait_off')
             reject('recovery_stand')
             command('front_flip', 3)

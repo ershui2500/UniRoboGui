@@ -143,6 +143,12 @@ const appState = {
   activeRobotProductId: "",
   robotSwitchInFlight: false,
   robotSwitchTarget: "",
+  pcSession: null,
+  pcBusy: false,
+  pcPendingAction: "",
+  pcInterfaces: [],
+  pcInterfacesLoading: false,
+  pcInterfacesError: false,
   motionPreset: {
     label: "低速",
     speedMode: 0,
@@ -737,6 +743,7 @@ function applyManifestCapabilities(manifest, manifestError = "") {
     const viewWhenUnavailable =
       element.hasAttribute("data-capability-view-when-unavailable") &&
       Boolean(manifest) && !manifestError &&
+      descriptor?.reason !== "pc_camera_transport_unavailable" &&
       descriptor?.implemented === true && state === "unavailable";
     const capabilityBlocked =
       Boolean(manifestError) || !manifest ||
@@ -875,6 +882,11 @@ function renderRobotManifestFailure(error) {
   window.dispatchEvent(new CustomEvent("unirobo:manifest", { detail: null }));
 }
 
+function sessionHeaders(headers = {}) {
+  return appState.pcSession ? {...headers, "X-Unirobo-PC-Session": appState.pcSession.session_id} : headers;
+}
+window.uniroboSessionHeaders = sessionHeaders;
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = 1500) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -941,7 +953,8 @@ function renderRobotSwitcher() {
   const menu = $("robotMenu");
   if (!label || !button || !value || !menu) return;
 
-  label.textContent = manifestText("机器人", "Robot");
+  label.textContent = appState.pcSession
+    ? manifestText("所选型号", "Selected model") : manifestText("机器人", "Robot");
   const active = appState.robotProducts.find(
     (product) => product.product_id === appState.activeRobotProductId,
   );
@@ -954,7 +967,8 @@ function renderRobotSwitcher() {
     ? manifestText(`切换至 ${target?.display_name || appState.robotSwitchTarget}…`,
                    `Switching to ${target?.display_name || appState.robotSwitchTarget}…`)
     : displayName;
-  button.disabled = appState.robotSwitchInFlight || appState.robotProducts.length === 0;
+  button.disabled = appState.robotSwitchInFlight || appState.robotProducts.length === 0 ||
+    appState.pcBusy || appState.pcSession?.recovery_required;
   button.setAttribute(
     "aria-label",
     manifestText(`机器人产品：${displayName}`, `Robot product: ${displayName}`),
@@ -1045,6 +1059,11 @@ async function requestRobotSwitch(productId) {
   }
   const product = appState.robotProducts.find((item) => item.product_id === productId);
   if (!product) return;
+  if (appState.pcSession) {
+    closeRobotMenu();
+    await pcAction("/api/robot/switch", { product_id: productId });
+    return;
+  }
   const confirmed = window.confirm(manifestText(
     `确认切换到 ${product.display_name}？请先确认当前物理机器人型号一致；服务会安全停止并以该产品配置重新启动。`,
     `Switch to ${product.display_name}? First confirm the physical robot matches; the service will stop safely and restart with that product profile.`,
@@ -1061,7 +1080,7 @@ async function requestRobotSwitch(productId) {
   try {
     const response = await fetchWithTimeout("/api/robot/switch", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ product_id: productId }),
     });
     const result = await response.json();
@@ -1112,6 +1131,327 @@ function initRobotSwitcher() {
   renderRobotSwitcher();
 }
 
+function pcConnectionAction() {
+  const session = appState.pcSession;
+  const selected = $("pcInterface").value;
+  return (session.interface && (!selected || selected === session.interface)) ||
+    (!session.interface && session.state === "error") ? "disconnect" : "connect";
+}
+
+function shouldRefreshPcInterfaces() {
+  return appState.pcSession && !appState.pcSession.interface && !appState.pcBusy &&
+    !appState.pcInterfacesLoading && $("pcInterfaceMenu").hidden;
+}
+
+function renderPcSession() {
+  const session = appState.pcSession;
+  if (!session) return;
+  const t = manifestText;
+  const productName = String(session.selected_product_id || "robot").toUpperCase();
+  const states = {
+    disconnected: t("未连接", "Disconnected"),
+    waiting_telemetry: t(`等待 ${productName} 遥测`, `Waiting for ${productName} telemetry`),
+    online: t(`${productName} 遥测在线`, `${productName} telemetry online`),
+    stale: t("遥测已过期", "Telemetry is stale"),
+    network_unavailable: t("有线网络不可用", "Wired network unavailable"),
+    error: t("连接异常，可只读恢复", "Connection error; read-only recovery available"),
+  };
+  const label = states[session.state] || states.error;
+  setText("pcTitle", t("连接信息", "Connection info"));
+  setText("pcInterfaceLabel", t("网卡", "Interface"));
+  $("pcDetailsLabel").setAttribute("aria-label", t("连接信息", "Connection info"));
+  $("pcDetailsLabel").title = t("连接信息", "Connection info");
+  const selected = $("pcInterface").value;
+  const disconnect = pcConnectionAction() === "disconnect";
+  setText("pcConnect", appState.pcBusy
+    ? appState.pcPendingAction === "/api/pc/disconnect" ? t("断开中…", "Disconnecting…")
+      : appState.pcPendingAction === "/api/robot/switch" ? t("切换中…", "Switching…")
+      : t("连接中…", "Connecting…")
+    : disconnect ? t("断开", "Disconnect") : t("连接", "Connect"));
+  const network = appState.pcInterfaces.find((item) => item.name === selected);
+  const supported = appState.robotProducts.some((product) =>
+    product.product_id === session.selected_product_id && product.pc_connect_supported);
+  $("pcConnect").disabled = appState.pcBusy || session.recovery_required || (!disconnect &&
+    (!supported || !network?.up || !network.ipv4.length || appState.pcInterfacesError));
+  $("pcInterface").disabled = appState.pcBusy || session.recovery_required;
+  $("pcInterfaceButton").disabled = appState.pcBusy || session.recovery_required;
+  setText("pcInterfaceValue", selected || t("选择网卡", "Select interface"));
+  $("pcInterfaceMenu").setAttribute("aria-label", t("有线网卡", "Wired interfaces"));
+  $("pcInterfaceMenu").querySelectorAll("[data-pc-interface]").forEach((option) => {
+    option.setAttribute("aria-selected", option.dataset.pcInterface === selected ? "true" : "false");
+  });
+  $("robotMenuButton").disabled = appState.pcBusy || session.recovery_required || !appState.robotProducts.length;
+  const armStates = {
+    idle: t("无本会话上肢动作", "No arm action in this session"),
+    dispatching: t("上肢 RPC 处理中，物理进度未知", "Arm RPC in progress; physical progress unknown"),
+    completed_mock: t("模拟动作已完成", "Mock action completed"),
+    running_reported: t("固件报告有动作执行中（最近 RPC）", "Firmware reported an executing action (last RPC)"),
+    holding_reported: t("固件报告动作保持（最近 RPC）", "Firmware reported an action hold (last RPC)"),
+    unknown: t("上肢动作完成/释放状态未知", "Arm completion/release is unknown"),
+    lost: t("上肢状态失联，不能确认完成或释放", "Arm state lost; completion/release unconfirmed"),
+  };
+  setText("pcArmState", session.interface ? armStates[session.arm_action_state] || armStates.unknown : "");
+  const needsRecovery = session.interface && (session.recovery_required ||
+    session.state !== "online" || !["idle", "completed_mock"].includes(session.arm_action_state));
+  $("pcRecover").hidden = !needsRecovery;
+  $("pcRecover").disabled = appState.pcBusy;
+  setText("pcRecover", t("只读恢复连接", "Recover read-only connection"));
+  $("pcConfirmRecovery").hidden = !session.recovery_required || !session.worker_readonly;
+  $("pcConfirmRecovery").disabled = appState.pcBusy;
+  setText("pcConfirmRecovery", t("确认现场停止并断开", "Confirm field stop and disconnect"));
+  setText("pcRecoveryNotice", session.recovery_required
+    ? t("恢复隔离中：只订阅遥测，旧任务状态未知。现场结束所有动作、示教保持和 SLAM 任务后，可确认停止并断开，无需等待遥测恢复，再手动连接。", "Recovery isolation: telemetry only; previous tasks are unknown. End all actions, teaching holds and SLAM tasks on site, then confirm stop and disconnect without waiting for telemetry to recover. Connect manually afterwards.")
+    : needsRecovery ? t("缺少停止证据或动作状态未知时，可重建同一目标的只读连接。活跃的本机控制仍会阻止恢复；不会发送停止或释放命令。", "If stop evidence or action completion is missing, rebuild a read-only connection to the same target. Active local control still blocks recovery; no stop/release command is sent.") : "");
+  const last = session.last_received_ms
+    ? new Date(session.last_received_ms).toLocaleTimeString(undefined, { hour12: false }) : "--";
+  setText("pcDetail", t(
+    `当前网卡：${session.interface || "未连接"}\nIPv4：${session.network?.ipv4?.join(", ") || "--"}\n最近数据：${last}`,
+    `Current interface: ${session.interface || "Not connected"}\nIPv4: ${session.network?.ipv4?.join(", ") || "--"}\nLast data: ${last}`,
+  ));
+  $("pcInterface").title = appState.pcInterfacesError
+    ? t("暂时无法检测网卡，将自动重试", "Unable to detect interfaces; retrying automatically")
+    : !appState.pcInterfaces.length
+      ? t("未检测到有线网卡，请插入网卡或网线", "No wired interface detected. Plug in an Ethernet adapter or cable")
+      : network ? `${network.name} · IPv4: ${network.ipv4.join(", ") || "--"}`
+      : t("选择与机器人相连的有线网卡", "Select the wired interface connected to your robot");
+  $("pcInterfaceButton").title = $("pcInterface").title;
+  const notice = appState.pcInterfacesError ? t("暂时无法检测网卡，请检查网卡连接，系统将自动重试。", "Unable to detect interfaces. Check the adapter connection; detection will retry automatically.")
+    : !appState.pcInterfaces.length ? t("未检测到有线网卡，请插入网卡或网线，列表会自动更新。", "No wired interface detected. Plug in an Ethernet adapter or cable; the list updates automatically.")
+    : !supported ? t("此型号暂不支持电脑直连，请选择 G1 或 R1。", "PC connection is currently available for G1 and R1. Please select one of them.")
+    : session.interface && selected && selected !== session.interface
+      ? t(`点击“连接”将切换到 ${selected}，当前连接会断开。`, `Connect to switch to ${selected}. The current connection will end.`)
+      : t("选择与机器人相连的有线网卡。同一网络请仅连接一台机器人；切换前须结束控制任务。", "Select the wired interface connected to your robot. Use one robot per network. End control tasks before switching.");
+  setText("pcNotice", session.mock ? t(`模拟演示 · ${notice}`, `Mock demo · ${notice}`) : notice);
+  const online = session.state === "online";
+  const control = appState.controlData;
+  const controlStateMissing = online && control?.enabled === true &&
+    (control.sport_state_received !== true || !Number.isFinite(control.sport_state_age_ms) ||
+      control.sport_state_age_ms < 0 || control.sport_state_age_ms > 1000);
+  $("staleBanner").hidden = online || session.state === "disconnected";
+  setConnection(online ? "online" : "offline", session.mock ? t(`模拟 · ${label}`, `Mock · ${label}`) : label,
+    controlStateMissing
+      ? t("电脑直连 · SDK2 · 运控状态未更新", "Direct PC connection · SDK2 · Motion state unavailable")
+      : t("电脑直连 · SDK2", "Direct PC connection · SDK2"));
+  if (session.state === "disconnected") {
+    setText("ddsState", t("未连接", "Disconnected"));
+    setText("ddsDetail", t("请选择产品和有线网卡后连接", "Select a product and wired interface to connect"));
+  }
+}
+
+function renderPcInterfaces() {
+  const select = $("pcInterface");
+  const previous = select.value || appState.pcSession?.interface;
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = manifestText("选择网卡", "Select interface");
+  const options = appState.pcInterfaces.map((item) => {
+    const option = document.createElement("option");
+    option.value = item.name;
+    option.textContent = item.name;
+    option.title = `${item.name} · IPv4: ${item.ipv4.join(", ") || "--"} · ${item.up ? "UP" : "DOWN"}`;
+    option.disabled = !item.up || !item.ipv4.length;
+    return option;
+  });
+  select.replaceChildren(placeholder, ...options);
+  select.value = options.some((item) => item.value === previous) ? previous : "";
+  const menuOptions = [placeholder, ...options].map((item) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "language-option";
+    option.setAttribute("role", "option");
+    option.dataset.pcInterface = item.value;
+    option.disabled = !!item.disabled;
+    const name = document.createElement("span");
+    name.textContent = item.textContent;
+    option.append(name);
+    if (item.value) {
+      const info = document.createElement("small");
+      const network = appState.pcInterfaces.find((entry) => entry.name === item.value);
+      info.textContent = network.up && network.ipv4.length ? network.ipv4.join(", ")
+        : manifestText("未就绪 · 请检查网线与 IPv4", "Not ready · check cable and IPv4");
+      option.append(info);
+    }
+    return option;
+  });
+  $("pcInterfaceMenu").replaceChildren(...menuOptions);
+  renderPcSession();
+}
+
+async function loadPcInterfaces() {
+  if (appState.pcInterfacesLoading || appState.pcBusy) return;
+  appState.pcInterfacesLoading = true;
+  const sessionId = appState.pcSession.session_id;
+  try {
+    const response = await fetchWithTimeout("/api/pc/interfaces", { cache: "no-store" });
+    if (!response.ok) throw new Error("interfaces_unavailable");
+    const payload = await response.json();
+    if (appState.pcBusy || sessionId !== appState.pcSession.session_id || !$("pcInterfaceMenu").hidden) return;
+    appState.pcInterfaces = payload.interfaces;
+    appState.pcInterfacesError = false;
+    renderPcInterfaces();
+  } catch {
+    if (appState.pcBusy || sessionId !== appState.pcSession.session_id) return;
+    appState.pcInterfacesError = true;
+    renderPcSession();
+  } finally {
+    appState.pcInterfacesLoading = false;
+  }
+}
+
+async function pcAction(path, payload = {}) {
+  if (appState.pcBusy) return;
+  appState.pcBusy = true;
+  appState.pcPendingAction = path;
+  setText("pcError", "");
+  renderPcSession();
+  try {
+    const response = await fetchWithTimeout(path, {
+      method: "POST", headers: sessionHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+    }, 120000);
+    const result = await response.json();
+    if (!response.ok || !result.accepted) throw new Error(result.error);
+    // Reload every view and WebSocket together; no old session data survives.
+    location.reload();
+  } catch (error) {
+    const errors = {
+      wired_interface_not_ready: manifestText("网卡未就绪：请检查网线和 IPv4 配置", "Interface not ready: check cable and IPv4 configuration"),
+      pc_product_not_supported: manifestText("该产品尚未开放电脑直连", "PC connection is not available for this product"),
+      worker_stop_timeout: manifestText("旧工作进程尚未退出，禁止创建新连接。请稍后重试只读恢复；若持续失败，检查该本机进程。", "The old worker has not exited; new connections are blocked. Retry read-only recovery shortly; if this persists, inspect that local process."),
+      worker_start_failed: manifestText("无法建立连接，请检查网卡配置后重试", "Unable to connect. Check the interface configuration and try again"),
+      pc_control_active: manifestText("控制资源仍被占用。内置动作状态未知时可使用只读恢复；本机活跃控制须先结束。", "Control resources remain occupied. Use read-only recovery for unknown firmware actions; end active local control first."),
+      pc_recovery_required: manifestText("当前处于恢复隔离；请确认现场旧任务已结束，再点击“确认现场停止并断开”。遥测缺失不阻止现场确认。", "Recovery isolation is active. Confirm old tasks have ended on site, then choose Confirm field stop and disconnect. Missing telemetry does not block field confirmation."),
+      pc_session_changed: manifestText("会话已变化，请刷新后重试。", "The session changed. Refresh and retry."),
+      confirmation_required: manifestText("必须明确确认现场旧任务已经结束。", "Explicit confirmation that previous tasks ended on site is required."),
+      pc_request_in_progress: manifestText("操作请求仍在处理中，请稍后再断开。", "An operation is still in progress. Retry disconnecting shortly."),
+      pc_motion_active: manifestText("运动指令尚未结束，请先停止页面运动控制并等待指令完成。", "A motion command is still active. End page motion control and wait for completion."),
+      pc_joint_control_active: manifestText("关节调试或示教仍在接管，请先点击停止 / 释放控制。", "Joint debugging or teaching still owns control. Use Stop / Release Control first."),
+      pc_navigation_active: manifestText("建图或导航任务尚未结束，请先结束当前任务。", "Mapping or navigation is still active. End the current task first."),
+      pc_robot_moving: manifestText("当前行走状态仍报告平面移动或转向，请确认机器人停稳后重试。", "The current walking state still reports planar motion or turning. Retry after the robot settles."),
+      pc_stop_state_unavailable: manifestText("缺少新鲜停止证据；可使用只读恢复连接，再确认现场状态。", "Fresh stop evidence is missing. Recover a read-only connection, then confirm the field state."),
+    };
+    setText("pcError", errors[error.message] || manifestText(
+      "连接操作未完成，请检查网络后重试", "Connection action failed. Check the network and try again",
+    ));
+    $("pcConnectionDetails").open = true;
+    appState.pcBusy = false;
+    appState.pcPendingAction = "";
+    renderPcSession();
+  }
+}
+
+function initializePcInterfaceMenu() {
+  const switcher = $("pcInterfaceSwitcher");
+  const button = $("pcInterfaceButton");
+  const menu = $("pcInterfaceMenu");
+  const details = $("pcConnectionDetails");
+  const close = () => {
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+  };
+  button.addEventListener("click", () => {
+    const opening = menu.hidden;
+    menu.hidden = !opening;
+    button.setAttribute("aria-expanded", String(opening));
+    if (opening) {
+      details.open = false;
+      closeRobotMenu();
+    }
+  });
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-pc-interface]");
+    if (!option || option.disabled) return;
+    $("pcInterface").value = option.dataset.pcInterface;
+    close();
+    renderPcSession();
+    button.focus();
+  });
+  switcher.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      close();
+      button.focus();
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      if (menu.hidden) button.click();
+      const options = [...menu.querySelectorAll("[data-pc-interface]:not(:disabled)")];
+      const index = options.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+        : index < 0 ? (event.key === "ArrowDown" ? 0 : options.length - 1)
+        : (index + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+      options[next]?.focus();
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (!switcher.contains(event.target)) close();
+    if (!details.contains(event.target)) details.open = false;
+  });
+  switcher.addEventListener("focusout", (event) => {
+    if (!switcher.contains(event.relatedTarget)) close();
+  });
+}
+
+async function initializePcSession() {
+  try {
+    const response = await fetchWithTimeout("/api/pc/session", { cache: "no-store" });
+    if (!response.ok) return;
+    const session = await response.json();
+    if (!["pc_sdk2", "pc_readonly"].includes(session.runtime_mode)) return;
+    appState.pcSession = session;
+    window.uniroboPcMode = true;
+    document.body.classList.add("pc-workspace");
+    $("pcConnection").hidden = false;
+    $("connectionPill").setAttribute("role", "status");
+    $("connectionPill").setAttribute("aria-live", "polite");
+    $("pcConnectionDetails").addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      $("pcConnectionDetails").open = false;
+      $("pcDetailsLabel").focus();
+    });
+    initializePcInterfaceMenu();
+    $("pcInterface").addEventListener("change", renderPcSession);
+    $("pcConnect").addEventListener("click", () => {
+      if (pcConnectionAction() === "disconnect") return pcAction("/api/pc/disconnect");
+      return pcAction("/api/pc/connect", {
+        product_id: appState.activeRobotProductId, interface: $("pcInterface").value,
+      });
+    });
+    $("pcRecover").addEventListener("click", () => pcAction("/api/pc/recover", {
+      session_id: appState.pcSession.session_id,
+    }));
+    $("pcConfirmRecovery").addEventListener("click", () => {
+      const productName = String(appState.pcSession.selected_product_id || "robot").toUpperCase();
+      if (!window.confirm(manifestText(
+        `请由现场人员确认：机器人已可靠停止，所有旧运动、上肢/固件动作、关节接管、示教保持、建图和导航任务均已结束，当前网络仍是同一台 ${productName}。此操作只结束隔离会话，不会停止或释放机器人。确认后需手动重新连接。`,
+        `On-site confirmation required: the robot is safely stopped; all previous motion, firmware/arm actions, joint control, teaching holds, mapping and navigation have ended; the same ${productName} remains on this network. This only ends the isolated session and sends no stop/release command. Reconnect manually afterwards.`,
+      ))) return;
+      return pcAction("/api/pc/confirm-recovery", {
+        session_id: appState.pcSession.session_id, confirmed: true,
+      });
+    });
+    await loadPcInterfaces();
+    setInterval(() => {
+      if (shouldRefreshPcInterfaces()) loadPcInterfaces();
+    }, 5000);
+    setInterval(async () => {
+      if (appState.pcBusy) return;
+      try {
+        const response = await fetchWithTimeout("/api/pc/session", { cache: "no-store" });
+        if (!response.ok) throw new Error("session_unavailable");
+        const next = await response.json();
+        if (next.session_id !== appState.pcSession.session_id) {
+          appState.socket?.close();
+          location.reload();
+          return;
+        }
+        appState.pcSession = next;
+      } catch {
+        appState.pcSession.state = "error";
+      }
+      renderPcSession();
+    }, 1000);
+  } catch { /* Robot deployments do not have the PC session API. */ }
+}
+
 function setConnection(kind, label, detail) {
   const pill = $("connectionPill");
   pill.classList.remove("online", "offline");
@@ -1146,7 +1486,7 @@ function connect() {
 
   socket.addEventListener("open", () => {
     appState.reconnectDelay = 1000;
-    setConnection("online", "遥测已连接", "只读 WebSocket");
+    if (!appState.pcSession) setConnection("online", "遥测已连接", "只读 WebSocket");
     updateControlButtons();
     if (appState.robotSwitchInFlight) {
       loadRobotManifest();
@@ -1157,10 +1497,25 @@ function connect() {
   socket.addEventListener("message", (event) => {
     try {
       const data = JSON.parse(event.data);
+      if (appState.pcSession && data.pc_session_id !== appState.pcSession.session_id) return;
       appState.lastMessageAt = Date.now();
       appState.lastData = data;
-      $("staleBanner").hidden = true;
+      if (!appState.pcSession) $("staleBanner").hidden = true;
       render(data);
+      if (appState.pcSession) {
+        const source = data.sources?.low_state;
+        if (appState.pcSession.interface &&
+            !["error", "network_unavailable"].includes(appState.pcSession.state)) {
+          const online = data.dds_initialized === true && source?.received === true && source.status === "online";
+          appState.pcSession.state = online ? "online"
+            : source?.received ? "stale" : "waiting_telemetry";
+          appState.pcSession.dds_initialized = data.dds_initialized === true;
+        }
+        if (!source?.received) {
+          for (const id of ["modeMachine", "modePr", "robotVersion", "robotTick"]) setText(id, "--");
+        }
+        renderPcSession();
+      }
     } catch (error) {
       console.error("无法解析遥测数据", error);
     }
@@ -1171,7 +1526,10 @@ function connect() {
     if (appState.motionEnabled) {
       disableMotionControl("遥测连接断开，已自动停止运动");
     }
-    setConnection("offline", "连接已断开", "正在自动重连");
+    if (appState.pcSession) {
+      appState.pcSession.state = "error";
+      renderPcSession();
+    } else setConnection("offline", "连接已断开", "正在自动重连");
     $("staleBanner").hidden = false;
     updateControlButtons();
     scheduleReconnect();
@@ -1200,7 +1558,9 @@ function render(data) {
   );
   setText("robotTick", `tick ${integer(robot.tick)}`);
 
-  const timestamp = Number(data.server_time_ms);
+  const timestamp = Number(appState.pcSession
+    ? (data.sources?.low_state?.age_ms == null ? NaN : data.server_time_ms - data.sources.low_state.age_ms)
+    : data.server_time_ms);
   setText(
     "lastUpdate",
     Number.isFinite(timestamp)
@@ -1959,7 +2319,7 @@ async function saveCustomerVoiceConfig() {
   try {
     const response = await fetch("/api/voice/llm/customer-config", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         api_url: apiUrl,
         proxy_url: proxyUrl,
@@ -2099,7 +2459,7 @@ async function saveCustomerConfigFile() {
   try {
     const response = await fetch("/api/voice/llm/customer-config", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         api_url: String(documentConfig.api_url || "").trim(),
         proxy_url: String(documentConfig.proxy_url || "").trim(),
@@ -2145,7 +2505,7 @@ async function applyLlmMode(mode = $("llmModeSelect").value) {
   try {
     const response = await fetch("/api/voice/llm/mode", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ mode }),
     });
     const result = await response.json();
@@ -2179,7 +2539,7 @@ async function speakLlmReply(text, force = false) {
   try {
     const response = await fetch("/api/voice/tts", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ text, speaker_id: -1 }),
     });
     const result = await response.json();
@@ -2217,7 +2577,7 @@ async function submitLlmChat(event) {
   try {
     const response = await fetch("/api/voice/llm/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         mode: currentMode,
         message,
@@ -2351,7 +2711,7 @@ async function submitTts(event) {
   try {
     const response = await fetch("/api/voice/tts", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ text, speaker_id: speakerId, tts_backend: ttsBackend }),
     });
     const result = await response.json();
@@ -2378,6 +2738,9 @@ const voiceErrorLabels = {
   invalid_volume: "音量必须在 0 到 100 之间",
   volume_api_error: "机器人音量接口调用失败",
   invalid_speaker_id: "发音人参数无效",
+  local_tts_unavailable: "电脑端未接入 Kokoro，请选择 Unitree 原生 TTS",
+  pc_session_changed: "连接会话已变化，请刷新页面后重试",
+  pc_not_connected: "请先连接 G1 机器人",
   invalid_tts_backend: "TTS 引擎无效，请选择 Kokoro 或 Unitree",
   mixed_language_requires_auto: "中英文混合请使用“自动识别并分段”发音模式",
   speaker_language_mismatch: "所选发音人与文本语言不匹配",
@@ -2442,7 +2805,7 @@ async function setAsrEnabled(enabled) {
   try {
     const response = await fetch("/api/voice/asr", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ enabled }),
     });
     const result = await response.json();
@@ -2476,7 +2839,7 @@ async function applyVolume() {
   try {
     const response = await fetch("/api/voice/volume", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ volume }),
     });
     const result = await response.json();
@@ -2679,6 +3042,9 @@ function renderTeachActions(control) {
 
 function renderControl(control) {
   appState.controlData = control;
+  const sportFresh = control.sport_state_received === true &&
+    Number.isFinite(control.sport_state_age_ms) &&
+    control.sport_state_age_ms >= 0 && control.sport_state_age_ms <= 1000;
   const nextMotionFsmFamily = motionFsmFamily(control);
   if (
     nextMotionFsmFamily &&
@@ -2734,28 +3100,29 @@ function renderControl(control) {
       : policyDisabled ? "控制已禁用" : "服务异常",
   );
 
-  setText("controlFsmId", control.sport_state_received ? integer(control.fsm_id) : "--");
-  setText("topFsm", control.sport_state_received ? integer(control.fsm_id) : "--");
+  setText("controlFsmId", sportFresh ? integer(control.fsm_id) : "--");
+  setText("topFsm", sportFresh ? integer(control.fsm_id) : "--");
   setText(
     "controlFsmName",
-    control.sport_state_received
+    sportFresh
       ? fsmDisplayName(control.fsm_id)
-      : "等待 rt/sportmodestate",
+      : manifestText("运控状态未更新", "Motion state unavailable"),
   );
   setText(
     "controlFsmMode",
-    control.sport_state_received ? integer(control.fsm_mode) : "--",
+    sportFresh ? integer(control.fsm_mode) : "--",
   );
   setText(
     "controlFsmModeHint",
-    Number(control.fsm_mode) === 0
+    !sportFresh ? manifestText("运控状态不可用，高层控制受限", "Motion state unavailable; high-level control is restricted")
+      : Number(control.fsm_mode) === 0
       ? "静态 · 允许评估切换"
       : "动态 · 大部分切换禁止",
   );
-  setText("controlTaskId", control.sport_state_received ? integer(control.task_id) : "--");
+  setText("controlTaskId", sportFresh ? integer(control.task_id) : "--");
   setText(
     "controlTaskTime",
-    control.sport_state_received
+    sportFresh
       ? `${number(control.task_time_s, 2)} s`
       : "--",
   );
@@ -2768,7 +3135,15 @@ function renderControl(control) {
     succeeded: "执行成功",
     failed: "执行失败",
   };
-  setText("controlLastState", stateLabels[command.state] || command.state || "空闲");
+  const armRpcLabels = {
+    queued: manifestText("等待派发 RPC", "Waiting to dispatch RPC"),
+    running: manifestText("RPC 处理中；物理进度未知", "RPC in progress; physical progress unknown"),
+    succeeded: manifestText("RPC 已返回；请查看动作状态", "RPC returned; check action state"),
+    failed: manifestText("RPC 失败；请查看动作状态", "RPC failed; check action state"),
+  };
+  setText("controlLastState", appState.pcSession && command.category === "arm_action"
+    ? armRpcLabels[command.state] || stateLabels[command.state]
+    : stateLabels[command.state] || command.state || "空闲");
   const detail = command.request_id
     ? `#${integer(command.request_id)} · ${command.command || "--"}${
         command.action_name ? ` · ${command.action_name}` : ""
@@ -2786,7 +3161,7 @@ function renderControl(control) {
   document.querySelectorAll("[data-fsm-id]").forEach((button) => {
     button.classList.toggle(
       "active-fsm",
-      control.sport_state_received === true &&
+      sportFresh &&
         Number(button.dataset.fsmId) === Number(control.fsm_id),
     );
   });
@@ -3120,7 +3495,7 @@ async function flushMotionRequests() {
     try {
       const response = await fetch("/api/control/velocity", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: sessionHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(request),
         keepalive: request.active === false,
       });
@@ -3342,9 +3717,7 @@ async function submitControl(event) {
   try {
     const response = await fetch("/api/control/command", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         request_key: createRequestKey(),
         category: pending.category,
@@ -3967,7 +4340,6 @@ $("speakLlmResponseNow").addEventListener("click", speakCurrentLlmResponse);
 setVoiceTab("llm");
 setControlTab("mode");
 setLlmInputMode("text");
-loadCustomerVoiceConfig();
 function setVolumeFromPointer(event) {
   const slider = $("volumeSlider");
   const rect = slider.getBoundingClientRect();
@@ -4119,7 +4491,7 @@ window.addEventListener("pagehide", () => {
   if (!appState.motionEnabled) return;
   fetch("/api/control/velocity", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: sessionHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       vx: 0,
       vy: 0,
@@ -4142,6 +4514,8 @@ setInterval(() => {
 
 window.addEventListener("ui-language-change", () => {
   renderRobotSwitcher();
+  renderPcSession();
+  if (appState.pcSession) renderPcInterfaces();
   if (appState.robotManifest) renderRobotManifest(appState.robotManifest);
   else if (appState.robotManifestError) renderRobotManifestFailure(appState.robotManifestError);
   else {
@@ -4152,6 +4526,9 @@ window.addEventListener("ui-language-change", () => {
 });
 
 initRobotSwitcher();
-loadRobotProducts();
-loadRobotManifest();
-connect();
+window.uniroboPcReady = initializePcSession().then(async () => {
+  await loadRobotProducts();
+  await loadRobotManifest();
+  if (!appState.pcSession || appState.pcSession.interface) loadCustomerVoiceConfig();
+  connect();
+});

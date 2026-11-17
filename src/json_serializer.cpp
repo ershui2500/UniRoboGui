@@ -402,6 +402,10 @@ std::string SerializeSnapshot(const RobotProfile& profile,
                               const RobotSnapshot& snapshot) {
   const auto now = SteadyClock::now();
   Json::Value root = CommonRoot(snapshot, now);
+  const auto pc_session = profile.static_constraints.find("pc_session_id");
+  if (pc_session != profile.static_constraints.end()) {
+    root["pc_session_id"] = pc_session->second;
+  }
 
   Json::Value robot(Json::objectValue);
   robot["version"] = Array(snapshot.version);
@@ -508,6 +512,12 @@ std::string SerializeRobotManifest(const RobotProfile& profile,
                                    const RobotSnapshot& snapshot) {
   Json::Value root(Json::objectValue);
   root["schema_version"] = 1;
+  const auto pc_session = profile.static_constraints.find("pc_session_id");
+  if (pc_session != profile.static_constraints.end()) {
+    root["runtime_mode"] = profile.static_constraints.at("runtime_mode");
+    root["pc_session_id"] = pc_session->second;
+    root["physical_identity_verified"] = false;
+  }
 
   Json::Value identity(Json::objectValue);
   identity["vendor"] = profile.identity.vendor;

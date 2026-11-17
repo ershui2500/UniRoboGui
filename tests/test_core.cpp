@@ -4948,6 +4948,304 @@ void TestMockJointTeachIdentityCompatibility() {
   std::filesystem::remove(invalid_legacy_store, ignored);
 }
 
+// Pure fake transport: exercise real RPC-result handling without DDS or SDK clients.
+class PcArmResultPolicy final : public g1_web::IJointDebugPolicy {
+ public:
+  explicit PcArmResultPolicy(const g1_web::RobotProfile& profile) : profile_(profile) {}
+  const g1_web::RobotProfile& profile() const override { return profile_; }
+  std::vector<std::string> GroupsForMode(const std::string&) const override { return {}; }
+  std::vector<std::string> TeachGroups() const override { return {}; }
+  g1_web::JointDebugTransport TransportForMode(const std::string&) const override {
+    return g1_web::JointDebugTransport::kArmSdk;
+  }
+  std::optional<std::size_t> ArmSdkWeightMotorSlot() const override { return {}; }
+  g1_web::JointDebugGain NormalGain(const g1_web::JointDescriptor&) const override { return {}; }
+  g1_web::JointDebugGain RecordingGain(const g1_web::JointDescriptor&) const override { return {}; }
+  bool UpperBodyFsmAllowed(std::uint32_t) const override { return true; }
+  const g1_web::RobotModelVariant* ResolveModelVariant(std::uint32_t) const override { return nullptr; }
+  bool LegacyTeachActionCompatible(std::uint32_t, std::size_t) const override { return false; }
+  bool SupportsArmActions() const override { return true; }
+  bool SupportsCustomArmActions() const override { return true; }
+  bool IsKnownArmAction(std::int32_t id) const override { return id == 25 || id == 99; }
+  std::int32_t InitializeArmActions(std::string& list) override {
+    list = R"([[{"id":25},{"id":99}],[{"name":"test_firmware","time":0.1}]])";
+    return 0;
+  }
+  std::int32_t ExecuteArmAction(std::int32_t) override {
+    entered.store(true);
+    while (!finish.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return result.load();
+  }
+  std::int32_t ExecuteArmAction(const std::string&) override { return ExecuteArmAction(100); }
+  std::int32_t StopCustomArmAction() override { return ExecuteArmAction(99); }
+  std::atomic<std::int32_t> result{0};
+  std::atomic<bool> entered{false};
+  std::atomic<bool> finish{true};
+ private:
+  const g1_web::RobotProfile& profile_;
+};
+
+void TestPcArmActionRecovery() {
+  auto profile = *g1_web::RobotRegistry::Find("g1");
+  profile.static_constraints["pc_session_id"] = "fake-arm-session";
+  // Disable joint-debug startup so this fixture cannot create real DDS objects.
+  for (auto& cap : profile.capabilities)
+    if (cap.key == g1_web::CapabilityKey::kJointDebug) cap.available = false;
+  g1_web::SnapshotStore store;
+  store.PopulateMock(0.0);
+  auto policy = std::make_unique<PcArmResultPolicy>(profile);
+  auto* fake = policy.get();
+  g1_web::ControlService control(store, std::make_unique<FailingMockLocomotion>(),
+                                  profile, std::move(policy), false);
+  std::string error;
+  Require(control.Start(error), "fake PC result transport must start without DDS");
+  for (auto& cap : profile.capabilities)
+    if (cap.key == g1_web::CapabilityKey::kJointDebug) cap.available = true;
+  auto wait = [&](const auto& check) {
+    for (int i = 0; i < 200 && !check(); ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    Require(check(), "PC arm state transition must complete");
+  };
+  std::uint64_t sequence = 0;
+  auto submit = [&](std::int32_t result, const std::string& command, int id) {
+    store.PopulateMock(0.0);
+    fake->result.store(result);
+    fake->entered.store(false);
+    auto reply = control.Submit("pc-result-" + std::to_string(++sequence),
+        "arm_action", command, id, true, command == "execute_custom" ? "test_firmware" : "");
+    Require(reply.accepted, "fake PC arm request must be accepted");
+    return reply.request_id;
+  };
+  fake->finish.store(false);
+  const auto first = submit(0, "execute", 25);
+  wait([&] { return fake->entered.load(); });
+  Require(control.PcArmActionState() == "dispatching" && !control.PrepareDisconnect(true),
+          "in-flight RPC must block even read-only recovery");
+  fake->finish.store(true);
+  wait([&] { return store.GetSnapshot().control.last_command.request_id == first &&
+                   store.GetSnapshot().control.last_command.state == "succeeded"; });
+  Require(control.PcArmActionState() == "unknown" && control.HasControlOwnership() &&
+              !control.SubmitVelocity(0.1F, 0, 0, 0, true).accepted &&
+              !control.PrepareDisconnect(),
+          "successful real-path RPC must retain unknown ownership and block competing control");
+  wait([&] { return control.PrepareDisconnect(true); });
+  Require(!control.Submit("frozen", "arm_action", "execute", 25, true).accepted,
+          "retiring worker must refuse new requests");
+  control.ResumeRequests();
+  for (const auto& item : std::vector<std::pair<int, std::string>>{
+           {7401, "holding_reported"}, {7400, "running_reported"},
+           {3104, "unknown"}, {0, "unknown"}}) {
+    const auto id = submit(item.first, "execute", 99);
+    wait([&] { const auto command = store.GetSnapshot().control.last_command;
+               return command.request_id == id && command.completed_time_ms != 0; });
+    Require(control.PcArmActionState() == item.second && control.HasControlOwnership() &&
+                !control.PrepareDisconnect(),
+            "firmware holds, busy, timeout and release acknowledgments must not fabricate completion");
+  }
+  const auto custom = submit(0, "execute_custom", 0);
+  wait([&] { const auto command = store.GetSnapshot().control.last_command;
+             return command.request_id == custom && command.completed_time_ms != 0; });
+  Require(control.PcArmActionState() == "unknown", "firmware teach duration must not prove completion");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  Require(control.PcArmActionState() == "lost" && !control.PrepareDisconnect(),
+          "lost telemetry must retain arm ownership");
+  Require(control.PrepareDisconnect(true), "lost firmware state permits retirement into read-only isolation only");
+  control.Stop();
+}
+
+void TestPcReadonlyRuntime() {
+  g1_web::RuntimeOptions options;
+  options.pc_worker = true;
+  options.read_only = true;
+  options.pc_session_id = "pc-test-session";
+  const auto runtime = g1_web::RobotRegistry::CreateRuntime("g1", options);
+  Require(!runtime.locomotion && !runtime.audio && !runtime.joint_debug,
+          "PC must not construct any control or audio adapters");
+  Require(runtime.devices->DetectHardware(g1_web::CapabilityKey::kCameraRgb) ==
+              g1_web::HardwarePresence::kUnknown &&
+              runtime.devices->Perception().dependencies.empty() &&
+              runtime.devices->Perception().raw_lidar_points_topic.empty() &&
+              runtime.devices->Camera().first_person_helper.empty(),
+          "PC must not inspect local cameras or manage robot services");
+  for (const auto& capability : runtime.profile.capabilities) {
+    Require(capability.key == g1_web::CapabilityKey::kTelemetry || !capability.available,
+            "PC runtime must only expose telemetry");
+    if (capability.key != g1_web::CapabilityKey::kTelemetry) {
+      Require(capability.parameters.count("receiver_start_allowed_when_unavailable") == 0,
+              "PC must remove camera startup exceptions");
+    }
+  }
+  g1_web::SnapshotStore store;
+  const auto manifest = Parse(g1_web::SerializeRobotManifest(runtime.profile, store.GetSnapshot()));
+  Require(manifest["runtime_mode"].asString() == "pc_readonly" &&
+              !manifest["physical_identity_verified"].asBool() &&
+              manifest["pc_session_id"].asString() == "pc-test-session",
+          "PC manifest must distinguish selected profile from physical identity");
+  for (const auto* profile : g1_web::RobotRegistry::All()) {
+    if (profile->identity.product_id == "g1") continue;
+    if (profile->identity.product_id == "r1") {
+      const auto r1_readonly = g1_web::RobotRegistry::CreateRuntime("r1", options);
+      Require(r1_readonly.locomotion && !r1_readonly.audio &&
+                  !r1_readonly.joint_debug &&
+                  r1_readonly.telemetry.sources.size() == 5 &&
+                  !r1_readonly.devices->Perception().robot_local_resources &&
+                  r1_readonly.devices->DetectHardware(
+                      g1_web::CapabilityKey::kCameraDepth) ==
+                      g1_web::HardwarePresence::kUnknown,
+              "R1 read-only recovery must query FSM without enabling control or local-device probing");
+      for (const auto& capability : r1_readonly.profile.capabilities)
+        Require(capability.key == g1_web::CapabilityKey::kTelemetry ||
+                    !capability.available,
+                "R1 read-only recovery must expose telemetry only");
+      options.pc_idle = true;
+      const auto r1_idle = g1_web::RobotRegistry::CreateRuntime("r1", options);
+      Require(!r1_idle.locomotion && r1_idle.telemetry.sources.size() == 5,
+              "R1 offline selection must not create an SDK client");
+      options.pc_idle = false;
+      continue;
+    }
+    if (profile->identity.product_id == "go2") {
+      const auto go2_readonly = g1_web::RobotRegistry::CreateRuntime("go2", options);
+      Require(!go2_readonly.locomotion && !go2_readonly.audio &&
+                  !go2_readonly.joint_debug &&
+                  go2_readonly.telemetry.sources.size() == 3,
+              "GO2 read-only recovery must reuse its telemetry plan without control clients");
+      options.pc_idle = true;
+      const auto go2_idle = g1_web::RobotRegistry::CreateRuntime("go2", options);
+      Require(!go2_idle.locomotion && go2_idle.telemetry.sources.size() == 3,
+              "GO2 offline selection must not construct SDK clients");
+      options.pc_idle = false;
+      continue;
+    }
+    if (profile->identity.product_id == "a2") {
+      const auto a2_readonly = g1_web::RobotRegistry::CreateRuntime("a2", options);
+      Require(!a2_readonly.locomotion && !a2_readonly.audio &&
+                  !a2_readonly.joint_debug &&
+                  a2_readonly.telemetry.sources.size() == 5,
+              "A2 read-only recovery must reuse its HG telemetry plan without control clients");
+      options.pc_idle = true;
+      const auto a2_idle = g1_web::RobotRegistry::CreateRuntime("a2", options);
+      Require(!a2_idle.locomotion && a2_idle.telemetry.sources.size() == 5,
+              "A2 offline selection must not construct SDK clients");
+      options.pc_idle = false;
+      continue;
+    }
+    bool rejected = false;
+    try { g1_web::RobotRegistry::CreateRuntime(profile->identity.product_id, options); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    Require(rejected, "PC must reject unadapted real products");
+    options.pc_idle = true;
+    Require(!g1_web::RobotRegistry::CreateRuntime(profile->identity.product_id, options).audio,
+            "Unadapted products may be selected offline without adapters");
+    options.pc_idle = false;
+  }
+  options.read_only = false;
+  const auto sdk2 = g1_web::RobotRegistry::CreateRuntime("g1", options);
+  Require(sdk2.locomotion && sdk2.audio && sdk2.joint_debug,
+          "Connected PC G1 must reuse the existing SDK2 adapters");
+  for (const auto key : {g1_web::CapabilityKey::kLocomotion,
+                         g1_web::CapabilityKey::kJointDebug,
+                         g1_web::CapabilityKey::kJointTeach})
+    Require(g1_web::SafetyManager{}.CheckCapability(sdk2.profile, key, false).allowed,
+            "PC uses the existing operator-validation policy without claiming real verification");
+  Require(!sdk2.devices->Perception().robot_local_resources &&
+              !sdk2.devices->Perception().mapping_points_topic.empty() &&
+              sdk2.devices->Camera().first_person_helper.empty(),
+          "PC SDK2 perception must not probe local robot resources");
+  for (const auto& dependency : sdk2.devices->Perception().dependencies)
+    Require(dependency.lifecycle == g1_web::DependencyLifecycle::kExternalRequired,
+            "PC must not automatically start/stop robot dependencies");
+  for (const auto& capability : sdk2.profile.capabilities) {
+    Require(capability.verification_level != g1_web::VerificationLevel::kControlVerified &&
+                capability.verification_level != g1_web::VerificationLevel::kReadonlyVerified,
+            "Robot verification must not be inherited by PC");
+    if (capability.key == g1_web::CapabilityKey::kCameraRgb ||
+        capability.key == g1_web::CapabilityKey::kCameraDepth)
+      Require(!capability.available, "PC camera transport remains unavailable");
+    if (capability.key == g1_web::CapabilityKey::kAudio)
+      Require(capability.parameters.at("tts_backends") == "unitree",
+              "PC must advertise native SDK2 TTS only");
+  }
+
+  const auto r1_sdk2 = g1_web::RobotRegistry::CreateRuntime("r1", options);
+  Require(r1_sdk2.locomotion && r1_sdk2.audio && r1_sdk2.joint_debug &&
+              !r1_sdk2.devices->Perception().robot_local_resources &&
+              r1_sdk2.devices->DetectHardware(
+                  g1_web::CapabilityKey::kCameraDepth) ==
+                  g1_web::HardwarePresence::kUnknown &&
+              r1_sdk2.devices->Perception().attachment_required &&
+              !r1_sdk2.devices->Perception().attachment_declared,
+          "Connected PC R1 must reuse SDK2 services without declaring Mid-360 or local resources");
+  for (const auto& capability : r1_sdk2.profile.capabilities) {
+    if (capability.key == g1_web::CapabilityKey::kCameraRgb ||
+        capability.key == g1_web::CapabilityKey::kCameraDepth ||
+        capability.key == g1_web::CapabilityKey::kSlam)
+      Require(!capability.available,
+              "PC R1 camera and SLAM capabilities must remain unavailable");
+    if (capability.key == g1_web::CapabilityKey::kCameraRgb ||
+        capability.key == g1_web::CapabilityKey::kCameraDepth)
+      Require(capability.reason == "pc_camera_transport_unavailable" &&
+                  capability.parameters.count("receiver_start_allowed_when_unavailable") == 0 &&
+                  r1_sdk2.profile.static_constraints.at("pc_rgb_receiver") == "false",
+              "PC R1 cameras must remain closed at the receiver and HTTP boundaries");
+    if (capability.key == g1_web::CapabilityKey::kAudio)
+      Require(capability.parameters.at("tts_backends") == "unitree",
+              "PC R1 must expose only native Unitree audio");
+    if (capability.key == g1_web::CapabilityKey::kLocomotion ||
+        capability.key == g1_web::CapabilityKey::kJointDebug ||
+        capability.key == g1_web::CapabilityKey::kJointTeach ||
+        capability.key == g1_web::CapabilityKey::kHeadControl)
+      Require(capability.parameters.at("real_control_policy") ==
+                  "operator_validation",
+              "PC R1 controls must remain pending operator validation");
+  }
+
+  const auto go2_sdk2 = g1_web::RobotRegistry::CreateRuntime("go2", options);
+  Require(go2_sdk2.locomotion && go2_sdk2.audio && go2_sdk2.joint_debug &&
+              go2_sdk2.telemetry.sources.size() == 3 &&
+              go2_sdk2.telemetry.sources[0].topic == "rt/lowstate" &&
+              !go2_sdk2.devices->Perception().attachment_declared,
+          "Connected PC GO2 must reuse SDK2 adapters without inventing optional attachments");
+  for (const auto& capability : go2_sdk2.profile.capabilities) {
+    if (capability.key == g1_web::CapabilityKey::kCameraDepth ||
+        capability.key == g1_web::CapabilityKey::kSlam)
+      Require(!capability.available,
+              "PC GO2 must keep camera and undeclared attachment-based SLAM unavailable");
+    if (capability.key == g1_web::CapabilityKey::kAudio)
+      Require(capability.available && capability.parameters.at("tts") == "false",
+              "PC GO2 retains SDK2 audio controls without robot-local Kokoro TTS");
+    if (capability.key == g1_web::CapabilityKey::kLocomotion ||
+        capability.key == g1_web::CapabilityKey::kJointDebug ||
+        capability.key == g1_web::CapabilityKey::kJointTeach)
+      Require(capability.parameters.at("real_control_policy") ==
+                  "operator_validation",
+              "PC GO2 control must remain pending operator validation");
+  }
+
+  const auto a2_sdk2 = g1_web::RobotRegistry::CreateRuntime("a2", options);
+  Require(a2_sdk2.locomotion && a2_sdk2.audio && a2_sdk2.joint_debug &&
+              a2_sdk2.telemetry.sources.size() == 5 &&
+              a2_sdk2.telemetry.sources[0].topic == "rt/lowstate" &&
+              !a2_sdk2.devices->Perception().robot_local_resources,
+          "Connected PC A2 must reuse SDK2 services without local attachment or service probing");
+  for (const auto& capability : a2_sdk2.profile.capabilities) {
+    if (capability.key == g1_web::CapabilityKey::kCameraDepth ||
+        capability.key == g1_web::CapabilityKey::kLidar ||
+        capability.key == g1_web::CapabilityKey::kSlam)
+      Require(!capability.available,
+              "PC A2 camera and undeclared JT128 capabilities must remain unavailable");
+    if (capability.key == g1_web::CapabilityKey::kAudio)
+      Require(capability.parameters.at("tts_backends") == "unitree",
+              "PC A2 must expose only its native SDK2 audio backend");
+    if (capability.key == g1_web::CapabilityKey::kLocomotion ||
+        capability.key == g1_web::CapabilityKey::kJointDebug ||
+        capability.key == g1_web::CapabilityKey::kJointTeach)
+      Require(capability.parameters.at("real_control_policy") ==
+                  "operator_validation",
+              "PC A2 control must remain pending operator validation");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -4958,6 +5256,8 @@ int main() {
   TestRobotRegistry();
   TestTask22RuntimeAssemblyBoundary();
   TestRobotRuntimeBundle();
+  TestPcReadonlyRuntime();
+  TestPcArmActionRecovery();
   TestG1DeviceCapabilityPolicy();
   TestR1PerceptionPolicy();
   TestG1JointDebugPolicy();

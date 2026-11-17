@@ -1015,7 +1015,8 @@ class PerceptionService::Impl {
       }
       const std::int64_t operation_started_ms = MonotonicMs();
       const std::string saved_map_path =
-          request.command == "finish_mapping"
+          request.command == "finish_mapping" &&
+                  device_policy_.Perception().robot_local_resources
               ? SafeMapPath(request.map_name)
               : std::string{};
       std::error_code prior_map_error;
@@ -1070,7 +1071,7 @@ class PerceptionService::Impl {
       }
       if (!result.accepted && result.api_result == 3203 &&
           result.response.empty() &&
-          request.command == "finish_mapping") {
+          request.command == "finish_mapping" && !saved_map_path.empty()) {
         for (int attempt = 0; attempt < 50; ++attempt) {
           std::error_code size_error;
           std::error_code time_error;
@@ -1309,6 +1310,8 @@ class PerceptionService::Impl {
     root["services"] = std::move(services);
     root["slam_rpc_ready"] = state_.slam_rpc_ready;
     root["mode"] = state_.mode;
+    root["info_age_ms"] = Json::Int64(AtomicAgeMs(slam_info_last_ms_));
+    root["key_info_age_ms"] = Json::Int64(AtomicAgeMs(slam_key_info_last_ms_));
     root["error_code"] = state_.error_code;
     root["info"] = state_.info;
     root["pose_received"] = state_.pose_received;
@@ -1626,7 +1629,7 @@ class PerceptionService::Impl {
       status = found == service_status_.end() ? -1 : found->second;
       enabled = found != service_status_.end()
                     ? found->second == 0
-                    : ProcessRunning(name);
+                    : deployment.robot_local_resources && ProcessRunning(name);
     };
     update_named(deployment.lidar_service, state_.lidar_driver_status_raw,
                  state_.lidar_driver_enabled);
@@ -1654,7 +1657,7 @@ class PerceptionService::Impl {
   bool DependencyActiveLocked(const std::string& name) const {
     const auto status = service_status_.find(name);
     return status != service_status_.end() ? status->second == 0
-                                           : ProcessRunning(name);
+        : device_policy_.Perception().robot_local_resources && ProcessRunning(name);
   }
 
   bool SwitchServiceLocked(const std::string& name, bool enable) {

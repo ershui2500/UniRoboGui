@@ -89,7 +89,8 @@ class VoiceService {
 
  public:
   VoiceService(SnapshotStore& store,
-               std::unique_ptr<IAudioCapability> audio_capability, bool mock);
+               std::unique_ptr<IAudioCapability> audio_capability, bool mock,
+               bool robot_local_resources = true);
   ~VoiceService();
 
   bool Start(std::string& error);
@@ -160,6 +161,7 @@ class VoiceService {
 
   SnapshotStore& store_;
   bool mock_{false};
+  bool robot_local_resources_{true};
   std::atomic<bool> running_{false};
   std::atomic<bool> asr_enabled_{true};
   std::atomic<std::uint64_t> next_request_id_{1};

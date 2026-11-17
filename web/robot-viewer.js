@@ -538,6 +538,14 @@ tableBody.addEventListener("click", (event) => {
 
 window.addEventListener("g1:telemetry", (event) => {
   latestData = event.detail;
+  if (window.uniroboPcMode && !latestData?.sources?.low_state?.received) {
+    currentModel = null;
+    disposeRobot();
+    setModelStatus(viewerText("等待遥测", "Waiting for telemetry"), "pending");
+    setLoading(viewerText("等待机器人遥测", "Waiting for robot telemetry"),
+      viewerText("连接后从实际数据选择模型", "The model is selected from received telemetry"));
+    return;
+  }
   const machineId = Number(latestData?.robot?.mode_machine_raw);
   if (window.robotManifest && Number.isFinite(machineId)) loadModel(latestData.robot);
   applyJointValues();

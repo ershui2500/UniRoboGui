@@ -61,6 +61,8 @@ void PrintUsage(const char* program) {
       << "  --device <附件>      声明已确认安装的附件，可重复；如 mid360\n"
       << "  --mock               使用模拟数据，不初始化 DDS\n"
       << "  --read-only          只读运行；禁用实体控制能力\n"
+      << "  --pc-worker          电脑 SDK2 工作进程（由 scripts/pc_session.py 管理）\n"
+      << "  --pc-idle            电脑未连接状态；不初始化 DDS\n"
       << "  --enable-navigation  允许 Web 调用真实 SLAM 位姿导航（默认禁用）\n"
       << "  --realsense          使用 librealsense2 同时获取 D435i RGB/深度\n"
       << "  --rgb-camera <设备>  RGB V4L2 设备，如 /dev/video0\n"
@@ -137,6 +139,15 @@ bool ParseOptions(int argc, char** argv, Options& options) {
       options.runtime.read_only = true;
       continue;
     }
+    if (argument == "--pc-worker") {
+      options.runtime.pc_worker = true;
+      options.bind_address = "127.0.0.1";
+      continue;
+    }
+    if (argument == "--pc-idle") {
+      options.runtime.pc_idle = true;
+      continue;
+    }
     if (argument == "--enable-navigation") {
       options.runtime.enable_navigation = true;
       continue;
@@ -189,6 +200,20 @@ bool ParseOptions(int argc, char** argv, Options& options) {
       return false;
     }
   }
+  if (options.runtime.pc_idle && !options.runtime.pc_worker) return false;
+  if (options.runtime.pc_worker) {
+    const char* session = std::getenv("UNIROBO_PC_SESSION_ID");
+    options.runtime.pc_session_id = session ? session : "standalone";
+  }
+  if (options.runtime.pc_worker &&
+      (options.bind_address != "127.0.0.1" ||
+       options.runtime.realsense || !options.runtime.rgb_camera.empty() ||
+       !options.runtime.depth_camera.empty() ||
+       !options.runtime.enabled_devices.empty() ||
+       (!options.runtime.a2_joint_gains_file.empty() && options.robot != "a2"))) {
+    std::cerr << "电脑工作进程仅允许回环监听和 SDK2 接口\n";
+    return false;
+  }
   if (options.runtime.realsense &&
       (!options.runtime.rgb_camera.empty() ||
        !options.runtime.depth_camera.empty())) {
@@ -209,6 +234,7 @@ int main(int argc, char** argv) {
     PrintUsage(argv[0]);
     return EXIT_FAILURE;
   }
+  const auto pc_parent = ::getppid();
 
   g1_web::RobotRuntimeBundle runtime;
   try {
@@ -223,6 +249,8 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   auto& active_profile = runtime.profile;
+  const bool pc_readonly_state_probe = options.runtime.pc_worker &&
+      options.runtime.read_only && runtime.locomotion != nullptr;
   std::cout << "[INFO] 当前机器人产品: "
             << active_profile.identity.display_name << " ("
             << active_profile.identity.product_id << ")\n";
@@ -234,7 +262,7 @@ int main(int argc, char** argv) {
   g1_web::UnitreeDataSource unitree_source(store);
   g1_web::MockDataSource mock_source(store, active_profile);
   g1_web::VoiceService voice_service(store, std::move(runtime.audio),
-                                     options.runtime.mock);
+                                     options.runtime.mock, !options.runtime.pc_worker);
   g1_web::ControlService control_service(
       store, std::move(runtime.locomotion), active_profile,
       std::move(runtime.joint_debug), options.runtime.mock,
@@ -247,9 +275,18 @@ int main(int argc, char** argv) {
   camera_options.realsense = options.runtime.realsense;
   camera_options.rgb_source = options.runtime.rgb_camera;
   camera_options.depth_source = options.runtime.depth_camera;
+  if (options.runtime.pc_worker) {
+    camera_options.network_interface = options.runtime.network_interface;
+    if (const auto* rgb = g1_web::FindCameraStream(
+            runtime.devices->Camera(), g1_web::CameraStreamRole::kRgb))
+      camera_options.rgb_source = rgb->fixed_source;
+    camera_options.depth_enabled = false;
+  }
   g1_web::CameraService camera_service(camera_options, *runtime.devices);
 
-  if (options.runtime.mock) {
+  if (options.runtime.pc_idle) {
+    std::cout << "[INFO] 电脑工作台未连接；DDS 未初始化\n";
+  } else if (options.runtime.mock) {
     mock_source.Start();
     std::cout << "[INFO] 已启用模拟数据源\n";
   } else {
@@ -269,11 +306,11 @@ int main(int argc, char** argv) {
       !perception_policy.raw_lidar_points_topic.empty() &&
       perception_policy.dependencies.empty() &&
       perception_policy.slam_service.empty();
-  if (!passive_raw_lidar_probe) {
+  if (!options.runtime.pc_idle && !passive_raw_lidar_probe) {
     g1_web::ApplyEffectiveDeviceCapabilities(
         active_profile, perception_service.ProbeDeviceCapabilities());
   }
-  if (runtime.devices->Camera().streams.empty()) {
+  if (!options.runtime.pc_worker && runtime.devices->Camera().streams.empty()) {
     g1_web::ApplyEffectiveDeviceCapabilities(
         active_profile, camera_service.DeviceCapabilities());
   }
@@ -294,7 +331,8 @@ int main(int argc, char** argv) {
   const bool control_enabled =
       CapabilityAvailable(active_profile, g1_web::CapabilityKey::kLocomotion) ||
       CapabilityAvailable(active_profile, g1_web::CapabilityKey::kJointDebug) ||
-      CapabilityAvailable(active_profile, g1_web::CapabilityKey::kJointTeach);
+      CapabilityAvailable(active_profile, g1_web::CapabilityKey::kJointTeach) ||
+      pc_readonly_state_probe;
   if (control_enabled) {
     std::string control_error;
     if (!control_service.Start(control_error)) {
@@ -355,7 +393,7 @@ int main(int argc, char** argv) {
         std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
   };
   std::function<void(const std::string&)> robot_switch_handler;
-  if (options.runtime.mock) {
+  if (options.runtime.mock && !options.runtime.pc_worker) {
     robot_switch_handler = request_robot_switch;
   }
 
@@ -384,6 +422,8 @@ int main(int argc, char** argv) {
 
   std::string next_robot;
   while (!g_stop_requested) {
+    // Check the parent process, not the short-lived HTTP thread that spawned us.
+    if (options.runtime.pc_worker && ::getppid() != pc_parent) break;
     {
       std::lock_guard<std::mutex> lock(robot_switch_mutex);
       if (!requested_robot.empty() &&

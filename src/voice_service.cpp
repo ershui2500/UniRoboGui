@@ -340,8 +340,9 @@ std::size_t CurlPcmWriteCallback(char* data, std::size_t size,
 
 VoiceService::VoiceService(
     SnapshotStore& store, std::unique_ptr<IAudioCapability> audio_capability,
-    bool mock)
-    : store_(store), mock_(mock), audio_capability_(std::move(audio_capability)) {}
+    bool mock, bool robot_local_resources)
+    : store_(store), mock_(mock), robot_local_resources_(robot_local_resources),
+      audio_capability_(std::move(audio_capability)) {}
 
 VoiceService::~VoiceService() { Stop(); }
 
@@ -353,6 +354,7 @@ bool VoiceService::Start(std::string& error) {
 
   std::string config_error;
   LoadCustomerVoiceConfig(config_error);
+  if (!robot_local_resources_) customer_tts_backend_ = "unitree";
 
   audio_capability_available_.store(false);
   audio_capability_error_.clear();
@@ -501,7 +503,7 @@ VoiceData VoiceService::InitializeRealVoice(std::string& error) {
       if (voice.chat_go_found && voice.chat_go_status_raw == 0) {
         voice.chat_go_api_result = 0;
         voice.chat_go_closed = false;
-      } else {
+      } else if (robot_local_resources_) {
         voice.chat_go_api_result = robot_state_client_->ServiceSwitch(
             chat_go_name, 1, switched_status);
         voice.chat_go_status_raw = switched_status;
@@ -509,6 +511,10 @@ VoiceData VoiceService::InitializeRealVoice(std::string& error) {
             voice.chat_go_found || voice.chat_go_api_result == 0;
         voice.chat_go_closed =
             !(voice.chat_go_api_result == 0 && switched_status == 0);
+      }
+      if (!robot_local_resources_ &&
+          (!voice.chat_go_found || voice.chat_go_status_raw != 0)) {
+        voice.chat_go_closed = true;
       }
       chat_go_found_ = voice.chat_go_found;
       chat_go_closed_ = voice.chat_go_closed;
@@ -643,6 +649,10 @@ TtsEnqueueResult VoiceService::EnqueueTts(const std::string& text,
   }
   if (resolved_backend != "kokoro" && resolved_backend != "unitree") {
     result.error = "invalid_tts_backend";
+    return result;
+  }
+  if (resolved_backend == "kokoro" && !robot_local_resources_) {
+    result.error = "local_tts_unavailable";
     return result;
   }
   result.backend = resolved_backend;
@@ -1018,6 +1028,10 @@ CustomerVoiceConfigResult VoiceService::SetCustomerVoiceConfig(
   }
   if (config.tts_backend != "unitree" && config.tts_backend != "kokoro") {
     result.error = "invalid_customer_tts_backend";
+    return result;
+  }
+  if (config.tts_backend == "kokoro" && !robot_local_resources_) {
+    result.error = "local_tts_unavailable";
     return result;
   }
   if (config.tts_backend == "unitree" && !audio_features.tts) {

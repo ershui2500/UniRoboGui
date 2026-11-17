@@ -163,6 +163,7 @@ const RobotProfile& G1Profile() {
         {CapabilityKey::kLocomotion, true, true,
          VerificationLevel::kControlVerified,
          {{"speed_modes", "0,1,3"},
+          {"disconnect_odometry_exempt_fsm", "0,1,2,3,706"},
           {"allowed_fsm", "500,501,801,802"},
           {"web_mode_commands", "zero_torque,damp,stand_up,start,set_fsm_id:501,set_fsm_id:702,set_fsm_id:706,set_fsm_id:802"},
           {"mode_targets", "zero_torque:0,damp:1,stand_up:4,start:500"},
@@ -273,6 +274,7 @@ const RobotProfile& R1Profile() {
         {CapabilityKey::kLocomotion, true, true,
          VerificationLevel::kMockVerified,
          {{"speed_modes", "0,1,3"},
+          {"disconnect_odometry_exempt_fsm", "0,1,2,3,706"},
           {"speed_presets", "0:0.40:0.40:0.90,1:0.50:0.50:1.00,3:1.00:0.60:1.20"},
           {"allowed_fsm", "811"},
           {"state_refresh_policy", "client_poll"},
@@ -829,6 +831,53 @@ std::vector<const RobotProfile*> RobotRegistry::All() {
 RobotRuntimeBundle RobotRegistry::CreateRuntime(
     const std::string& product_id, const RuntimeOptions& options) {
   RobotRuntimeBundle bundle;
+  if (options.pc_worker && (options.pc_idle || options.read_only)) {
+    const auto* profile = Find(product_id);
+    if (!profile) throw std::invalid_argument("unregistered_robot_product");
+    if (!options.pc_idle && product_id != "g1" && product_id != "r1" &&
+        product_id != "go2" && product_id != "a2") {
+      throw std::invalid_argument("pc_product_not_supported");
+    }
+    bundle.profile = *profile;
+    bundle.profile.static_constraints["runtime_mode"] = "pc_readonly";
+    bundle.profile.static_constraints["pc_idle"] = options.pc_idle ? "true" : "false";
+    bundle.profile.static_constraints["pc_session_id"] = options.pc_session_id;
+    for (auto& capability : bundle.profile.capabilities) {
+      capability.verification_level = capability.implemented
+          ? (capability.key == CapabilityKey::kTelemetry
+                 ? (options.mock ? VerificationLevel::kMockVerified
+                                 : VerificationLevel::kImplemented)
+                 : VerificationLevel::kDisabled)
+          : VerificationLevel::kUnsupported;
+      if (capability.key != CapabilityKey::kTelemetry) {
+        capability.available = false;
+        capability.parameters.erase("receiver_start_allowed_when_unavailable");
+        capability.reason = "pc_readonly_runtime";
+        capability.parameters["reason_zh"] = "电脑只读版暂不提供此能力";
+        capability.parameters["reason_en"] = "Unavailable in the PC read-only edition";
+      }
+    }
+    if (product_id == "g1") {
+      bundle.telemetry = G1TelemetryPlan();
+    } else if (product_id == "r1") {
+      bundle.telemetry = R1TelemetryPlan();
+      // R1 exposes its FSM through read-only LocoClient queries rather than a
+      // subscribed sport-state topic; the manager uses this only for stop checks.
+      if (!options.pc_idle && options.read_only)
+        bundle.locomotion = CreateR1LocomotionAdapter(options.mock);
+    } else if (product_id == "go2") {
+      bundle.telemetry = Go2TelemetryPlan();
+    } else if (product_id == "a2") {
+      bundle.telemetry = A2TelemetryPlan();
+    }
+    ApplyTelemetryCapabilityParameters(bundle.profile, bundle.telemetry);
+    // Only R1's get-state RPC is needed in recovery; writes remain blocked by
+    // the read-only runtime at the HTTP boundary.
+    bundle.devices = product_id == "r1"
+                         ? CreateR1DeviceCapabilityPolicy({}, false)
+                         : CreateUnavailableDeviceCapabilityPolicy();
+    return bundle;
+  }
   if (product_id == "g1") {
     bundle.profile = G1Profile();
     ValidateProfile(bundle.profile);
@@ -840,7 +889,7 @@ RobotRuntimeBundle RobotRegistry::CreateRuntime(
     if (CapabilityAvailable(bundle.profile, CapabilityKey::kJointDebug)) {
       bundle.joint_debug = CreateG1JointDebugPolicy(G1Profile());
     }
-    bundle.devices = CreateG1DeviceCapabilityPolicy();
+    bundle.devices = CreateG1DeviceCapabilityPolicy(!options.pc_worker);
   } else if (product_id == "r1") {
     bundle.profile = R1Profile();
     ValidateProfile(bundle.profile);
@@ -853,7 +902,8 @@ RobotRuntimeBundle RobotRegistry::CreateRuntime(
         CapabilityAvailable(bundle.profile, CapabilityKey::kHeadControl)) {
       bundle.joint_debug = CreateR1JointDebugPolicy(R1Profile());
     }
-    bundle.devices = CreateR1DeviceCapabilityPolicy(options.enabled_devices);
+    bundle.devices = CreateR1DeviceCapabilityPolicy(
+        options.enabled_devices, !options.pc_worker, !options.pc_worker);
   } else if (product_id == "go2") {
     bundle.profile = Go2Profile();
     ValidateProfile(bundle.profile);
@@ -873,8 +923,20 @@ RobotRuntimeBundle RobotRegistry::CreateRuntime(
     ApplyTelemetryCapabilityParameters(bundle.profile, bundle.telemetry);
     ApplyRuntimeCapabilityPolicy(bundle.profile, options);
     A2JointGains gains;
-    const bool gains_ready = !options.a2_joint_gains_file.empty() &&
-                             LoadA2JointGains(options.a2_joint_gains_file, gains);
+    const bool builtin_gains = options.pc_worker && !options.mock &&
+                               options.a2_joint_gains_file.empty();
+    const bool gains_ready = builtin_gains ||
+        (!options.a2_joint_gains_file.empty() &&
+         LoadA2JointGains(options.a2_joint_gains_file, gains));
+    if (builtin_gains) {
+      gains = A2ExperimentalJointGains();
+      for (auto& capability : bundle.profile.capabilities) {
+        if (capability.key == CapabilityKey::kJointDebug ||
+            capability.key == CapabilityKey::kJointTeach) {
+          capability.parameters["joint_gains_source"] = "builtin_go2_experimental";
+        }
+      }
+    }
     if (!options.mock && !gains_ready) {
       for (auto& capability : bundle.profile.capabilities) {
         if (capability.key == CapabilityKey::kJointDebug ||
@@ -892,11 +954,79 @@ RobotRuntimeBundle RobotRegistry::CreateRuntime(
     bundle.locomotion = CreateA2LocomotionAdapter(options.mock);
     bundle.audio = CreateA2AudioCapability(options.mock);
     bundle.joint_debug = CreateA2JointDebugPolicy(A2Profile(), gains);
-    bundle.devices = CreateA2DeviceCapabilityPolicy(options.enabled_devices);
+    bundle.devices = CreateA2DeviceCapabilityPolicy(options.enabled_devices,
+                                                   !options.pc_worker);
   } else {
     throw std::invalid_argument("unregistered_robot_product");
   }
 
+  if (options.pc_worker) {
+    if (product_id != "g1" && product_id != "r1" && product_id != "go2" &&
+        product_id != "a2")
+      throw std::invalid_argument("pc_product_not_supported");
+    bundle.profile.static_constraints["runtime_mode"] = "pc_sdk2";
+    bundle.profile.static_constraints["pc_rgb_receiver"] =
+        (product_id != "r1" &&
+         FindCameraStream(bundle.devices->Camera(), CameraStreamRole::kRgb))
+            ? "true" : "false";
+    bundle.profile.static_constraints["pc_session_id"] = options.pc_session_id;
+    for (auto& capability : bundle.profile.capabilities) {
+      capability.verification_level = !capability.implemented
+          ? VerificationLevel::kUnsupported
+          : options.mock ? VerificationLevel::kMockVerified
+                         : VerificationLevel::kImplemented;
+      if (capability.key == CapabilityKey::kCameraRgb &&
+          bundle.profile.static_constraints["pc_rgb_receiver"] == "true")
+        capability.parameters["receiver_start_allowed_when_unavailable"] = "true";
+      if (capability.key == CapabilityKey::kLocomotion ||
+          capability.key == CapabilityKey::kJointDebug ||
+          capability.key == CapabilityKey::kJointTeach ||
+          capability.key == CapabilityKey::kHeadControl) {
+        capability.verification_level = VerificationLevel::kMockVerified;
+        capability.parameters["real_control_policy"] = "operator_validation";
+      }
+      if (capability.key == CapabilityKey::kCameraDepth ||
+          (capability.key == CapabilityKey::kCameraRgb &&
+              (product_id == "r1" ||
+               FindCameraStream(bundle.devices->Camera(), CameraStreamRole::kRgb) ==
+                   nullptr))) {
+        capability.available = false;
+        capability.verification_level = VerificationLevel::kDisabled;
+        capability.reason = "pc_camera_transport_unavailable";
+        capability.parameters["reason_zh"] = "电脑端尚未接入机器人相机传输";
+        capability.parameters["reason_en"] = "Robot camera transport is not connected on PC";
+        capability.parameters.erase("receiver_start_allowed_when_unavailable");
+      }
+      if (capability.key == CapabilityKey::kAudio &&
+          product_id != "go2" && product_id != "a2") {
+        capability.parameters["tts_backends"] = "unitree";
+        capability.parameters["default_tts_backend"] = "unitree";
+      }
+      if (product_id == "go2" && capability.key == CapabilityKey::kAudio) {
+        capability.parameters["tts_backends"] = "";
+        capability.parameters["default_tts_backend"] = "";
+        capability.parameters["tts"] = "false";
+      }
+      if (product_id == "a2" && capability.key == CapabilityKey::kAudio) {
+        capability.parameters["tts_backends"] = "unitree";
+        capability.parameters["default_tts_backend"] = "unitree";
+      }
+      if (product_id == "a2" && capability.key == CapabilityKey::kLidar) {
+        capability.available = false;
+        capability.verification_level = VerificationLevel::kDisabled;
+        capability.reason = "pc_attachment_not_declared";
+        capability.parameters["reason_zh"] = "电脑端未声明 A2 JT128 附件";
+        capability.parameters["reason_en"] = "A2 JT128 is not declared for this PC session";
+      }
+      if (product_id == "r1" && capability.key == CapabilityKey::kSlam) {
+        capability.available = false;
+        capability.verification_level = VerificationLevel::kDisabled;
+        capability.reason = "pc_slam_attachment_not_declared";
+        capability.parameters["reason_zh"] = "电脑端未声明 R1 Mid-360 附件，本次不开放 SLAM";
+        capability.parameters["reason_en"] = "R1 Mid-360 is not declared for this PC session; SLAM is unavailable";
+      }
+    }
+  }
   ValidateBundle(bundle);
   return bundle;
 }

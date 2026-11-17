@@ -1245,7 +1245,7 @@ async function submitNavigationWaypoint(index) {
   try {
     const response = await fetch("/api/perception/command", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...window.uniroboSessionHeaders?.() },
       body: JSON.stringify({
         command: "navigate",
         map_name: mapName.value.trim(),
@@ -1878,8 +1878,8 @@ function updateCameraServiceStatus(status) {
   });
 
   if (fixedPolicy) {
-    if (cameraFeedback.closest("dialog")) {
-      document.querySelector("#rgbCameraPanel .card-heading").append(cameraFeedback);
+    if (cameraFeedback.closest("dialog") || cameraFeedback.closest(".card-heading")) {
+      document.querySelector("#rgbCameraPanel .card-heading").after(cameraFeedback);
     }
     document.querySelector("#rgbCameraEmpty span").textContent = "RTP / H.264";
     const cameraName = status.device?.model ||
@@ -1892,8 +1892,15 @@ function updateCameraServiceStatus(status) {
         )
       : "";
     const externalError = status.external_services?.error || "";
-    if (captureError || externalError) {
-      const effectiveError = externalError || captureError;
+    const r1PcMissingRgb = window.uniroboPcMode && !status.mock &&
+      status.provider === "unitree_r1_edu_stereo" &&
+      status.rgb?.configured && !status.rgb.online;
+    const serviceHint = r1PcMissingRgb ? cameraText(
+      "未收到 R1 RGB 画面。请在宇树 APP「设置 → 服务状态」关闭 video_hub，开启 Stereo patch PC1，然后重试“启动 RGB”。PC 不会自动切换机器人服务。",
+      "No R1 RGB video received. In the Unitree app, open Settings → Service Status, turn off video_hub and turn on Stereo patch PC1, then retry Start RGB. PC does not switch robot services automatically.",
+    ) : "";
+    if (captureError || externalError || r1PcMissingRgb) {
+      const effectiveError = externalError || captureError || "";
       const hint = effectiveError === "camera_backend_unavailable"
         ? cameraText(
             "当前 OpenCV 未提供 GStreamer，已安全拒绝启动。",
@@ -1911,7 +1918,7 @@ function updateCameraServiceStatus(status) {
                 `RobotState did not expose the required camera service; detected: ${(status.external_services?.related_services || []).join(", ") || "--"}`,
               )
             : effectiveError;
-      cameraFeedback.textContent = `${hint}${versionNote ? ` ${versionNote}` : ""}`;
+      cameraFeedback.textContent = [serviceHint, hint, versionNote].filter(Boolean).join(" ");
       cameraFeedback.className = "perception-feedback error";
       cameraFeedback.hidden = false;
     } else {
@@ -1970,6 +1977,13 @@ function updateCameraServiceStatus(status) {
   stopDepthCamera.disabled = !status.running;
 }
 
+function cameraStreamEnabled(stream) {
+  if (!window.uniroboPcMode) return true;
+  const capability = window.robotManifest?.capabilities?.find((item) => item.key === `camera_${stream}`);
+  return capability?.implemented === true && (capability.available === true ||
+    capability.parameters?.receiver_start_allowed_when_unavailable === "true");
+}
+
 async function pollCameraStatus() {
   if (workspaceVisible()) {
     try {
@@ -1991,6 +2005,7 @@ async function pollCameraStatus() {
 }
 
 async function loadCameraFrame(stream) {
+  if (!cameraStreamEnabled(stream)) return;
   if (!workspaceVisible()) return;
   if (!latestCameraStatus?.[stream]?.online) return;
   const elements = cameraElements(stream);
@@ -2308,7 +2323,7 @@ async function executePending() {
   try {
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...window.uniroboSessionHeaders?.() },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -2565,6 +2580,7 @@ window.addEventListener("g1:workspace-change", (event) => {
     });
   }
 });
+(window.uniroboPcReady || Promise.resolve()).then(() => {
 initializeCameraViewports();
 updateMapHelp();
 renderNavigationTaskList();
@@ -2574,5 +2590,8 @@ if (initializeMap()) {
   pollFrame();
 }
 pollStatus();
-pollCameraStatus();
-pollCameraFrames();
+if (cameraStreamEnabled("rgb") || cameraStreamEnabled("depth")) {
+  pollCameraStatus();
+  pollCameraFrames();
+}
+});

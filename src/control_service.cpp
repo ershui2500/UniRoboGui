@@ -231,6 +231,52 @@ bool ControlService::Start(std::string& error) {
   return true;
 }
 
+bool ControlService::PrepareDisconnect(bool readonly_recovery) {
+  std::lock_guard<std::recursive_mutex> lock(joint_debug_request_mutex_);
+  if (HasControlOwnership(readonly_recovery)) return false;
+  disconnect_prepared_ = true;
+  return true;
+}
+
+void ControlService::ResumeRequests() {
+  std::lock_guard<std::recursive_mutex> lock(joint_debug_request_mutex_);
+  disconnect_prepared_ = false;
+}
+
+std::string ControlService::PcArmActionState() const {
+  const auto phase = pc_arm_phase_.load();
+  if (phase == PcArmPhase::Idle) return "idle";
+  if (phase == PcArmPhase::Completed) return "completed_mock";
+  const auto snapshot = store_.GetSnapshot();
+  const auto& low = snapshot.sources[static_cast<std::size_t>(SourceId::kLowState)];
+  if (!IsFreshSportState(snapshot.control) || !low.received ||
+      SteadyClock::now() - low.last_update > std::chrono::seconds(1))
+    return "lost";
+  switch (phase) {
+    case PcArmPhase::Dispatching: return "dispatching";
+    case PcArmPhase::Running: return "running_reported";
+    case PcArmPhase::Holding: return "holding_reported";
+    default: return "unknown";
+  }
+}
+
+bool ControlService::HasControlOwnership(bool readonly_recovery) const {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  const auto phase = pc_arm_phase_.load();
+  const bool arm_pending = phase != PcArmPhase::Idle && phase != PcArmPhase::Completed;
+  // Firmware tasks publish no local stream; recovery may retire this process,
+  // but the manager must keep its replacement read-only until field confirmation.
+  const bool ignore_arm = readonly_recovery;
+  if (command_running_ || arm_interrupt_running_ || !queue_.empty() ||
+      motion_active_.load() || (arm_pending && !ignore_arm)) return true;
+  for (std::size_t index = 0;
+       index < static_cast<std::size_t>(ControlResource::Count); ++index) {
+    const auto owner = resources_.Query(static_cast<ControlResource>(index));
+    if (!owner.empty() && !(ignore_arm && owner == kArmActionOwner)) return true;
+  }
+  return false;
+}
+
 void ControlService::Stop() {
   if (joint_debug_) {
     StopJointDebugImpl(*joint_debug_);
@@ -267,8 +313,9 @@ ControlSubmitResult ControlService::Submit(
     const std::string& request_key, const std::string& category,
     const std::string& command, std::int32_t argument,
     bool confirmed, const std::string& action_name) {
+  std::lock_guard<std::recursive_mutex> lock(joint_debug_request_mutex_);
   ControlSubmitResult result;
-  const auto ready = safety_.CheckServiceReady(running_.load());
+  const auto ready = safety_.CheckServiceReady(running_.load() && !disconnect_prepared_);
   if (!ready.allowed) {
     result.error = ready.error;
     return result;
@@ -403,8 +450,9 @@ ControlSubmitResult ControlService::Submit(
 MotionSubmitResult ControlService::SubmitVelocity(
     float vx_m_s, float vy_m_s, float vyaw_rad_s,
     std::int32_t speed_mode, bool active) {
+  std::lock_guard<std::recursive_mutex> lock(joint_debug_request_mutex_);
   MotionSubmitResult result;
-  const auto ready = safety_.CheckServiceReady(running_.load());
+  const auto ready = safety_.CheckServiceReady(running_.load() && !disconnect_prepared_);
   if (!ready.allowed) {
     result.error = ready.error;
     return result;
@@ -767,6 +815,10 @@ void ControlService::Execute(Request request) {
   command.argument = request.argument;
   command.action_name = request.action_name;
   command.state = "running";
+  const bool pc_arm = robot_profile_.static_constraints.count("pc_session_id") &&
+                      request.category == "arm_action";
+  const auto previous_arm_phase = pc_arm_phase_.load();
+  if (pc_arm) pc_arm_phase_.store(PcArmPhase::Dispatching);
   command.accepted_time_ms = SystemTimeMs();
   if (store_.GetSnapshot().control.last_command.request_id <=
       command.request_id) {
@@ -801,6 +853,24 @@ void ControlService::Execute(Request request) {
   command.state =
       command.api_result == 0 && command.error.empty() ? "succeeded"
                                                        : "failed";
+  if (pc_arm) {
+    auto phase = previous_arm_phase;
+    if (mock_) {
+      phase = request.command == "execute" && request.argument == 15
+                  ? PcArmPhase::Holding : PcArmPhase::Completed;
+    } else if (command.api_result == 7400) {
+      phase = PcArmPhase::Running;
+    } else if (command.api_result == 7401) {
+      phase = PcArmPhase::Holding;
+    } else if (command.api_result != 3103 && command.api_result != 3204 &&
+               !(command.api_result >= 7402 && command.api_result <= 7407)) {
+      // RPC return (including release) is not a correlated physical completion report.
+      phase = PcArmPhase::Unknown;
+    }
+    pc_arm_phase_.store(phase);
+    const bool pending = phase != PcArmPhase::Idle && phase != PcArmPhase::Completed;
+    resource_guard.release = !pending;
+  }
   command.completed_time_ms = SystemTimeMs();
   if (store_.GetSnapshot().control.last_command.request_id <=
       command.request_id) {

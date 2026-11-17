@@ -9,7 +9,8 @@ namespace {
 
 class G1DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
  public:
-  G1DeviceCapabilityPolicy() {
+  explicit G1DeviceCapabilityPolicy(bool robot_local_resources) {
+    perception_.robot_local_resources = robot_local_resources;
     perception_.lidar_model = "Livox Mid-360";
     perception_.lidar_service = "lidar_driver";
     perception_.slam_service = "unitree_slam";
@@ -30,6 +31,14 @@ class G1DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
     perception_.low_obstacle_source = "raw_mid360";
     perception_.rotate_raw_lidar_x_180 = true;
 
+    if (!robot_local_resources) {
+      for (auto& dependency : perception_.dependencies)
+        dependency.lifecycle = DependencyLifecycle::kExternalRequired;
+      camera_.manage_first_person_service = false;
+      camera_.allow_client_source_override = false;
+      return;
+    }
+
     camera_.camera_model = "Intel RealSense D435i";
     camera_.first_person_helper =
         "/usr/local/sbin/g1-web-first-person-service";
@@ -44,6 +53,7 @@ class G1DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
   const CameraDeploymentPolicy& Camera() const override { return camera_; }
 
   HardwarePresence DetectHardware(CapabilityKey key) const override {
+    if (!perception_.robot_local_resources) return HardwarePresence::kUnknown;
     if (key != CapabilityKey::kCameraRgb &&
         key != CapabilityKey::kCameraDepth) {
       return HardwarePresence::kUnknown;
@@ -75,8 +85,9 @@ class G1DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
 
 }  // namespace
 
-std::unique_ptr<IDeviceCapabilityPolicy> CreateG1DeviceCapabilityPolicy() {
-  return std::make_unique<G1DeviceCapabilityPolicy>();
+std::unique_ptr<IDeviceCapabilityPolicy> CreateG1DeviceCapabilityPolicy(
+    bool robot_local_resources) {
+  return std::make_unique<G1DeviceCapabilityPolicy>(robot_local_resources);
 }
 
 }  // namespace g1_web

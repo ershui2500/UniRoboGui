@@ -263,6 +263,110 @@ void TestControlServiceSafety(const g1_web::RobotProfile& profile) {
   readonly_service.Stop();
 }
 
+void TestA2EntryRpcTimeout() {
+  using namespace g1_web;
+  float timeout = 1.0F;
+  std::vector<float> timeouts;
+  int calls = 0;
+  bool throws = false;
+  auto adapter = CreateA2LocomotionAdapterForTesting(
+      [&](const std::string& command, int, float, float, float) {
+        Check(command == "stand_down", "entry transport only calls StandDown");
+        ++calls;
+        if (throws) throw std::runtime_error("test transport failure");
+        return timeout < 2.0F ? 3104 : 0;
+      }, [&](float value) { timeout = value; timeouts.push_back(value); });
+  Check(adapter->ExecuteMode("stand_down", 0).api_result == 3104,
+        "reproduces ordinary one-second timeout before crouch reply");
+  const auto entry = adapter->StandDownForLowLevelEntry();
+  Check(entry.api_result == 0 && calls == 2 && timeout == 1.0F &&
+            timeouts == std::vector<float>({8.0F, 1.0F}),
+        "entry waits for delayed reply once and restores normal RPC timeout");
+  Check(adapter->ExecuteMode("stand_down", 0).api_result == 3104,
+        "ordinary calls keep their one-second timeout");
+  throws = true;
+  try { adapter->StandDownForLowLevelEntry(); Check(false, "fixture should throw"); }
+  catch (const std::runtime_error&) {}
+  Check(timeout == 1.0F, "transport exceptions restore ordinary timeout");
+  auto failing = CreateA2LocomotionAdapterForTesting(
+      [](const std::string&, int, float, float, float) { return 3104; });
+  const auto failed = failing->StandDownForLowLevelEntry();
+  Check(failed.api_result == 3104 && failed.error == "stand_down_rpc_timeout",
+        "entry retains raw timeout code and a specific error");
+}
+
+void TestA2CrouchBeforeRelease(const g1_web::RobotProfile& profile) {
+  using namespace g1_web;
+  const auto web = std::filesystem::path(__FILE__).parent_path().parent_path() / "web";
+  for (const auto& scenario : {"standing", "crouched", "rpc_failed", "rpc_timeout", "unknown_fsm",
+                               "stale_sport", "stale_after_rpc", "single_frame",
+                               "moving_joints", "rpc_success_without_crouch"}) {
+    SnapshotStore store;
+    unitree_hg::msg::dds_::LowState_ low;
+    low.mode_machine(1);
+    for (int i = 0; i < 12; ++i) low.motor_state()[i].mode(1);
+    store.UpdateLowState(low);
+    std::atomic<int> stand_down_calls{0};
+    std::atomic<bool> commanded{false};
+    const std::string name = scenario;
+    auto adapter = CreateA2LocomotionAdapterForTesting(
+        [&](const std::string& command, int, float, float, float) {
+          Check(command == "stand_down", "A2 entry may only issue StandDown");
+          ++stand_down_calls;
+          commanded.store(true);
+          return name == "rpc_timeout" ? 3104 : name == "rpc_failed" ? 4201 : 0;
+        });
+    ControlService service(store, std::move(adapter), profile,
+        CreateA2JointDebugPolicy(profile), true, web.string(),
+        (std::filesystem::temp_directory_path() / "a2_crouch_test.json").string());
+    std::string error;
+    Check(service.Start(error), "A2 entry fixture starts without real DDS");
+    service.SetMockJointDebugAiSport(true);
+    unitree_hg::msg::dds_::SportModeState_ state;
+    state.fsm_id(name == "crouched" || name == "moving_joints" ? 1 :
+                 name == "unknown_fsm" ? 8 : 2);
+    store.UpdateSportMode(state);
+    if (name == "stale_sport") std::this_thread::sleep_for(std::chrono::milliseconds(1050));
+    store.UpdateLowState(low);
+    std::atomic<bool> refresh{true};
+    std::thread feedback([&] {
+      while (refresh.load()) {
+        if (name != "single_frame" && name != "stale_sport" &&
+            !(name == "stale_after_rpc" && commanded.load())) {
+          auto sample = low;
+          if (name == "moving_joints") sample.motor_state()[0].dq(0.2F);
+          store.UpdateLowState(sample);
+          auto current = state;
+          current.fsm_id(name == "rpc_success_without_crouch" ? 2 :
+                         store.GetSnapshot().control.fsm_id);
+          store.UpdateSportMode(current);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    });
+    const auto result = service.SwitchJointDebugMode(true, true);
+    refresh.store(false);
+    feedback.join();
+    const auto status = Parse(service.SerializeJointDebugStatus());
+    const bool success = name == "standing" || name == "crouched";
+    Check(result.accepted == success, scenario);
+    Check(status["motion_service_active"].asBool() == !success,
+          "failed or unconfirmed crouching must never release ai_sport");
+    Check(!service.GetJointDebugTestStats().lowcmd_published,
+          "entry never sends a LowCmd hold");
+    if (name == "standing") Check(stand_down_calls == 1, "standing entry sends StandDown once");
+    if (name == "crouched" || name == "unknown_fsm" || name == "stale_sport")
+      Check(stand_down_calls == 0, "already crouched or unsafe state sends no pose command");
+    if (name == "rpc_timeout")
+      Check(result.error == "stand_down_rpc_timeout" && stand_down_calls == 1,
+            "persistent timeout never retries or releases ai_sport");
+    if (name == "rpc_failed") Check(result.error == "sdk_api_error", "RPC failure is reported");
+    if (name == "moving_joints" || name == "rpc_success_without_crouch")
+      Check(result.error == "stand_down_confirmation_timeout", "unstable or missing crouch times out closed");
+    service.Stop();
+  }
+}
+
 void TestJointDebug(const g1_web::RobotProfile& profile) {
   using namespace g1_web;
   const auto web_root =
@@ -275,12 +379,12 @@ void TestJointDebug(const g1_web::RobotProfile& profile) {
             policy->TransportForMode("full_body") ==
                 JointDebugTransport::kLowCmd &&
             policy->UsesMotionSwitcherForLowCmd() &&
-            !policy->SupportsMotionModeSwitch() &&
+            policy->SupportsMotionModeSwitch() &&
             policy->LowCmdBlockingServices() ==
                 std::vector<std::string>({"ai_sport"}) &&
             policy->TeachGroups() == policy->GroupsForMode("full_body") &&
             policy->SupportsTeachRemoteControl(),
-        "A2 policy exposes guarded full-body HG LowCmd and Mock teaching without automatic switching");
+        "A2 policy exposes guarded full-body HG LowCmd and Mock teaching with explicit service switching");
   const auto gain = policy->NormalGain(profile.joint_schema.joints.front());
   Check(gain.kp == 0.0F && gain.kd == 0.0F &&
             policy->ResolveModelVariant(1) != nullptr &&
@@ -303,6 +407,8 @@ void TestJointDebug(const g1_web::RobotProfile& profile) {
   Check(empty_control.ApplyJointDebug("full_body", targets, true).error ==
             "lowstate_unavailable",
         "A2 rejects Joint Debug without fresh LowState");
+  Check(empty_control.SwitchJointDebugMode(true, true).error == "lowstate_unavailable",
+        "A2 service switching requires fresh LowState");
   empty_control.Stop();
 
   SnapshotStore store;
@@ -327,10 +433,10 @@ void TestJointDebug(const g1_web::RobotProfile& profile) {
             !status["upper_body_allowed"].asBool() &&
             status["control_topics"]["full_body"].asString() ==
                 "rt/lowcmd" &&
-            !status["motion_mode_switch_supported"].asBool() &&
+            status["motion_mode_switch_supported"].asBool() &&
             status["remote_binding_supported"].asBool() &&
             status["teach_actions"].empty(),
-        "A2 status exposes twelve full-body joints and Mock teaching without switching");
+        "A2 status exposes twelve full-body joints and Mock teaching with ai_sport switching");
   auto duplicate_targets = targets;
   duplicate_targets[1].first = 0;
   auto out_of_range_targets = targets;
@@ -343,14 +449,41 @@ void TestJointDebug(const g1_web::RobotProfile& profile) {
                     .error == "invalid_joint_request" &&
             control.ApplyJointDebug("full_body", out_of_range_targets, true).error ==
                 "joint_out_of_range" &&
-            control.SwitchJointDebugMode(true, true).error ==
-                "motion_mode_switch_unsupported" &&
+            control.SwitchJointDebugMode(true, false).error ==
+                "confirmation_required" &&
             !control.StartJointTeachRecording("", true).accepted,
-        "A2 rejects unsupported modes, invalid targets, automatic switching and invalid teaching names");
+        "A2 rejects unsupported modes, invalid targets, unconfirmed switching and invalid teaching names");
   control.SetMockJointDebugAiSport(true);
   Check(control.ApplyJointDebug("full_body", targets, true).error ==
             "debug_mode_required",
         "A2 rejects Joint Debug while ai_sport remains active");
+  const auto before_switch = control.GetJointDebugTestStats().publish_count;
+  std::atomic<bool> refresh_switch{true};
+  std::thread switch_feedback([&] {
+    while (refresh_switch.load()) {
+      store.UpdateLowState(low);
+      unitree_hg::msg::dds_::SportModeState_ state;
+      state.fsm_id(store.GetSnapshot().control.fsm_id);
+      store.UpdateSportMode(state);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+  const auto entered = control.SwitchJointDebugMode(true, true);
+  refresh_switch.store(false);
+  switch_feedback.join();
+  Check(entered.accepted, "A2 crouches before releasing ai_sport");
+  auto switched = Parse(control.SerializeJointDebugStatus());
+  Check(!switched["motion_service_active"].asBool() &&
+            switched["motion_mode_switch_service"].asString() == "ai_sport" &&
+            control.GetJointDebugTestStats().publish_count == before_switch &&
+            store.GetSnapshot().control.fsm_id == 1,
+        "A2 entry confirms STAND_DOWN before releasing the service without LowCmd hold");
+  Check(control.SwitchJointDebugMode(false, true).accepted,
+        "A2 explicitly restores ai_sport");
+  Check(Parse(control.SerializeJointDebugStatus())["motion_service_active"].asBool() &&
+            control.GetJointDebugTestStats().publish_count == before_switch &&
+            store.GetSnapshot().control.fsm_id == 1,
+        "A2 exit restores ai_sport without standing or GO2 mode commands");
   control.SetMockJointDebugAiSport(false);
   low.mode_pr(1);
   store.UpdateLowState(low);
@@ -685,6 +818,59 @@ int main() {
     file << R"(]})";
   }
   A2JointGains configured;
+  {
+    RuntimeOptions pc_options;
+    pc_options.pc_worker = true;
+    auto pc_runtime = RobotRegistry::CreateRuntime("a2", pc_options);
+    for (const auto& cap : pc_runtime.profile.capabilities) {
+      if (cap.key == CapabilityKey::kJointDebug || cap.key == CapabilityKey::kJointTeach) {
+        Check(cap.available && cap.parameters.at("joint_gains_source") == "builtin_go2_experimental" &&
+                  cap.verification_level == VerificationLevel::kMockVerified &&
+                  cap.parameters.at("real_control_policy") == "operator_validation" &&
+                  !cap.parameters.count("gain_warning_zh") &&
+                  !cap.parameters.count("gain_warning_en"),
+              "PC A2 includes explicitly experimental gains without claiming hardware validation");
+      }
+    }
+    for (const auto& joint : pc_runtime.profile.joint_schema.joints) {
+      const auto normal = pc_runtime.joint_debug->NormalGain(joint);
+      const auto recording = pc_runtime.joint_debug->RecordingGain(joint);
+      Check(normal.kp == 60 && normal.kd == 5 && recording.kp == 0 && recording.kd == 1,
+            "PC A2 built-in gains cover all twelve motor slots");
+    }
+    Check(pc_runtime.joint_debug->UsesMotionSwitcherForLowCmd() &&
+              pc_runtime.joint_debug->SupportsMotionModeSwitch(),
+          "PC A2 preserves manual motion ownership interlocks");
+    pc_options.a2_joint_gains_file = gains_path.string();
+    auto overridden = RobotRegistry::CreateRuntime("a2", pc_options);
+    Check(overridden.joint_debug->NormalGain(overridden.profile.joint_schema.joints[0]).kp == 2,
+          "explicit PC A2 gains override the built-in values");
+    pc_options.a2_joint_gains_file = gains_path.string() + ".missing";
+    auto invalid = RobotRegistry::CreateRuntime("a2", pc_options);
+    for (const auto& cap : invalid.profile.capabilities) {
+      if (cap.key == CapabilityKey::kJointDebug || cap.key == CapabilityKey::kJointTeach)
+        Check(!cap.available && cap.reason == "a2_joint_gains_invalid" &&
+                  !cap.parameters.count("joint_gains_source"),
+              "invalid explicit PC gains never fall back to built-in gains");
+    }
+    pc_options.a2_joint_gains_file.clear();
+    pc_options.mock = true;
+    auto mock = RobotRegistry::CreateRuntime("a2", pc_options);
+    Check(mock.joint_debug->NormalGain(mock.profile.joint_schema.joints[0]).kp == 0,
+          "PC Mock retains zero default gains");
+    pc_options.mock = false;
+    for (bool idle : {false, true}) {
+      pc_options.pc_idle = idle;
+      pc_options.read_only = !idle;
+      auto readonly = RobotRegistry::CreateRuntime("a2", pc_options);
+      Check(!readonly.joint_debug, "PC idle and recovery never create a joint policy");
+      for (const auto& cap : readonly.profile.capabilities) {
+        if (cap.key == CapabilityKey::kJointDebug || cap.key == CapabilityKey::kJointTeach)
+          Check(!cap.available && !cap.parameters.count("joint_gains_source"),
+                "PC idle and recovery never enable built-in gains");
+      }
+    }
+  }
   Check(LoadA2JointGains(gains_path.string(), configured) &&
             configured.remote_protocol_confirmed && configured.normal[11].kp == 2 && configured.recording[11].kd == .5F,
         "A2 loads all twelve explicitly configured joint gains");
@@ -809,6 +995,8 @@ int main() {
   snapshot=store.GetSnapshot();
   Check(!snapshot.sources[static_cast<std::size_t>(SourceId::kSecondaryImu)].received && !snapshot.faults.received, "only declared mock sources");
   Check(snapshot.sources[static_cast<std::size_t>(SourceId::kSecondaryBms)].received, "secondary mock source");
+  TestA2EntryRpcTimeout();
+  TestA2CrouchBeforeRelease(profile);
   TestJointDebug(profile);
   TestControlServiceSafety(profile);
   TestFailedLeaseStopRetainsInterlock(profile);

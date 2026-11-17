@@ -49,6 +49,8 @@ const errorLabels = {
   motion_service_switch_failed: "高层运控切换失败，后端已停止后续动作。",
   motion_service_confirmation_timeout: "高层运控切换后未能及时确认状态，后端已停止后续动作。",
   motion_mode_switch_unsupported: ["当前产品未开放网页高低层模式切换。", "Web-based high/low-level mode switching is unavailable for this product."],
+  stand_down_confirmation_timeout: ["尚未确认机器人稳定趴下，已取消进入底层模式并保留高层运控。", "Stable crouching was not confirmed. Low-level entry was cancelled and high-level control remains enabled."],
+  stand_down_rpc_timeout: ["趴下请求等待超时；运控仍开启。机器人可能仍在执行趴下，请先检查状态并等待停止后再重试。", "StandDown timed out; motion control remains enabled. The robot may still be crouching. Check its state and wait until it settles before retrying."],
   fsm_confirmation_timeout: "机器人未在预期时间内到达目标姿态，后端已停止后续动作。",
   recovery_stand_confirmation_timeout: uiText(
     "机器人未在预期时间内稳定站起，已停止切换到灵动模式。",
@@ -256,7 +258,8 @@ function updatePermission() {
   const gainHint = $("jointDebugGainHint");
   const kp = Number(status?.position_kp);
   const kd = Number(status?.position_kd);
-  gainHint.hidden = !switchSupported || !Number.isFinite(kp) || !Number.isFinite(kd);
+  gainHint.hidden = !switchSupported || !!status?.motion_mode_switch_service ||
+    !Number.isFinite(kp) || !Number.isFinite(kd);
   if (!gainHint.hidden) gainHint.textContent = uiText(
     `官方站立增益：KP ${kp} / KD ${kd}`,
     `Official stand gains: KP ${kp} / KD ${kd}`
@@ -545,7 +548,7 @@ async function teachRequest(operation) {
       : { name, confirmed: true };
     const response = await fetch(`/api/control/joint-debug/teach/${operation}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...window.uniroboSessionHeaders?.() },
       body: JSON.stringify(body),
     });
     const result = await response.json();
@@ -574,7 +577,7 @@ async function bindTeachRemote() {
   try {
     const response = await fetch("/api/control/joint-debug/teach/bind", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...window.uniroboSessionHeaders?.() },
       body: JSON.stringify({ name, binding }),
     });
     const result = await response.json();
@@ -610,7 +613,7 @@ async function refreshStatus() {
 
 async function sendHeartbeat() {
   if (currentWorkspace !== "joint-debug" || document.hidden || window.g1ConnectionOnline === false) return;
-  try { await fetch("/api/control/joint-debug/heartbeat", { method: "POST" }); } catch (_) { /* lease expires */ }
+  try { await fetch("/api/control/joint-debug/heartbeat", { method: "POST", headers: window.uniroboSessionHeaders?.() }); } catch (_) { /* lease expires */ }
 }
 
 function stage(action) {
@@ -633,6 +636,7 @@ function stage(action) {
   const activeMode = status?.mode || selectedMode();
   const activeTopic = status?.control_topics?.[activeMode];
   const selectedTopic = status?.control_topics?.[selectedMode()];
+  const switchService = status?.motion_mode_switch_service;
   $("jointDebugConfirmTitle").textContent = enteringLowLevel
     ? uiText("确认进入底层模式", "Confirm low-level mode entry")
     : exitingLowLevel
@@ -643,12 +647,18 @@ function stage(action) {
         : uiText("确认停止 / 释放调试控制", "Confirm stop / release debug control"))
     : uiText(`确认应用${selectedLabel}关节目标`, `Confirm ${selectedLabel} joint targets`);
   $("jointDebugConfirmWarning").textContent = enteringLowLevel
-    ? uiText(
+    ? switchService ? uiText(
+      `将先检查机器人状态；未趴下时先执行趴下，持续确认站低状态和关节稳定后才停用 ${switchService}。失败或超时不关闭运控。请可靠支撑机器人并清场。`,
+      `The backend checks the robot state, crouches if needed, and confirms sustained STAND_DOWN and settled joints before disabling ${switchService}. Failure or timeout keeps motion control enabled. Securely support the robot and clear the area.`,
+    ) : uiText(
       "机器人将先自动趴下并确认安全姿态，再关闭 MCF 高层运控。切换完成前请勿触碰机器人或发送其他控制指令。",
       "The robot will crouch and confirm its pose before disabling MCF. Do not touch it or send other commands during the transition.",
     )
     : exitingLowLevel
-      ? uiText(
+      ? switchService ? uiText(
+        `将先停止并释放 LowCmd，再启用 ${switchService} 高层运控。恢复运控可能改变机器人姿态，请保持可靠支撑并清场。`,
+        `LowCmd will be stopped and released before enabling ${switchService}. Restoring motion control may change the robot's pose; keep it securely supported and clear the area.`,
+      ) : uiText(
         "后端将先停止 LowCmd，再启动 MCF，通过恢复站立动作起身，最后进入灵动模式。请清空周围人员和障碍物。",
         "The backend will stop LowCmd, restart MCF, recover standing, then enter Free Walk. Clear the area first.",
       )
@@ -679,6 +689,7 @@ async function executePending(event) {
   const action = pendingAction;
   if (!action) return;
   const modeSwitch = action === "enter-low-level" || action === "exit-low-level";
+  const switchService = status?.motion_mode_switch_service;
   const body = modeSwitch ? {
     mode: action === "enter-low-level" ? "low_level" : "high_level",
     confirmed: true,
@@ -694,8 +705,10 @@ async function executePending(event) {
   updatePermission();
   $("jointDebugFeedback").textContent = modeSwitch
     ? (action === "enter-low-level"
-        ? uiText("正在自动趴下并关闭 MCF…", "Crouching and disabling MCF…")
-        : uiText("正在启动 MCF、恢复站立并进入灵动模式…", "Starting MCF and recovering standing…"))
+        ? uiText(`正在确认趴下并关闭 ${switchService || "MCF"}…`, `Confirming crouch and disabling ${switchService || "MCF"}…`)
+        : switchService
+          ? uiText(`正在释放 LowCmd 并恢复 ${switchService}…`, `Releasing LowCmd and restoring ${switchService}…`)
+          : uiText("正在启动 MCF、恢复站立并进入灵动模式…", "Starting MCF and recovering standing…"))
     : action === "stop"
       ? uiText("正在安全释放控制…", "Releasing control safely…")
       : uiText("正在提交并等待后端接管…", "Submitting and waiting for backend control…");
@@ -703,7 +716,7 @@ async function executePending(event) {
     const endpoint = modeSwitch ? "mode" : action;
     const response = await fetch(`/api/control/joint-debug/${endpoint}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...window.uniroboSessionHeaders?.() },
       body: JSON.stringify(body),
     });
     const result = await response.json();
@@ -711,8 +724,10 @@ async function executePending(event) {
     $("jointDebugConfirmDialog").close();
     showActionFeedback(modeSwitch
       ? (action === "enter-low-level"
-          ? uiText("机器人已趴下，MCF 已关闭，可以开始底层调试。", "The robot is crouched and MCF is off; low-level debugging is ready.")
-          : uiText("MCF 已恢复，机器人已站起并进入灵动模式。", "MCF is restored and the robot is standing in Free Walk mode."))
+          ? uiText(`已确认底层模式，${switchService || "MCF"} 已关闭。`, `Low-level mode confirmed; ${switchService || "MCF"} is off.`)
+          : switchService
+            ? uiText(`${switchService} 已恢复。`, `${switchService} is restored.`)
+            : uiText("MCF 已恢复，机器人已站起并进入灵动模式。", "MCF is restored and the robot is standing in Free Walk mode."))
       : action === "stop"
         ? uiText("调试控制已安全释放。", "Debug control was released safely.")
         : uiText("目标已接受，后端 DDS 控制循环已启动。", "Targets accepted; the backend DDS control loop is running."));

@@ -54,6 +54,7 @@ class IJointDebugPolicy {
   virtual bool SupportsMotionModeSwitch() const {
     return UsesMotionSwitcherForLowCmd();
   }
+  virtual std::string MotionModeSwitchService() const { return {}; }
   virtual bool LowLevelEntryPoseReached(
       const std::vector<float>&) const { return false; }
   virtual bool HighLevelRecoveryPoseReached(

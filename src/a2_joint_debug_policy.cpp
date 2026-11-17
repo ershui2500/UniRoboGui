@@ -58,7 +58,7 @@ class A2JointDebugPolicy final : public IJointDebugPolicy {
   }
 
   bool UsesMotionSwitcherForLowCmd() const override { return true; }
-  bool SupportsMotionModeSwitch() const override { return false; }
+  std::string MotionModeSwitchService() const override { return "ai_sport"; }
 
   const RobotModelVariant* ResolveModelVariant(
       std::uint32_t mode_machine) const override {
@@ -82,6 +82,14 @@ class A2JointDebugPolicy final : public IJointDebugPolicy {
 };
 
 }  // namespace
+
+A2JointGains A2ExperimentalJointGains() {
+  // GO2 reference values, explicitly selected for operator validation on A2.
+  A2JointGains gains;
+  gains.normal.fill({60.0F, 5.0F, false});
+  gains.recording.fill({0.0F, 1.0F, false});
+  return gains;
+}
 
 bool LoadA2JointGains(const std::string& path, A2JointGains& gains) {
   std::ifstream input(path);

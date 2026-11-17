@@ -10,7 +10,8 @@ namespace {
 class R1DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
  public:
   explicit R1DeviceCapabilityPolicy(
-      const std::set<std::string>& enabled_devices)
+      const std::set<std::string>& enabled_devices,
+      bool robot_local_resources, bool manage_camera_services)
       : mid360_declared_(enabled_devices.count("mid360") != 0) {
     perception_.lidar_model = "Livox Mid-360";
     perception_.lidar_service = "mid360_driver";
@@ -32,6 +33,11 @@ class R1DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
     perception_.attachment_required = true;
     perception_.attachment_declared = mid360_declared_;
     perception_.raw_input_required = false;
+    perception_.robot_local_resources = robot_local_resources;
+    if (!robot_local_resources) {
+      for (auto& dependency : perception_.dependencies)
+        dependency.lifecycle = DependencyLifecycle::kExternalRequired;
+    }
 
     camera_.provider = "unitree_r1_edu_stereo";
     camera_.camera_model = "Unitree R1 EDU stereo camera";
@@ -56,8 +62,8 @@ class R1DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
     camera_.privileged_receiver_helper =
         "/usr/local/sbin/r1-web-camera-service";
     camera_.manage_first_person_service = false;
-    camera_.manage_external_services = true;
-    camera_.manage_privileged_receiver = true;
+    camera_.manage_external_services = manage_camera_services;
+    camera_.manage_privileged_receiver = manage_camera_services;
     camera_.allow_client_source_override = false;
   }
 
@@ -68,6 +74,7 @@ class R1DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
   const CameraDeploymentPolicy& Camera() const override { return camera_; }
 
   HardwarePresence DetectHardware(CapabilityKey key) const override {
+    if (!perception_.robot_local_resources) return HardwarePresence::kUnknown;
     if (key == CapabilityKey::kCameraDepth) {
       std::error_code error;
       const bool exists = std::filesystem::exists("/dev/video-dep", error);
@@ -91,8 +98,11 @@ class R1DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
 }  // namespace
 
 std::unique_ptr<IDeviceCapabilityPolicy> CreateR1DeviceCapabilityPolicy(
-    const std::set<std::string>& enabled_devices) {
-  return std::make_unique<R1DeviceCapabilityPolicy>(enabled_devices);
+    const std::set<std::string>& enabled_devices,
+    bool robot_local_resources, bool manage_camera_services) {
+  return std::make_unique<R1DeviceCapabilityPolicy>(enabled_devices,
+                                                     robot_local_resources,
+                                                     manage_camera_services);
 }
 
 }  // namespace g1_web

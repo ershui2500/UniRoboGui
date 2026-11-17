@@ -28,9 +28,12 @@ if(NOT UNITREE_SDK2_A2_INCLUDE_DIR)
     message(FATAL_ERROR "Current Unitree SDK2 A2 sport headers are required")
 endif()
 find_package(CURL QUIET)
+option(UNIROBO_PC_BUILD "Build the PC edition without robot RealSense dependencies" OFF)
 find_package(OpenCV QUIET COMPONENTS core imgproc imgcodecs videoio)
-find_package(realsense2 QUIET)
-if(NOT realsense2_FOUND AND
+if(NOT UNIROBO_PC_BUILD)
+  find_package(realsense2 QUIET)
+endif()
+if(NOT UNIROBO_PC_BUILD AND NOT realsense2_FOUND AND
    EXISTS "/opt/ros/noetic/lib/aarch64-linux-gnu/cmake/realsense2/realsense2Config.cmake")
     set(realsense2_DIR
         "/opt/ros/noetic/lib/aarch64-linux-gnu/cmake/realsense2"
@@ -156,12 +159,20 @@ if(BUILD_TESTING)
     add_test(NAME g1_web_a2_http_tests
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_a2_http.py
                      $<TARGET_FILE:g1_web_server> ${CMAKE_CURRENT_SOURCE_DIR}/web)
+    add_test(NAME unirobo_pc_session_tests
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pc_session.py
+                     $<TARGET_FILE:g1_web_server>)
+    if(UNIROBO_PC_BUILD)
+        add_test(NAME unirobo_pc_cli_tests
+                 COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pc_cli.py)
+    endif()
     find_program(NODE_EXECUTABLE node)
     if(NODE_EXECUTABLE)
+        add_test(NAME unirobo_pc_console_tests COMMAND ${NODE_EXECUTABLE} tests/test_pc_console.js)
         add_test(NAME unirobo_a2_console_tests COMMAND ${NODE_EXECUTABLE} tests/test_a2_console.js)
         add_test(NAME unirobo_walking_modes_tests COMMAND ${NODE_EXECUTABLE} tests/test_walking_modes.js)
         add_test(NAME unirobo_camera_inputs_tests COMMAND ${NODE_EXECUTABLE} tests/test_camera_inputs.js)
-        set_tests_properties(unirobo_a2_console_tests unirobo_walking_modes_tests unirobo_camera_inputs_tests
+        set_tests_properties(unirobo_pc_console_tests unirobo_a2_console_tests unirobo_walking_modes_tests unirobo_camera_inputs_tests
             PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
     add_test(NAME g1_web_customer_config_http_tests

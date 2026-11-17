@@ -220,6 +220,17 @@ SSH 登录机器人时，如果出现 ROS 环境选择，请直接按回车选�
 - **GO2**：复用已有 `/usr/local` SDK，安装 Kokoro FP32 与专属 TTS unit；默认不安装 RealSense/helper、可选雷达或真实导航。先完成 [GO2 部署前检查](docs/go2-guide.md#3-部署步骤)，尤其是可信时钟与实际 DDS 网卡。
 - **A2**：面向普通足式 A2 用户开发单元（Ubuntu 22.04 x86_64 / Python 3.10），使用 `--product a2` 部署，复用已有 `/usr/local` SDK；默认使用 Unitree 原生 TTS，并安装 Kokoro FP32 供选用。当前服务模板启用 JT128 / 导航入口，需要对应附件与外部 `unitree_slam` 服务；功能与配置说明见 [A2 使用说明](docs/a2-guide.md)。
 
+### 在 Ubuntu 电脑运行（G1 / R1 / GO2 / A2 SDK2 控制台）
+
+如果希望电脑直接连接机器人、机器人不安装 UniRoboGui，请使用独立电脑入口：
+
+```bash
+bash scripts/pc.sh install
+bash scripts/pc.sh start
+```
+
+支持 Ubuntu 22.04 x86_64，浏览器访问 `http://127.0.0.1:8080` 后选择 G1、R1、GO2 或 A2，并选有线网卡连接。启动时不连接机器人，任一时刻只连接一台；复用各自现有 SDK2 遥测、控制、关节调试/示教和音频。真实运动和关节控制仍须现场操作员验证；PC 端 GO2/A2 支持固定 RGB 接收；G1/R1 相机、PC 深度、未声明附件型 SLAM 和本地 Kokoro TTS 不开放。A2 真机全身关节控制还需有效增益文件。切换前须结束任务、释放控制并确认新鲜停止状态。Mock 不代表实机验证。详见 [电脑使用说明](docs/pc-guide.md) / [PC guide](docs/pc-guide.en.md)。原有 `install/from-pc` 仍用于机器人端部署。
+
 ### 自定义安装目录和依赖路径
 
 `/home/unitree/UniRoboGui` 只是推荐目录，不是安装要求。可以用有相应目录权限的普通账号部署；系统级服务需要 sudo，用户级服务仍要求系统包齐全和 `Linger=yes`。

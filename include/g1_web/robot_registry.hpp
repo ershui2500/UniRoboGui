@@ -55,6 +55,9 @@ const char* TelemetrySourceKeyName(TelemetrySourceKey key);
 struct RuntimeOptions {
   bool mock{false};
   bool read_only{false};
+  bool pc_worker{false};
+  bool pc_idle{false};
+  std::string pc_session_id;
   std::string network_interface{"eth0"};
   std::string web_root{"web"};
   bool enable_navigation{false};

@@ -185,10 +185,42 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
 
   void HandleRequest() {
     const std::string target(request_.target());
+    const auto mode = robot_profile_.static_constraints.find("runtime_mode");
+    if (mode != robot_profile_.static_constraints.end() &&
+        mode->second == "pc_sdk2" && target.rfind("/api/camera/", 0) == 0 &&
+        (robot_profile_.static_constraints.at("pc_rgb_receiver") != "true" ||
+         target == "/api/camera/depth/frame.jpg")) {
+      Send(http::status::forbidden, "application/json; charset=utf-8",
+           R"({"accepted":false,"error":"pc_camera_transport_unavailable"})");
+      return;
+    }
+    if (mode != robot_profile_.static_constraints.end() &&
+        mode->second == "pc_readonly" &&
+        (request_.method() != http::verb::get ||
+         (target.rfind("/api/", 0) == 0 &&
+          target != "/api/health" && target != "/api/snapshot" &&
+          target != "/api/robot/manifest" && target != "/api/robot/products" &&
+          target != "/api/control/status"))) {
+      Send(http::status::forbidden, "application/json; charset=utf-8",
+           R"({"accepted":false,"error":"pc_readonly_runtime"})");
+      return;
+    }
     if (websocket::is_upgrade(request_) && target == "/ws/telemetry") {
       std::make_shared<WebSocketSession>(
           std::move(socket_), store_, robot_profile_, publish_interval_)
           ->Run(std::move(request_));
+      return;
+    }
+    if ((target == "/api/pc/prepare-disconnect" || target == "/api/pc/prepare-recovery" ||
+         target == "/api/pc/resume") &&
+        mode != robot_profile_.static_constraints.end() && mode->second == "pc_sdk2" &&
+        request_.method() == http::verb::post) {
+      const bool ready = target == "/api/pc/resume" ||
+          control_service_.PrepareDisconnect(target == "/api/pc/prepare-recovery");
+      if (target == "/api/pc/resume") control_service_.ResumeRequests();
+      Send(ready ? http::status::ok : http::status::conflict,
+           "application/json; charset=utf-8", ready ? R"({"accepted":true})"
+              : R"({"accepted":false,"error":"pc_control_active"})");
       return;
     }
 
@@ -348,10 +380,13 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     }
     if (target == "/api/robot/manifest") {
       RobotProfile effective_profile = robot_profile_;
-      ApplyEffectiveDeviceCapabilities(
-          effective_profile, perception_service_.DeviceCapabilities());
-      ApplyEffectiveDeviceCapabilities(
-          effective_profile, camera_service_.DeviceCapabilities());
+      if (mode == robot_profile_.static_constraints.end() ||
+          mode->second != "pc_readonly") {
+        ApplyEffectiveDeviceCapabilities(
+            effective_profile, perception_service_.DeviceCapabilities());
+        ApplyEffectiveDeviceCapabilities(
+            effective_profile, camera_service_.DeviceCapabilities());
+      }
       Send(http::status::ok, "application/json; charset=utf-8",
            SerializeRobotManifest(effective_profile, store_.GetSnapshot()));
       return;
@@ -362,6 +397,18 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
       return;
     }
     if (target == "/api/control/status") {
+      if (mode != robot_profile_.static_constraints.end()) {
+        Json::CharReaderBuilder builder;
+        Json::Value status;
+        std::string errors;
+        std::istringstream input(SerializeControlStatus(store_.GetSnapshot()));
+        Json::parseFromStream(builder, input, &status, &errors);
+        status["control_owned"] = control_service_.HasControlOwnership();
+        status["recovery_blocked"] = control_service_.HasControlOwnership(true);
+        status["arm_action_state"] = control_service_.PcArmActionState();
+        Send(http::status::ok, "application/json; charset=utf-8", JsonResponse(status));
+        return;
+      }
       Send(http::status::ok, "application/json; charset=utf-8",
            SerializeControlStatus(store_.GetSnapshot()));
       return;
@@ -979,6 +1026,7 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     response["error"] = result.error;
     const bool conflict = result.error == "control_busy" ||
                           result.error == "sport_state_stale" ||
+                          result.error == "stand_down_rpc_timeout" ||
                           result.error == "motion_service_busy";
     Send(result.accepted ? http::status::ok
                          : conflict ? http::status::conflict
@@ -1126,7 +1174,9 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     }
     std::string body;
     if (!perception_service_.GetTopicGlobalMapPcd(map_name, body) &&
-        !ReadFile(download_path, body) && !ReadFile(path, body)) {
+        !ReadFile(download_path, body) &&
+        (robot_profile_.static_constraints.count("pc_session_id") != 0 ||
+         !ReadFile(path, body))) {
       Send(http::status::not_found, "application/json; charset=utf-8",
            R"({"error":"map_file_not_found"})");
       return;
@@ -1212,6 +1262,16 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     camera_request.confirmed = root["confirmed"].asBool();
     camera_request.rgb_source = root.get("rgb_source", "").asString();
     camera_request.depth_source = root.get("depth_source", "").asString();
+    const auto runtime_mode = robot_profile_.static_constraints.find("runtime_mode");
+    if (runtime_mode != robot_profile_.static_constraints.end() &&
+        runtime_mode->second == "pc_sdk2" &&
+        (!camera_request.rgb_source.empty() || !camera_request.depth_source.empty() ||
+         (camera_request.command != "start_v4l2" &&
+          camera_request.command != "stop_rgb" && camera_request.command != "stop"))) {
+      Send(http::status::forbidden, "application/json; charset=utf-8",
+           R"({"accepted":false,"error":"camera_override_forbidden"})");
+      return;
+    }
     const auto result = camera_service_.Submit(camera_request);
     Json::Value response(Json::objectValue);
     response["accepted"] = result.accepted;

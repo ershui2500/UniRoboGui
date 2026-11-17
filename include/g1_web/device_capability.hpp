@@ -41,6 +41,7 @@ struct PerceptionDependency {
 };
 
 struct PerceptionDeploymentPolicy {
+  bool robot_local_resources{true};
   std::string lidar_model;
   double navigation_max_distance_m{10.0};
   std::string lidar_service;

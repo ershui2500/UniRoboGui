@@ -47,6 +47,9 @@ class ILocomotion {
 
   virtual LocomotionCommandResult ExecuteMode(
       const std::string& command, std::int32_t argument) = 0;
+  virtual LocomotionCommandResult StandDownForLowLevelEntry() {
+    return ExecuteMode("stand_down", 0);
+  }
   virtual LocomotionCommandResult ApplyVelocity(
       float vx_m_s, float vy_m_s, float vyaw_rad_s,
       std::int32_t speed_mode, bool active) = 0;

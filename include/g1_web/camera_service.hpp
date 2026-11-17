@@ -19,6 +19,7 @@ struct CameraOptions {
   bool depth_enabled{true};
   std::string rgb_source;
   std::string depth_source;
+  std::string network_interface;
   unsigned int width{640};
   unsigned int height{480};
   unsigned int fps{15};

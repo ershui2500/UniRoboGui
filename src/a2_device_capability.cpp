@@ -5,8 +5,10 @@ namespace {
 
 class A2DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
  public:
-  explicit A2DeviceCapabilityPolicy(const std::set<std::string>& enabled_devices)
+  explicit A2DeviceCapabilityPolicy(const std::set<std::string>& enabled_devices,
+                                    bool robot_local_resources)
       : jt128_declared_(enabled_devices.count("jt128") != 0) {
+    perception_.robot_local_resources = robot_local_resources;
     perception_.lidar_model = "JT128";
     perception_.slam_service = "unitree_slam";
     if (jt128_declared_) {
@@ -62,8 +64,9 @@ class A2DeviceCapabilityPolicy final : public IDeviceCapabilityPolicy {
 }  // namespace
 
 std::unique_ptr<IDeviceCapabilityPolicy> CreateA2DeviceCapabilityPolicy(
-    const std::set<std::string>& enabled_devices) {
-  return std::make_unique<A2DeviceCapabilityPolicy>(enabled_devices);
+    const std::set<std::string>& enabled_devices, bool robot_local_resources) {
+  return std::make_unique<A2DeviceCapabilityPolicy>(enabled_devices,
+                                                   robot_local_resources);
 }
 
 }  // namespace g1_web

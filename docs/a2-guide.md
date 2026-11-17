@@ -53,9 +53,9 @@ bash scripts/deploy.sh from-pc --product a2
 
 `--mock` 运行时，“机器人调试台”按 A2 JointSchema 显示四条腿的 12 个关节，仅提供“全身”模式。滑块先更新数字孪生，只有经过二次确认才进入共享 Mock LowCmd 循环；页面心跳中断或点击“停止 / 释放控制”都会释放调试资源。
 
-A2 官方底层接口使用 `unitree_hg::msg::dds_::LowCmd_` 和 `rt/lowcmd`。真机关节调试和示教需要通过启动参数 `--a2-joint-gains <文件>` 提供增益配置，并由现场操作员逐项验证；未配置或配置无效时入口关闭。配置是 JSON 对象，`joints` 是按 motor slot 0–11 排列的 12 项数组，每项必须包含数值 `kp`、`kd`、`record_kp`、`record_kd`，分别用于控制和录制。程序只校验有限、非负且可表示为 float，这不是安全范围或真机认证；增益须由熟悉 A2 的现场人员评估。
+A2 官方底层接口使用 `unitree_hg::msg::dds_::LowCmd_` 和 `rt/lowcmd`。机器人端的真机关节调试和示教需要通过启动参数 `--a2-joint-gains <文件>` 提供增益配置，并由现场操作员逐项验证；未配置或配置无效时入口关闭。PC 控制会话未指定文件时使用编译内置的 GO2 参考实验增益（控制 `kp=60、kd=5`，录制 `kp=0、kd=1`），实验来源保留在配置元数据中；这不是 A2 官方或已验收值，仍须现场验证。PC 显式配置文件无效时也关闭入口，不回退内置值；离线及只读恢复不会加载增益。详见 `docs/pc-guide.md`。配置是 JSON 对象，`joints` 是按 motor slot 0–11 排列的 12 项数组，每项必须包含数值 `kp`、`kd`、`record_kp`、`record_kd`，分别用于控制和录制。程序只校验有限、非负且可表示为 float，这不是安全范围或真机认证；增益须由熟悉 A2 的现场人员评估。
 
-遥控按官方 `rt/wirelesscontroller` 的 `WirelessController_.keys()` 接收，组合键按遥控器外壳显示 F1/F3；F3 对应 SDK 的 F2（bit 7）。按住组合键只触发一次，松开后可再次触发；START 可停止当前关节调试并释放 LowCmd（录制中请先保存）；页面显示累计收帧、键值和最近触发结果。Web 不自动释放或恢复 `ai_sport`；操作员须在可靠支撑和清场后手动停用运控，Web 检测到任何活动运控或无法确认状态时拒绝底层控制。停止/释放只结束 LowCmd，不会自动恢复站立或运控，恢复由现场操作员执行。
+遥控按官方 `rt/wirelesscontroller` 的 `WirelessController_.keys()` 接收，组合键按遥控器外壳显示 F1/F3；F3 对应 SDK 的 F2（bit 7）。按住组合键只触发一次，松开后可再次触发；START 可停止当前关节调试并释放 LowCmd（录制中请先保存）；页面显示累计收帧、键值和最近触发结果。关节目标区域“应用到机器人”左侧提供“进入底层模式”和“退出底层模式”，PC 与机器人端共用同一实现。现场可靠支撑或固定机器人并清场后，确认进入后先检查新鲜高层状态：未处于 `STAND_DOWN`（FSM 1）时，按既有姿态转换白名单发送一次 `StandDown`（仅本入口将该 RPC 等待设为 8 秒，结束后恢复普通运动 RPC 的 1 秒；不重试）。`3104` 超时会单独报告 `stand_down_rpc_timeout`，保持运控开启，不把已派发当作执行成功；持续至少 500 ms 确认 FSM 1、12 关节位置/速度有限且速度绝对值不超过 0.1 rad/s，并要求这期间 LowState 和高层反馈确实更新，之后才调用 `ReleaseMode` 停用 `ai_sport`；确认退出时先停止并释放 LowCmd，再调用 `SelectMode("ai_sport")` 恢复运控。两者均以 `CheckMode` 确认实际服务状态，失败或超时如实报错；不自动重试、不切换静默配置、不附加 GO2 状态编号、恢复站立、灵动或关节保持动作。状态未知、反馈过期、趴下 RPC 失败、未确认趴稳或 10 秒超时时，取消进入且不释放运控；不使用 GO2 关节角度阈值。这是软件稳定判据，不替代现场确认机身已有可靠支撑。无新鲜 LowState、控制资源占用或只读模式时拒绝切换。普通“停止 / 释放控制”仍只结束 LowCmd，不恢复运控。
 
 真机调试台可显示四腿 12 关节的目标滑块和数字孪生预览；未完成配置时滑块不会发送机器人指令。实际起立、步态与速度操作位于综合工作台，使用独立的 A2 高层运动接口。
 
@@ -73,7 +73,7 @@ HTTP/WebSocket 新增 `batteries` 数组，分别包含 `id`、`source`、`topic
 ## 4. 官方依据与待验收项
 
 - [官方 A2 底层接口](https://support.unitree.com/home/zh/A2_SDK_Development_Guide/basic_service_interface)：HG LowState、关节顺序、主板与双 BMS 话题。
-- [官方 A2 运控切换服务](https://support.unitree.com/home/zh/A2_SDK_Development_Guide/motion_witcher_service_interface)：通过 `CheckMode` 检测 `ai_sport`；Web 不调用 `ReleaseMode` / `SelectMode`。
+- [官方 A2 运控切换服务](https://support.unitree.com/home/zh/A2_SDK_Development_Guide/motion_witcher_service_interface)：通过 `CheckMode` 检测 `ai_sport`，网页明确确认后通过 `ReleaseMode` / `SelectMode("ai_sport")` 切换。
 - [官方 A2 SportClient](https://github.com/unitreerobotics/unitree_sdk2/blob/7740f8b67e386ab09c3b333187fd5f8582a75ddc/include/unitree/robot/a2/sport/sport_client.hpp)：核对目标设备的 SDK 版本与接口。
 - [官方 A2 状态示例](https://github.com/unitreerobotics/unitree_sdk2/blob/7740f8b67e386ab09c3b333187fd5f8582a75ddc/example/a2/sport/a2_sport_state.cpp)：使用 `rt/lf/sportmodestate`，而高层接口正文写 `rt/sportmodestate`。代码固定采用示例话题，不自动回退或混读；其他机器人或固件须分别确认。
 - [官方 A2 模型](https://github.com/unitreerobotics/unitree_ros/tree/25746e8c73f097c3b32bed7b6c16d4e195dfacd8/robots/a2_description)：保留目录结构、URDF、引用 mesh 和 BSD 3-Clause 许可证，详见资产目录 `SOURCE.md`。

@@ -4025,6 +4025,15 @@ body.console-workspace-active #voice-interaction:not(.drawer-expanded) #ttsSubmi
   border-radius: 8px;
   background: rgba(5, 10, 17, .48);
 }
+#rgbCameraPanel > #cameraFeedback {
+  max-width: 100%;
+  max-height: 8em;
+}
+@media (min-width: 901px) {
+  .dashboard.console-active #rgbCameraPanel:has(> #cameraFeedback:not([hidden])) {
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+}
 
 @media (min-width: 901px) {
   .dashboard.console-active {
@@ -7862,4 +7871,53 @@ body #robot-control #walkingModeGroups .control-button-grid { grid-template-colu
     grid-template-rows: minmax(0, 1fr);
     grid-template-areas: "perception control";
   }
+}
+/* Keep product names readable beside their short identifiers. */
+#robotMenu { min-width: 180px; }
+#robotMenu .language-option > span { white-space: nowrap; }
+
+/* PC connection controls share the header with the product selector. */
+.pc-workspace .topbar { height: auto; gap: 12px; flex-wrap: wrap; padding-block: 8px; }
+.pc-workspace .workspace-brand-cluster { flex-wrap: wrap; margin-right: 0; }
+.pc-workspace .top-status-strip { flex: 0 0 auto; margin-left: auto; gap: 12px; }
+.pc-workspace .top-details-button { display: inline-flex; flex-shrink: 0; }
+.pc-connection { position: relative; min-width: 0; }
+.pc-connection[hidden] { display: none; }
+.pc-connection #pcInterfaceButton { width: 164px; min-width: 0; }
+#pcInterfaceValue { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-interface-menu { left: 0; right: auto; width: max-content; min-width: 100%; max-width: min(320px, calc(100vw - 36px)); max-height: 300px; overflow-y: auto; }
+.pc-interface-menu .language-option { grid-template-columns: minmax(0, 1fr); gap: 5px; }
+.pc-interface-menu .language-option span, .pc-interface-menu .language-option small { overflow-wrap: anywhere; }
+.pc-interface-menu .language-option small { line-height: 1.4; letter-spacing: 0; }
+.pc-interface-menu .language-option:disabled { opacity: .45; cursor: default; }
+.pc-interface-menu .language-option:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
+.pc-connection .pc-action { min-width: 64px; justify-content: center; color: var(--cyan); }
+.pc-connection .pc-action:disabled { cursor: default; opacity: .45; }
+.pc-connection summary {
+  display: grid; place-items: center; width: 30px; min-height: 36px;
+  color: var(--muted); cursor: pointer; list-style: none; border-radius: 9px;
+}
+.pc-connection summary::-webkit-details-marker { display: none; }
+.pc-connection summary:hover, .pc-connection summary:focus-visible { color: var(--cyan); }
+.pc-connection summary:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.pc-connection-popover {
+  position: absolute; z-index: 1; top: calc(100% + 8px); right: 0;
+  width: min(360px, calc(100vw - 36px)); max-height: min(360px, 60dvh); overflow-y: auto;
+  padding: 14px; border: 1px solid var(--line); border-radius: 12px;
+  background: #101d2a; box-shadow: 0 12px 30px rgba(0, 0, 0, .4); line-height: 1.6; font-size: 12px;
+}
+.pc-connection p { margin: 8px 0 0; overflow-wrap: anywhere; }
+#pcDetail { white-space: pre-line; }
+#pcError { color: var(--red); }
+#pcError:empty { display: none; }
+@media (max-width: 620px) {
+  .pc-workspace .topbar { gap: 8px; padding-inline: 12px; }
+  .pc-workspace .workspace-brand-cluster { flex: 1 1 calc(100% - 50px); }
+  .pc-workspace .workspace-brand { flex-basis: 100%; }
+  .pc-workspace .language-switcher-mark { display: none; }
+  .pc-workspace .top-status-strip { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+  .pc-connection { max-width: 100%; gap: 6px; }
+  .pc-connection #pcInterfaceButton { width: 120px; }
+  .pc-connection .pc-action { min-width: 60px; }
+  .pc-connection-popover { width: min(360px, 100%); }
 }

@@ -716,8 +716,15 @@ class CameraService::Impl {
       const auto* depth_spec =
           FindCameraStream(camera_policy, CameraStreamRole::kDepth);
       if (rgb_.configured && rgb_spec) {
+        auto spec = *rgb_spec;
+        if (!options_.network_interface.empty() &&
+            spec.transport == CameraTransport::kRtpH264Udp &&
+            (spec.fixed_source.rfind("udp://230.", 0) == 0 ||
+             !spec.multicast_interface.empty())) {
+          spec.multicast_interface = options_.network_interface;
+        }
         rgb_thread_ =
-            std::thread([this, spec = *rgb_spec] { CaptureRtpH264Loop(spec, rgb_); });
+            std::thread([this, spec] { CaptureRtpH264Loop(spec, rgb_); });
       }
       if (depth_.configured && depth_spec) {
         depth_thread_ = std::thread(

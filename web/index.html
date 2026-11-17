@@ -91,6 +91,34 @@
             <div class="language-menu" id="robotMenu" role="listbox" aria-label="机器人产品" hidden></div>
           </div>
         </div>
+        <section class="language-switcher pc-connection" id="pcConnection" aria-labelledby="pcInterfaceLabel" data-i18n-skip hidden>
+          <span class="language-switcher-mark" aria-hidden="true">NET</span>
+          <span class="language-switcher-label" id="pcInterfaceLabel"></span>
+          <div class="language-select-shell" id="pcInterfaceSwitcher">
+            <button class="language-menu-button" id="pcInterfaceButton" type="button"
+                    aria-haspopup="listbox" aria-expanded="false" aria-controls="pcInterfaceMenu"
+                    aria-labelledby="pcInterfaceLabel pcInterfaceValue">
+              <span id="pcInterfaceValue"></span>
+              <span class="language-menu-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="language-menu pc-interface-menu" id="pcInterfaceMenu" role="listbox" hidden></div>
+            <select class="language-native-select" id="pcInterface" aria-hidden="true" tabindex="-1"></select>
+          </div>
+          <button type="button" class="language-menu-button pc-action" id="pcConnect"></button>
+          <details id="pcConnectionDetails">
+            <summary id="pcDetailsLabel" aria-label="连接信息">ⓘ</summary>
+            <div class="pc-connection-popover">
+              <strong id="pcTitle"></strong>
+              <p id="pcDetail"></p>
+              <p id="pcNotice" class="muted"></p>
+              <p id="pcArmState" role="status"></p>
+              <p id="pcRecoveryNotice" class="muted" role="status"></p>
+              <button type="button" class="secondary compact-button" id="pcRecover" hidden></button>
+              <button type="button" class="secondary compact-button" id="pcConfirmRecovery" hidden></button>
+              <p id="pcError" role="alert"></p>
+            </div>
+          </details>
+        </section>
       </div>
       <div class="top-status-strip">
         <button class="top-details-button" id="runDetailsButton" type="button" aria-haspopup="dialog">运行详情</button>

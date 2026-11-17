@@ -176,3 +176,52 @@ vm.runInContext('renderBatteryDiagnostics(card, {soc_pct: 75, soh_pct: 98, cell_
 assert.equal(packFields.get('[data-diagnostic-field="diagnosticBatteryHealth"]').textContent, '75% / 98%');
 assert.equal(packFields.get('[data-diagnostic-field="diagnosticBatteryCellDelta"]').textContent, '10');
 console.log('Diagnostics freshness, optional-source severity and battery rendering passed.');
+
+// A2 switches ai_sport with confirmation and shows no gain banner.
+const jointSource = fs.readFileSync('web/joint-debug.js', 'utf8');
+for (const language of ['zh-CN', 'en']) {
+  const fields = new Map();
+  const jointContext = vm.createContext({
+    $: id => { if (!fields.has(id)) fields.set(id, {showModal() {}}); return fields.get(id); },
+    window: {},
+    status: {initialized: true, motion_mode_switch_supported: true,
+      motion_mode_switch_service: 'ai_sport', dds_state: 'idle',
+      motion_service_active: true, lowstate_fresh: true,
+      position_kp: 60, position_kd: 5, control_topics: {full_body: 'rt/lowcmd'}},
+    allowed: () => false, selectedMode: () => 'full_body', modeSwitchPending: false,
+    uiText: (zh, en) => language === 'en' ? en : zh,
+    errorText: code => code, pendingAction: null,
+  });
+  vm.runInContext(jointSource.slice(jointSource.indexOf('function updatePermission()'),
+    jointSource.indexOf('function renderTeach(')) + jointSource.slice(
+    jointSource.indexOf('function stage(action)'), jointSource.indexOf('async function executePending(')), jointContext);
+  vm.runInContext('updatePermission()', jointContext);
+  assert.equal(fields.get('jointDebugGainHint').hidden, true);
+  assert.equal(fields.get('jointDebugEnterLowLevel').hidden, false);
+  assert.equal(fields.get('jointDebugExitLowLevel').hidden, false);
+  assert.equal(fields.get('jointDebugEnterLowLevel').disabled, false);
+  assert.equal(fields.get('jointDebugExitLowLevel').disabled, true);
+  assert.equal(fields.get('jointDebugWarning').textContent, 'debug_mode_required');
+  assert.equal(fields.get('jointDebugApply').disabled, true);
+  vm.runInContext('stage("enter-low-level")', jointContext);
+  assert.match(fields.get('jointDebugConfirmWarning').textContent, /ai_sport/);
+  assert.doesNotMatch(fields.get('jointDebugConfirmWarning').textContent, /MCF/);
+  assert.match(fields.get('jointDebugConfirmWarning').textContent, /趴下|crouch/);
+  jointContext.status.motion_service_active = false;
+  jointContext.status.lowstate_fresh = false;
+  vm.runInContext('updatePermission(); stage("exit-low-level")', jointContext);
+  assert.equal(fields.get('jointDebugWarning').textContent, 'lowstate_unavailable');
+  assert.equal(fields.get('jointDebugEnterLowLevel').disabled, true);
+  assert.equal(fields.get('jointDebugExitLowLevel').disabled, false);
+  assert.match(fields.get('jointDebugConfirmWarning').textContent, /LowCmd.*ai_sport/);
+  assert.doesNotMatch(fields.get('jointDebugConfirmWarning').textContent, /MCF|Free Walk|灵动/);
+  jointContext.modeSwitchPending = true;
+  vm.runInContext('updatePermission()', jointContext);
+  assert.equal(fields.get('jointDebugExitLowLevel').disabled, true);
+  jointContext.status.motion_mode_switch_service = '';
+  vm.runInContext('updatePermission(); stage("enter-low-level")', jointContext);
+  assert.equal(fields.get('jointDebugGainHint').hidden, false);
+  assert.match(fields.get('jointDebugGainHint').textContent, /KP 60 \/ KD 5/);
+  assert.match(fields.get('jointDebugConfirmWarning').textContent, /MCF/);
+}
+console.log('A2 mode buttons, bilingual confirmations, hidden gains and interlocks passed.');
